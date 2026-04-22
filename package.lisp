@@ -13,15 +13,24 @@
    #:decode-modifier-state
    #:default-font-family
    #:dirty-rows
+   #:escape-tcl-text
+   #:fit-grid-to-size
+   #:handle-term-input
    #:keysym->terminal-key
    #:launch-terminal
    #:make-script-command
    #:mark-all-dirty
    #:normalize-event-state
+   #:pick-font-family
    #:render-emulator
+   #:render-row-command-string
+   #:render-text-command
+   #:resolve-cell-dimensions
+   #:resolve-font-family
    #:resize-emulator
    #:resize-term
    #:tcl-bool
+   #:terminal-font-size
    #:term-cell-view
    #:translate-key-event
    #:write-input))

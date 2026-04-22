@@ -11,12 +11,21 @@
                 #:decode-modifier-state
                 #:default-font-family
                 #:dirty-rows
+                #:escape-tcl-text
+                #:fit-grid-to-size
+                #:handle-term-input
                 #:keysym->terminal-key
                 #:make-script-command
                 #:mark-all-dirty
                 #:normalize-event-state
+                #:pick-font-family
+                #:render-row-command-string
+                #:resolve-cell-dimensions
+                #:resolve-font-family
+                #:render-text-command
                 #:resize-term
                 #:tcl-bool
+                #:terminal-font-size
                 #:term-cell-view
                 #:translate-key-event)
   (:export #:run-tests))
@@ -74,6 +83,60 @@
   (is-equal "DejaVu Sans Mono" (default-font-family :linux))
   (is-equal "Monospace" (default-font-family :freebsd)))
 
+(deftest pick-font-family-prefers-available-better-monospaced-families ()
+  (is-equal "JetBrains Mono"
+            (pick-font-family '("Courier" "JetBrains Mono" "Menlo")
+                              '("SF Mono" "JetBrains Mono" "Menlo")
+                              "Menlo"))
+  (is-equal "Menlo"
+            (pick-font-family '("Courier")
+                              '("SF Mono" "JetBrains Mono")
+                              "Menlo")))
+
+(deftest resolve-font-family-respects-explicit-values-and-falls-back-cleanly ()
+  (is-equal "Monaco"
+            (resolve-font-family "Monaco" '("Menlo" "Monaco") :macosx))
+  (is-equal "Menlo"
+            (resolve-font-family nil '("Courier" "Menlo") :macosx))
+  (is-equal "DejaVu Sans Mono"
+            (resolve-font-family nil '("Courier") :linux)))
+
+(deftest terminal-font-size-uses-pixel-sized-fonts-for-crisper-rendering ()
+  (is-equal -15 (terminal-font-size 15))
+  (is-equal -13 (terminal-font-size -13))
+  (is-equal -15 (terminal-font-size nil)))
+
+(deftest resolve-cell-dimensions-prefers-measured-font-metrics ()
+  (multiple-value-bind (width height)
+      (resolve-cell-dimensions 8 17)
+    (is-equal 8 width)
+    (is-equal 17 height))
+  (multiple-value-bind (width height)
+      (resolve-cell-dimensions 8 17 :cell-width 10 :cell-height 20)
+    (is-equal 10 width)
+    (is-equal 20 height)))
+
+(deftest escape-tcl-text-protects-braces-backslashes-and-command-characters ()
+  (is-equal "\\{\\}" (escape-tcl-text "{}"))
+  (is-equal "\\\\"
+            (escape-tcl-text "\\"))
+  (is-equal "\\$\\[\\]\\\""
+            (escape-tcl-text "$[]\"")))
+
+(deftest render-text-command-escapes-canvas-cell-text-for-tcl ()
+  (is-equal ".c itemconfigure 7 -fill {#FFFFFF} -font {mono} -text {\\{}"
+            (render-text-command ".c" 7 "mono" "#FFFFFF" "{")))
+
+(deftest fit-grid-to-size-computes-terminal-dimensions-from-pixels ()
+  (multiple-value-bind (columns rows)
+      (fit-grid-to-size 800 432 10 18)
+    (is-equal 80 columns)
+    (is-equal 24 rows))
+  (multiple-value-bind (columns rows)
+      (fit-grid-to-size 5 5 10 18)
+    (is-equal 1 columns)
+    (is-equal 1 rows)))
+
 (deftest keysym->terminal-key-maps-special-and-function-keys ()
   (is-equal :prior (keysym->terminal-key "Prior"))
   (is-equal :kp_3 (keysym->terminal-key "KP_3"))
@@ -104,6 +167,13 @@
     (is-equal '() (dirty-rows term))
     (mark-all-dirty term)
     (is-equal '(0 1) (dirty-rows term))))
+
+(deftest handle-term-input-marks-cursor-motion-dirty-even-without-glyph-changes ()
+  (let ((term (make-term :rows 2 :columns 4)))
+    (clear-dirty-rows term)
+    (handle-term-input term (format nil "~C[C" (code-char 27)))
+    (is-equal '(0) (dirty-rows term))
+    (is (= 1 (3bst::x (3bst::cursor term))))))
 
 (deftest resize-term-updates-dimensions-and-dirties-everything ()
   (let ((term (make-term :rows 2 :columns 3)))

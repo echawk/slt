@@ -118,6 +118,15 @@
   (dolist (row rows term)
     (setf (aref (3bst:dirty term) row) 0)))
 
+(defun mark-cursor-motion-dirty (term old-row old-column)
+  (let ((new-row (terminal-cursor-row term))
+        (new-column (terminal-cursor-column term)))
+    (unless (and (= old-row new-row)
+                 (= old-column new-column))
+      (setf (aref (3bst:dirty term) old-row) 1
+            (aref (3bst:dirty term) new-row) 1)))
+  term)
+
 (defun mark-all-dirty (term)
   (fill (3bst:dirty term) 1)
   term)
@@ -126,6 +135,12 @@
   (3bst::tresize columns rows :term term)
   (mark-all-dirty term)
   term)
+
+(defun handle-term-input (term string)
+  (let ((old-row (terminal-cursor-row term))
+        (old-column (terminal-cursor-column term)))
+    (3bst:handle-input string :term term)
+    (mark-cursor-motion-dirty term old-row old-column)))
 
 (defun decode-modifier-state (state)
   (let (modifiers)
