@@ -1,8 +1,19 @@
 (asdf:defsystem #:slt
-  :description "A simple lisp terminal emulator."
+  :description "A simple Common Lisp terminal emulator frontend using 3bst and LTK."
   :author "Ethan Hawk <ethhawk@iu.edu>"
-  :depends-on (:sdl2 :3bst)
   :license "MIT"
-  :version "0.0.1"
+  :version "0.1.0"
+  :depends-on (:3bst :ltk)
+  :serial t
   :components ((:file "package")
-               (:file "slt")))
+               (:file "core")
+               (:file "frontend"))
+  :in-order-to ((test-op (test-op "slt/tests"))))
+
+(asdf:defsystem #:slt/tests
+  :depends-on (:slt)
+  :serial t
+  :components ((:file "tests"))
+  :perform (test-op (operation component)
+             (declare (ignore operation component))
+             (uiop:symbol-call :slt/tests :run-tests)))
