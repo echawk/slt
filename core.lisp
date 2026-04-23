@@ -136,10 +136,49 @@
   (mark-all-dirty term)
   term)
 
+(defun string-control-sequence-introducer-p (char)
+  (and char
+       (member char (list #\P #\_ #\^
+                          (code-char #x90)
+                          (code-char #x9E)
+                          (code-char #x9F))
+               :test #'char=)))
+
+(defun skip-string-control-sequence (string start)
+  (loop with length = (length string)
+        for index from start below length
+        for char = (aref string index)
+        do (cond
+             ((char= char +escape-char+)
+              (when (< (1+ index) length)
+                (let ((next (aref string (1+ index))))
+                  (when (char= next #\\)
+                    (return (+ index 2))))))
+             ((char= char (code-char #x9C))
+              (return (1+ index))))
+        finally (return length)))
+
+(defun strip-unsupported-control-strings (string)
+  (with-output-to-string (out)
+    (loop with length = (length string)
+          for index from 0 below length
+          for char = (aref string index)
+          do (cond
+               ((and (char= char +escape-char+)
+                     (< (1+ index) length)
+                     (string-control-sequence-introducer-p
+                      (aref string (1+ index))))
+                (setf index (1- (skip-string-control-sequence string (+ index 2)))))
+               ((string-control-sequence-introducer-p char)
+                (setf index (1- (skip-string-control-sequence string (1+ index)))))
+               (t
+                (write-char char out))))))
+
 (defun handle-term-input (term string)
   (let ((old-row (terminal-cursor-row term))
-        (old-column (terminal-cursor-column term)))
-    (3bst:handle-input string :term term)
+        (old-column (terminal-cursor-column term))
+        (filtered (strip-unsupported-control-strings string)))
+    (3bst:handle-input filtered :term term)
     (mark-cursor-motion-dirty term old-row old-column)))
 
 (defun decode-modifier-state (state)

@@ -3,10 +3,11 @@
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.1.0"
-  :depends-on (:3bst :ltk)
+  :depends-on (:3bst :ltk :osicat)
   :serial t
   :components ((:file "package")
                (:file "core")
+               (:file "transport")
                (:file "frontend"))
   :in-order-to ((test-op (test-op "slt/tests"))))
 

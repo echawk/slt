@@ -18,19 +18,27 @@
    #:handle-term-input
    #:keysym->terminal-key
    #:launch-terminal
-   #:make-script-command
+   #:launch-shell-process
    #:mark-all-dirty
+   #:native-pty-supported-p
    #:normalize-event-state
    #:pick-font-family
+   #:process-alive-p
+   #:read-available-output
    #:render-emulator
    #:render-row-command-string
    #:render-text-command
+   #:replace-environment-variable
    #:resolve-cell-dimensions
    #:resolve-font-family
    #:resize-emulator
+   #:resize-process-pty
    #:resize-term
+   #:strip-unsupported-control-strings
    #:tcl-bool
+   #:terminal-process-environment
    #:terminal-font-size
+   #:terminate-process
    #:term-cell-view
    #:translate-key-event
    #:write-input))

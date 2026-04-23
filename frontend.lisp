@@ -95,40 +95,6 @@
                              :cell-width cell-width
                              :cell-height cell-height)))
 
-(defun make-script-command (shell &key gnu-script-p)
-  (if gnu-script-p
-      (list "script"
-            "-qefc"
-            (format nil "exec ~a -i" (uiop:escape-shell-token shell))
-            "/dev/null")
-      (list "script" "-q" "/dev/null" shell "-i")))
-
-(defun detect-gnu-script ()
-  (handler-case
-      (search "util-linux"
-              (uiop:run-program '("script" "--version")
-                                :ignore-error-status t
-                                :output :string))
-    (error ()
-      nil)))
-
-(defun launch-shell-process (shell)
-  (let* ((command (make-script-command shell :gnu-script-p (detect-gnu-script)))
-         (process (uiop:launch-program command
-                                       :input :stream
-                                       :output :stream
-                                       :error-output :output
-                                       :wait nil)))
-    (values process
-            (uiop:process-info-input process)
-            (uiop:process-info-output process))))
-
-(defun read-available-output (stream)
-  (with-output-to-string (buffer)
-    (loop for character = (read-char-no-hang stream nil :eof)
-          until (or (null character) (eq character :eof))
-          do (write-char character buffer))))
-
 (defun send-to-process (emulator string)
   (let ((stream (terminal-emulator-process-input emulator)))
     (when (and stream string)
@@ -207,8 +173,8 @@
         (ltk:after-cancel (terminal-emulator-resize-after-id emulator))))
     (when (terminal-emulator-process emulator)
       (ignore-errors
-        (when (uiop:process-alive-p (terminal-emulator-process emulator))
-          (uiop:terminate-process (terminal-emulator-process emulator)))))
+        (when (process-alive-p (terminal-emulator-process emulator))
+          (terminate-process (terminal-emulator-process emulator)))))
     (ignore-errors
       (when (terminal-emulator-process-input emulator)
         (close (terminal-emulator-process-input emulator))))
@@ -280,7 +246,14 @@
                           (terminal-emulator-cell-height emulator))
       (unless (and (= rows (terminal-emulator-rows emulator))
                    (= columns (terminal-emulator-columns emulator)))
-        (resize-emulator emulator rows columns)))))
+        (resize-emulator emulator rows columns)
+        (resize-process-pty (terminal-emulator-process emulator)
+                            rows
+                            columns
+                            :pixel-width (* columns
+                                            (terminal-emulator-cell-width emulator))
+                            :pixel-height (* rows
+                                             (terminal-emulator-cell-height emulator)))))))
 
 (defun schedule-resize (emulator)
   (when (terminal-emulator-resize-after-id emulator)
@@ -320,13 +293,13 @@
   (labels ((poll ()
              (unless (terminal-emulator-closed-p emulator)
                (let ((stream (terminal-emulator-process-output emulator)))
-                 (when stream
+               (when stream
                    (let ((chunk (read-available-output stream)))
                      (when (plusp (length chunk))
                        (handle-term-input (terminal-emulator-term emulator) chunk)
                        (render-emulator emulator :force nil)))))
                (when (and (terminal-emulator-process emulator)
-                          (not (uiop:process-alive-p (terminal-emulator-process emulator))))
+                          (not (process-alive-p (terminal-emulator-process emulator))))
                  (let ((final-chunk (read-available-output
                                      (terminal-emulator-process-output emulator))))
                    (when (plusp (length final-chunk))
@@ -347,6 +320,8 @@
                           font-family
                           (font-size 15)
                           (shell (or (uiop:getenv "SHELL") "/bin/sh"))
+                          (term-name (or (uiop:getenv "SLT_TERM")
+                                         "xterm-256color"))
                           (poll-interval 16)
                           (title "slt"))
   (let ((emulator nil))
@@ -381,11 +356,16 @@
                                         :height (* rows resolved-cell-height)))
           (handler-case
               (multiple-value-setq (process process-input process-output)
-                (launch-shell-process shell))
+                (launch-shell-process shell
+                                      :term-name term-name
+                                      :rows rows
+                                      :columns columns
+                                      :pixel-width (* columns resolved-cell-width)
+                                      :pixel-height (* rows resolved-cell-height)))
             (error (condition)
               (handle-term-input
                term
-               (format nil "Unable to start shell with script(1): ~a~%~%Running in local echo mode.~%"
+               (format nil "Unable to start shell PTY: ~a~%~%Running in local echo mode.~%"
                        condition))))
           (setf (ltk:title ltk:*tk*) title)
           (ltk:resizable ltk:*tk* (tcl-bool t) (tcl-bool t))

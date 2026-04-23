@@ -15,17 +15,25 @@
                 #:fit-grid-to-size
                 #:handle-term-input
                 #:keysym->terminal-key
-                #:make-script-command
+                #:launch-shell-process
                 #:mark-all-dirty
+                #:native-pty-supported-p
                 #:normalize-event-state
                 #:pick-font-family
+                #:process-alive-p
+                #:read-available-output
                 #:render-row-command-string
+                #:replace-environment-variable
                 #:resolve-cell-dimensions
                 #:resolve-font-family
                 #:render-text-command
+                #:resize-process-pty
                 #:resize-term
+                #:strip-unsupported-control-strings
                 #:tcl-bool
+                #:terminal-process-environment
                 #:terminal-font-size
+                #:terminate-process
                 #:term-cell-view
                 #:translate-key-event)
   (:export #:run-tests))
@@ -55,6 +63,45 @@
 
 (defun make-term (&key (rows 3) (columns 6))
   (make-instance '3bst:term :rows rows :columns columns))
+
+(defun collect-process-output (process stream &key (timeout-seconds 2.0))
+  (let ((deadline (+ (get-internal-real-time)
+                     (round (* timeout-seconds internal-time-units-per-second)))))
+    (with-output-to-string (out)
+      (loop
+        do (let ((chunk (read-available-output stream)))
+             (when (plusp (length chunk))
+               (write-string chunk out)))
+        until (or (> (get-internal-real-time) deadline)
+                  (not (process-alive-p process)))
+        do (sleep 0.05))
+      (write-string (read-available-output stream) out))))
+
+(defun wait-for-process-output (stream &key (timeout-seconds 1.0))
+  (let ((deadline (+ (get-internal-real-time)
+                     (round (* timeout-seconds internal-time-units-per-second)))))
+    (loop
+      for chunk = (read-available-output stream)
+      when (plusp (length chunk))
+        return chunk
+      when (> (get-internal-real-time) deadline)
+        return ""
+      do (sleep 0.05))))
+
+(defun collect-output-until (process stream substring &key (timeout-seconds 2.0))
+  (let ((deadline (+ (get-internal-real-time)
+                     (round (* timeout-seconds internal-time-units-per-second))))
+        (output ""))
+    (loop
+      do (let ((chunk (read-available-output stream)))
+           (when (plusp (length chunk))
+             (setf output (concatenate 'string output chunk))))
+      when (search substring output)
+        return output
+      when (or (> (get-internal-real-time) deadline)
+               (not (process-alive-p process)))
+        return output
+      do (sleep 0.05))))
 
 (deftest color->hex-converts-basic-palette ()
   (is-equal "#CD0000" (color->hex 1)))
@@ -127,6 +174,40 @@
   (is-equal ".c itemconfigure 7 -fill {#FFFFFF} -font {mono} -text {\\{}"
             (render-text-command ".c" 7 "mono" "#FFFFFF" "{")))
 
+(deftest replace-environment-variable-updates-existing-values-cleanly ()
+  (is-equal '("TERM=xterm-256color" "HOME=/tmp")
+            (replace-environment-variable '("TERM=dumb" "HOME=/tmp")
+                                          "TERM"
+                                          "xterm-256color"))
+  (is-equal '("TERM=xterm-256color" "HOME=/tmp")
+            (replace-environment-variable '("HOME=/tmp")
+                                          "TERM"
+                                          "xterm-256color")))
+
+(deftest terminal-process-environment-forces-a-terminal-type ()
+  (is-equal '("COLUMNS=80" "LINES=24" "TERM=xterm-256color" "HOME=/tmp")
+            (terminal-process-environment :term-name "xterm-256color"
+                                          :rows 24
+                                          :columns 80
+                                          :base-environment '("HOME=/tmp")))
+  (is-equal '("HOME=/tmp")
+            (terminal-process-environment :term-name nil
+                                          :base-environment '("HOME=/tmp"))))
+
+(deftest strip-unsupported-control-strings-removes-dcs-and-keeps-text ()
+  (let* ((escape (string (code-char 27)))
+         (dcs-sequence (concatenate 'string escape "Pzz" escape "\\"))
+         (c1-dcs-sequence (concatenate 'string
+                                       (string (code-char #x90))
+                                       "ignored"
+                                       (string (code-char #x9C)))))
+    (is-equal "ab"
+              (strip-unsupported-control-strings
+               (concatenate 'string "a" dcs-sequence "b")))
+    (is-equal "xy"
+              (strip-unsupported-control-strings
+               (concatenate 'string "x" c1-dcs-sequence "y")))))
+
 (deftest fit-grid-to-size-computes-terminal-dimensions-from-pixels ()
   (multiple-value-bind (columns rows)
       (fit-grid-to-size 800 432 10 18)
@@ -175,6 +256,14 @@
     (is-equal '(0) (dirty-rows term))
     (is (= 1 (3bst::x (3bst::cursor term))))))
 
+(deftest handle-term-input-ignores-unsupported-dcs-sequences ()
+  (let* ((term (make-term :rows 1 :columns 4))
+         (escape (string (code-char 27)))
+         (input (concatenate 'string "A" escape "Pzz" escape "\\" "B")))
+    (handle-term-input term input)
+    (is-equal "A" (cell-view-char (term-cell-view term 0 0)))
+    (is-equal "B" (cell-view-char (term-cell-view term 0 1)))))
+
 (deftest resize-term-updates-dimensions-and-dirties-everything ()
   (let ((term (make-term :rows 2 :columns 3)))
     (resize-term term 4 5)
@@ -192,11 +281,81 @@
       (is (not (cell-view-cursor-p cell))))
     (is (cell-view-cursor-p (term-cell-view term 0 1)))))
 
-(deftest make-script-command-supports-gnu-and-bsd-script ()
-  (is-equal '("script" "-q" "/dev/null" "/bin/sh" "-i")
-            (make-script-command "/bin/sh" :gnu-script-p nil))
-  (is-equal '("script" "-qefc" "exec /bin/sh -i" "/dev/null")
-            (make-script-command "/bin/sh" :gnu-script-p t)))
+(deftest native-pty-transport-runs-shell-commands-through-a-single-stream ()
+  (is (native-pty-supported-p))
+  (multiple-value-bind (process input output)
+      (launch-shell-process "/bin/sh"
+                            :term-name "xterm-256color"
+                            :rows 24
+                            :columns 80)
+    (unwind-protect
+         (progn
+           (is (eq input output))
+           (wait-for-process-output output)
+           (write-line "printf \"slt-pty-ok\\n\"" input)
+           (finish-output input)
+           (is (search "slt-pty-ok"
+                       (collect-output-until process output "slt-pty-ok")))
+           (write-line "exit" input)
+           (finish-output input)
+           (collect-process-output process output))
+      (ignore-errors
+        (when (process-alive-p process)
+          (terminate-process process)))
+      (ignore-errors
+        (when input
+          (close input))))))
+
+(deftest native-pty-transport-provides-a-controlling-tty ()
+  (is (native-pty-supported-p))
+  (multiple-value-bind (process input output)
+      (launch-shell-process "/bin/sh"
+                            :term-name "xterm-256color"
+                            :rows 24
+                            :columns 80)
+    (unwind-protect
+         (progn
+           (wait-for-process-output output)
+           (write-line ": </dev/tty && printf \"tty-open-ok\\n\"" input)
+           (finish-output input)
+           (is (search "tty-open-ok"
+                       (collect-output-until process output "tty-open-ok"
+                                             :timeout-seconds 3.0)))
+           (write-line "exit" input)
+           (finish-output input)
+           (collect-process-output process output))
+      (ignore-errors
+        (when (process-alive-p process)
+          (terminate-process process)))
+      (ignore-errors
+        (when input
+          (close input))))))
+
+(deftest resize-process-pty-updates-the-child-terminal-size ()
+  (is (native-pty-supported-p))
+  (multiple-value-bind (process input output)
+      (launch-shell-process "/bin/sh"
+                            :term-name "xterm-256color"
+                            :rows 24
+                            :columns 80)
+    (unwind-protect
+         (progn
+           (wait-for-process-output output)
+           (resize-process-pty process 12 34)
+           (write-line "stty size" input)
+           (finish-output input)
+           (is (search "12 34"
+                       (collect-output-until process output "12 34"
+                                             :timeout-seconds 3.0)))
+           (write-line "exit" input)
+           (finish-output input)
+           (collect-process-output process output))
+      (ignore-errors
+        (when (process-alive-p process)
+          (terminate-process process)))
+      (ignore-errors
+        (when input
+          (close input))))))
 
 (defun run-tests ()
   (let ((failures '()))
