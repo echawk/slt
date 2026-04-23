@@ -156,7 +156,8 @@
                       #'poll)))
 
 (defun launch-terminal (&key
-                          (backend :ltk)
+                          (backend (or (uiop:getenv "SLT_BACKEND")
+                                       :ltk))
                           (rows 24)
                           (columns 80)
                           cell-width
@@ -182,7 +183,8 @@
                   (resolve-font-family
                    font-family
                    (backend-available-font-families backend-instance)))
-                (resolved-font-size (terminal-font-size font-size))
+                (resolved-font-size (backend-resolve-font-size backend-instance
+                                                               font-size))
                 (term (make-instance '3bst:term :rows rows :columns columns))
                 (view (backend-create-view backend-instance
                                            :rows rows

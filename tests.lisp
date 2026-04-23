@@ -222,6 +222,24 @@
         return output
       do (sleep 0.05))))
 
+(defun make-temp-directory ()
+  (let ((directory (merge-pathnames
+                    (format nil "slt-tests-~d-~d/"
+                            (get-universal-time)
+                            (random 1000000))
+                    (uiop:temporary-directory))))
+    (ensure-directories-exist (merge-pathnames "keep" directory))
+    directory))
+
+(defun write-test-file (pathname &optional (contents ""))
+  (ensure-directories-exist pathname)
+  (with-open-file (stream pathname
+                          :direction :output
+                          :if-exists :supersede
+                          :if-does-not-exist :create)
+    (write-string contents stream))
+  pathname)
+
 (deftest color->hex-converts-basic-palette ()
   (is-equal "#CD0000" (color->hex 1)))
 
@@ -313,9 +331,71 @@
             (terminal-process-environment :term-name nil
                                           :base-environment '("HOME=/tmp"))))
 
-(deftest backend-registry-exposes-the-ltk-backend ()
+(deftest backend-registry-exposes-the-ltk-and-sdl2-backends ()
   (is (member :ltk (available-backends)))
-  (is (typep (make-backend :ltk) 'slt::terminal-backend)))
+  (is (member :sdl2 (available-backends)))
+  (is (typep (make-backend :ltk) 'slt::terminal-backend))
+  (is (typep (make-backend :sdl2) 'slt::terminal-backend))
+  (is (typep (make-backend "sdl2") 'slt::terminal-backend)))
+
+(deftest sdl-hex-color-rgba-parses-rgb-strings ()
+  (multiple-value-bind (red green blue alpha)
+      (slt::hex-color-rgba "#A1B2C3")
+    (is-equal '(161 178 195 255)
+              (list red green blue alpha))))
+
+(deftest sdl-modifiers->state-translates-common-sdl-keywords ()
+  (is-equal #x4D
+            (slt::sdl-modifiers->state '(:lshift :rctrl :alt :lgui))))
+
+(deftest normalize-sdl-key-name-maps-special-keys-and-letter-case ()
+  (is-equal "BackSpace"
+            (slt::normalize-sdl-key-name "Backspace" :shiftp nil))
+  (is-equal "space"
+            (slt::normalize-sdl-key-name "Space" :shiftp nil))
+  (is-equal "a"
+            (slt::normalize-sdl-key-name "A" :shiftp nil))
+  (is-equal "A"
+            (slt::normalize-sdl-key-name "A" :shiftp t)))
+
+(deftest sdl-backend-resolves-font-size-to-positive-point-size ()
+  (let ((backend (make-backend :sdl2)))
+    (is-equal 15 (slt::backend-resolve-font-size backend nil))
+    (is-equal 13 (slt::backend-resolve-font-size backend -13))
+    (is-equal 11 (slt::backend-resolve-font-size backend 11))))
+
+(deftest find-font-file-prefers-the-closest-family-match ()
+  (let* ((root (make-temp-directory))
+         (nested (merge-pathnames "nested/" root))
+         (fallback-font (merge-pathnames "SomeMono.ttf" root))
+         (target-font (merge-pathnames "JetBrainsMono-Regular.ttf" nested)))
+    (unwind-protect
+         (progn
+           (write-test-file fallback-font)
+           (write-test-file target-font)
+           (is-equal (truename target-font)
+                     (truename (slt::find-font-file "JetBrains Mono"
+                                                   :search-roots (list root)))))
+      (ignore-errors
+        (uiop:delete-directory-tree root :validate t :if-does-not-exist :ignore)))))
+
+(deftest resolve-sdl-font-path-uses-explicit-paths-and-search-roots ()
+  (let* ((root (make-temp-directory))
+         (fonts (merge-pathnames "fonts/" root))
+         (target-font (merge-pathnames "IosevkaTerm-Regular.otf" fonts))
+         (target-path nil))
+    (unwind-protect
+         (progn
+           (write-test-file target-font)
+           (setf target-path (namestring (truename target-font)))
+           (is-equal (truename target-font)
+                     (truename (slt::resolve-sdl-font-path target-path
+                                                           :search-roots (list root))))
+           (is-equal (truename target-font)
+                     (truename (slt::resolve-sdl-font-path "Iosevka Term"
+                                                           :search-roots (list root)))))
+      (ignore-errors
+        (uiop:delete-directory-tree root :validate t :if-does-not-exist :ignore)))))
 
 (deftest strip-unsupported-control-strings-removes-dcs-and-keeps-text ()
   (let* ((escape (string (code-char 27)))

@@ -35,6 +35,7 @@
 
 (defgeneric backend-call-with-event-loop (backend thunk))
 (defgeneric backend-available-font-families (backend))
+(defgeneric backend-resolve-font-size (backend font-size))
 (defgeneric backend-create-view (backend &key rows columns font-family font-size
                                             cell-width cell-height title))
 (defgeneric backend-view-cell-width (backend view))
@@ -58,6 +59,10 @@
 (defmethod backend-available-font-families ((backend terminal-backend))
   (declare (ignore backend))
   '())
+
+(defmethod backend-resolve-font-size ((backend terminal-backend) font-size)
+  (declare (ignore backend))
+  (terminal-font-size font-size))
 
 (defun default-font-family (&optional (operating-system (uiop:operating-system)))
   (case operating-system
