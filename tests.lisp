@@ -364,6 +364,23 @@
     (is-equal 13 (slt::backend-resolve-font-size backend -13))
     (is-equal 11 (slt::backend-resolve-font-size backend 11))))
 
+(deftest sdl-backend-main-thread-policy-matches-sbcl-on-macos ()
+  (is (slt::sdl-backend-use-main-thread-p "SBCL" :darwin))
+  (is (slt::sdl-backend-use-main-thread-p "SBCL" :macosx))
+  (is (not (slt::sdl-backend-use-main-thread-p "CCL" :darwin)))
+  (is (not (slt::sdl-backend-use-main-thread-p "SBCL" :linux))))
+
+(deftest dispatch-sdl-timer-runs-callback-once-and-clears-it ()
+  (let* ((backend (make-instance 'slt::sdl2-backend))
+         (calls 0))
+    (setf (gethash 7 (slt::sdl2-backend-timers backend))
+          (lambda ()
+            (incf calls)))
+    (slt::dispatch-sdl-timer backend 7)
+    (slt::dispatch-sdl-timer backend 7)
+    (is-equal 1 calls)
+    (is (null (gethash 7 (slt::sdl2-backend-timers backend))))))
+
 (deftest find-font-file-prefers-the-closest-family-match ()
   (let* ((root (make-temp-directory))
          (nested (merge-pathnames "nested/" root))

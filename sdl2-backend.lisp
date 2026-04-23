@@ -15,7 +15,10 @@
     :accessor sdl2-backend-ttf-initialized-p)
    (image-initialized-p
     :initform nil
-    :accessor sdl2-backend-image-initialized-p)))
+    :accessor sdl2-backend-image-initialized-p)
+   (timer-event-type
+    :initform nil
+    :accessor sdl2-backend-timer-event-type)))
 
 (defstruct (glyph-texture
             (:constructor make-glyph-texture
@@ -85,6 +88,14 @@
     (:scancode-kp-pageup . "KP_Prior")
     (:scancode-kp-pagedown . "KP_Next")
     (:scancode-kp-insert . "KP_Insert")))
+
+(defun sdl-backend-use-main-thread-p (&optional
+                                        (implementation-type
+                                          (uiop:implementation-type))
+                                        (operating-system
+                                          (uiop:operating-system)))
+  (and (member operating-system '(:darwin :macosx))
+       (search "SBCL" (string-upcase implementation-type))))
 
 (defun positive-font-size (font-size)
   (abs (or font-size 15)))
@@ -227,14 +238,6 @@
               (logtest state (logior +control-mask+ +mod1-mask+ +mod4-mask+)))
       (values "" keysym-name state))))
 
-(defun sdl-now-ms ()
-  (floor (* 1000 internal-time-units-per-second)
-         internal-time-units-per-second))
-
-(defun current-time-ms ()
-  (floor (* 1000 (get-internal-real-time))
-         internal-time-units-per-second))
-
 (defun destroy-glyph-texture-entry (entry)
   (when (glyph-texture-texture entry)
     (ignore-errors
@@ -349,18 +352,20 @@
     (when (sdl2-view-close-callback view)
       (funcall (sdl2-view-close-callback view)))))
 
-(defun run-sdl-timers (backend)
-  (let ((now (current-time-ms))
-        (ready '()))
-    (maphash (lambda (token timer)
-               (when (<= (car timer) now)
-                 (push (cons token (cdr timer)) ready)))
-             (sdl2-backend-timers backend))
-    (dolist (timer ready)
-      (remhash (car timer) (sdl2-backend-timers backend))
-      (funcall (cdr timer)))))
+(defun ensure-sdl-timer-event-type (backend)
+  (or (sdl2-backend-timer-event-type backend)
+      (setf (sdl2-backend-timer-event-type backend)
+            (progn
+              (sdl2:register-user-event-type :slt-timer)
+              :slt-timer))))
 
-(defmethod backend-call-with-event-loop ((backend sdl2-backend) thunk)
+(defun dispatch-sdl-timer (backend token)
+  (let ((thunk (gethash token (sdl2-backend-timers backend))))
+    (when thunk
+      (remhash token (sdl2-backend-timers backend))
+      (funcall thunk))))
+
+(defun run-sdl2-backend-loop (backend thunk)
   (sdl2:with-init (:video)
     (setf (sdl2-backend-ttf-initialized-p backend) nil
           (sdl2-backend-image-initialized-p backend) nil)
@@ -370,6 +375,7 @@
            (setf (sdl2-backend-ttf-initialized-p backend) t)
            (when (ignore-errors (sdl2-image:init '(:png)))
              (setf (sdl2-backend-image-initialized-p backend) t))
+           (ensure-sdl-timer-event-type backend)
            (funcall thunk)
            (let ((view (sdl2-backend-view backend)))
              (when view
@@ -400,8 +406,9 @@
                                  (14
                                   (maybe-dispatch-sdl-close view)
                                   (sdl2:push-quit-event))))
+                 (:slt-timer (:user-data token)
+                             (dispatch-sdl-timer backend token))
                  (:idle ()
-                        (run-sdl-timers backend)
                         (sdl2:delay 1))
                  (:quit ()
                         (maybe-dispatch-sdl-close view)
@@ -417,6 +424,13 @@
       (ignore-errors
         (when (sdl2-backend-ttf-initialized-p backend)
           (sdl2-ttf:quit))))))
+
+(defmethod backend-call-with-event-loop ((backend sdl2-backend) thunk)
+  (if (sdl-backend-use-main-thread-p)
+      (sdl2:make-this-thread-main
+       (lambda ()
+         (run-sdl2-backend-loop backend thunk)))
+      (run-sdl2-backend-loop backend thunk)))
 
 (defmethod backend-available-font-families ((backend sdl2-backend))
   (declare (ignore backend))
@@ -488,8 +502,14 @@
 (defmethod backend-schedule ((backend sdl2-backend) (view sdl2-view) delay-ms thunk)
   (declare (ignore view))
   (let ((token (incf (sdl2-backend-timer-seq backend))))
-    (setf (gethash token (sdl2-backend-timers backend))
-          (cons (+ (current-time-ms) delay-ms) thunk))
+    (setf (gethash token (sdl2-backend-timers backend)) thunk)
+    (bt:make-thread
+     (lambda ()
+       (sleep (/ (max 0 delay-ms) 1000.0))
+       (when (gethash token (sdl2-backend-timers backend))
+         (ignore-errors
+           (sdl2:push-user-event (ensure-sdl-timer-event-type backend) token))))
+     :name (format nil "slt-sdl2-timer-~d" token))
     token))
 
 (defmethod backend-cancel-scheduled ((backend sdl2-backend) (view sdl2-view) token)

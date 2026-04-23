@@ -3,6 +3,13 @@ set -eu
 
 cd "$(dirname "$0")"
 cache_dir="$PWD/.cache"
+backend="${1:-${SLT_BACKEND:-}}"
+
+if [ -n "$backend" ]; then
+  launch_form="(slt:launch-terminal :backend :$backend)"
+else
+  launch_form='(slt:launch-terminal)'
+fi
 
 exec env XDG_CACHE_HOME="$cache_dir" sbcl --noinform --no-userinit --non-interactive \
   --eval '(require :asdf)' \
@@ -11,4 +18,4 @@ exec env XDG_CACHE_HOME="$cache_dir" sbcl --noinform --no-userinit --non-interac
   --eval '(setf uiop/lisp-build:*compile-file-warnings-behaviour* :warn uiop/lisp-build:*compile-file-failure-behaviour* :warn)' \
   --eval '(asdf:load-asd (merge-pathnames "slt.asd" (truename ".")))' \
   --eval '(asdf:load-system :slt)' \
-  --eval '(slt:launch-terminal)'
+  --eval "$launch_form"
