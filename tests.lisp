@@ -9,7 +9,10 @@
                 #:cell-view-fg
                 #:clear-dirty-rows
                 #:color->hex
+                #:command-launch-arguments
                 #:decode-modifier-state
+                #:default-executable-name
+                #:default-executable-output
                 #:default-font-family
                 #:dirty-rows
                 #:escape-tcl-text
@@ -21,7 +24,9 @@
                 #:mark-all-dirty
                 #:native-pty-supported-p
                 #:normalize-event-state
+                #:normalize-executable-output
                 #:pick-font-family
+                #:parse-cli-arguments
                 #:process-alive-p
                 #:read-available-output
                 #:render-emulator
@@ -598,6 +603,76 @@
       (ignore-errors
         (when input
           (close input))))))
+
+(deftest parse-cli-arguments-translates-runtime-flags-into-launch-keywords ()
+  (let* ((command (parse-cli-arguments '("--backend" "sdl2"
+                                         "--rows" "30"
+                                         "--columns" "120"
+                                         "--font-family" "JetBrains Mono"
+                                         "--font-size" "18"
+                                         "--cell-width" "11"
+                                         "--cell-height" "22"
+                                         "--shell" "/bin/zsh"
+                                         "--term" "xterm-direct"
+                                         "--poll-interval" "25"
+                                         "--title" "scratch")))
+         (arguments (command-launch-arguments command)))
+    (is-equal '(:backend "sdl2"
+                :rows 30
+                :columns 120
+                :font-family "JetBrains Mono"
+                :font-size 18
+                :cell-width 11
+                :cell-height 22
+                :shell "/bin/zsh"
+                :term-name "xterm-direct"
+                :poll-interval 25
+                :title "scratch")
+              arguments)))
+
+(deftest parse-cli-arguments-keeps-bare-backend-compatibility ()
+  (let* ((command (parse-cli-arguments '("ltk")))
+         (arguments (command-launch-arguments command)))
+    (is-equal '(:backend "ltk")
+              arguments)))
+
+(deftest environment-cli-arguments-splits-wrapper-encoded-arguments ()
+  (is-equal '("--backend" "sdl2" "--title" "scratch pad")
+            (slt::environment-cli-arguments
+             (format nil "--backend~Csdl2~C--title~Cscratch pad"
+                     (code-char 31)
+                     (code-char 31)
+                     (code-char 31)))))
+
+(deftest handle-cli-command-can-list-backends-without-launching-the-gui ()
+  (let* ((command (parse-cli-arguments '("--list-backends")))
+         (output (with-output-to-string (stream)
+                  (slt::handle-cli-command command :stream stream))))
+    (is (search "ltk" output))
+    (is (search "sdl2" output))))
+
+(deftest default-executable-name-matches-platform-conventions ()
+  (is-equal "slt" (default-executable-name :darwin))
+  (is-equal "slt.exe" (default-executable-name :windows)))
+
+(deftest normalize-executable-output-uses-build-directory-by-default-and-respects-directories ()
+  (let* ((root #P"/tmp/slt-root/")
+         (default-output (default-executable-output root :linux))
+         (normalized-default (normalize-executable-output nil
+                                                          :root root
+                                                          :operating-system :linux))
+         (directory-output (normalize-executable-output #P"artifacts/"
+                                                        :root root
+                                                        :operating-system :linux))
+         (relative-output (normalize-executable-output "dist/custom-slt"
+                                                       :root root
+                                                       :operating-system :linux)))
+    (is-equal (namestring default-output)
+              (namestring normalized-default))
+    (is-equal "/tmp/slt-root/artifacts/slt"
+              (namestring directory-output))
+    (is-equal "/tmp/slt-root/dist/custom-slt"
+              (namestring relative-output))))
 
 (defun run-tests ()
   (let ((failures '()))

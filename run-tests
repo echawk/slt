@@ -4,10 +4,7 @@ set -eu
 cd "$(dirname "$0")"
 cache_dir="$PWD/.cache"
 
-exec env XDG_CACHE_HOME="$cache_dir" sbcl --noinform --no-userinit --non-interactive \
-  --eval '(require :asdf)' \
-  --eval '(asdf:initialize-output-translations (quote (:output-translations :enable-user-cache :ignore-inherited-configuration)))' \
-  --eval '(load (merge-pathnames ".qlot/setup.lisp" (truename ".")))' \
+exec env XDG_CACHE_HOME="$cache_dir" qlot exec sbcl --noinform --no-sysinit --no-userinit --non-interactive \
   --eval '(setf uiop/lisp-build:*compile-file-warnings-behaviour* :warn uiop/lisp-build:*compile-file-failure-behaviour* :warn)' \
   --eval '(asdf:load-asd (merge-pathnames "slt.asd" (truename ".")))' \
   --eval '(asdf:test-system :slt)'

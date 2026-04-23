@@ -3,19 +3,19 @@ set -eu
 
 cd "$(dirname "$0")"
 cache_dir="$PWD/.cache"
-backend="${1:-${SLT_BACKEND:-}}"
+separator=$(printf '\037')
+cli_args=""
 
-if [ -n "$backend" ]; then
-  launch_form="(slt:launch-terminal :backend :$backend)"
-else
-  launch_form='(slt:launch-terminal)'
+if [ "$#" -gt 0 ]; then
+  cli_args=$1
+  shift
+  for arg in "$@"; do
+    cli_args="${cli_args}${separator}${arg}"
+  done
 fi
 
-exec env XDG_CACHE_HOME="$cache_dir" sbcl --noinform --no-userinit --non-interactive \
-  --eval '(require :asdf)' \
-  --eval '(asdf:initialize-output-translations (quote (:output-translations :enable-user-cache :ignore-inherited-configuration)))' \
-  --eval '(load (merge-pathnames ".qlot/setup.lisp" (truename ".")))' \
+exec env XDG_CACHE_HOME="$cache_dir" SLT_CLI_ARGS="$cli_args" qlot exec sbcl --noinform --no-sysinit --no-userinit --non-interactive \
   --eval '(setf uiop/lisp-build:*compile-file-warnings-behaviour* :warn uiop/lisp-build:*compile-file-failure-behaviour* :warn)' \
   --eval '(asdf:load-asd (merge-pathnames "slt.asd" (truename ".")))' \
   --eval '(asdf:load-system :slt)' \
-  --eval "$launch_form"
+  --eval '(slt:main)'

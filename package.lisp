@@ -13,6 +13,9 @@
    #:decode-modifier-state
    #:default-font-family
    #:dirty-rows
+   #:default-executable-name
+   #:default-executable-output
+   #:dump-executable
    #:escape-tcl-text
    #:available-backends
    #:fit-grid-to-size
@@ -20,12 +23,17 @@
    #:keysym->terminal-key
    #:launch-terminal
    #:launch-shell-process
+   #:main
    #:make-backend
+   #:make-cli-command
    #:mark-all-dirty
    #:native-pty-supported-p
    #:normalize-event-state
+   #:normalize-executable-output
    #:pick-font-family
    #:process-alive-p
+   #:command-launch-arguments
+   #:parse-cli-arguments
    #:read-available-output
    #:render-emulator
    #:render-row-command-string
