@@ -1,5 +1,5 @@
 (asdf:defsystem #:slt
-  :description "A simple Common Lisp terminal emulator frontend using 3bst and LTK."
+  :description "A simple Common Lisp terminal emulator frontend with pluggable GUI backends."
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.1.0"
@@ -8,6 +8,8 @@
   :components ((:file "package")
                (:file "core")
                (:file "transport")
+               (:file "backend")
+               (:file "ltk-backend")
                (:file "frontend"))
   :in-order-to ((test-op (test-op "slt/tests"))))
 

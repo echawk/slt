@@ -1,6 +1,7 @@
 (uiop:define-package #:slt/tests
   (:use #:cl)
   (:import-from #:slt
+                #:available-backends
                 #:cell-char-string
                 #:cell-view-bg
                 #:cell-view-char
@@ -16,12 +17,14 @@
                 #:handle-term-input
                 #:keysym->terminal-key
                 #:launch-shell-process
+                #:make-backend
                 #:mark-all-dirty
                 #:native-pty-supported-p
                 #:normalize-event-state
                 #:pick-font-family
                 #:process-alive-p
                 #:read-available-output
+                #:render-emulator
                 #:render-row-command-string
                 #:replace-environment-variable
                 #:resolve-cell-dimensions
@@ -41,6 +44,100 @@
 (in-package #:slt/tests)
 
 (defvar *tests* '())
+
+(defclass mock-backend (slt::terminal-backend) ())
+
+(defstruct (mock-view
+            (:constructor make-mock-view
+                (&key (cell-width 10)
+                      (cell-height 20)
+                      (window-width 80)
+                      (window-height 24))))
+  cell-width
+  cell-height
+  window-width
+  window-height
+  resized-to
+  rendered-rows
+  last-title
+  scheduled-callback
+  cancelled-token
+  resize-callback
+  keypress-callback
+  close-callback
+  focused-p
+  exit-requested-p)
+
+(defmethod slt::backend-call-with-event-loop ((backend mock-backend) thunk)
+  (declare (ignore backend))
+  (funcall thunk))
+
+(defmethod slt::backend-available-font-families ((backend mock-backend))
+  (declare (ignore backend))
+  '("Mock Mono"))
+
+(defmethod slt::backend-create-view ((backend mock-backend)
+                                     &key rows columns font-family font-size
+                                       cell-width cell-height title)
+  (declare (ignore backend rows columns font-family font-size title))
+  (make-mock-view :cell-width (or cell-width 10)
+                  :cell-height (or cell-height 20)))
+
+(defmethod slt::backend-view-cell-width ((backend mock-backend) (view mock-view))
+  (declare (ignore backend))
+  (mock-view-cell-width view))
+
+(defmethod slt::backend-view-cell-height ((backend mock-backend) (view mock-view))
+  (declare (ignore backend))
+  (mock-view-cell-height view))
+
+(defmethod slt::backend-view-window-size ((backend mock-backend) (view mock-view))
+  (declare (ignore backend))
+  (values (mock-view-window-width view)
+          (mock-view-window-height view)))
+
+(defmethod slt::backend-resize-view ((backend mock-backend) (view mock-view) rows columns)
+  (declare (ignore backend))
+  (setf (mock-view-resized-to view) (list rows columns))
+  view)
+
+(defmethod slt::backend-render-rows ((backend mock-backend) (view mock-view) term rows)
+  (declare (ignore backend term))
+  (setf (mock-view-rendered-rows view) rows)
+  view)
+
+(defmethod slt::backend-set-title ((backend mock-backend) (view mock-view) title)
+  (declare (ignore backend))
+  (setf (mock-view-last-title view) title))
+
+(defmethod slt::backend-schedule ((backend mock-backend) (view mock-view) delay-ms thunk)
+  (declare (ignore backend delay-ms))
+  (setf (mock-view-scheduled-callback view) thunk)
+  :mock-token)
+
+(defmethod slt::backend-cancel-scheduled ((backend mock-backend) (view mock-view) token)
+  (declare (ignore backend))
+  (setf (mock-view-cancelled-token view) token))
+
+(defmethod slt::backend-bind-resize ((backend mock-backend) (view mock-view) callback)
+  (declare (ignore backend))
+  (setf (mock-view-resize-callback view) callback))
+
+(defmethod slt::backend-bind-keypress ((backend mock-backend) (view mock-view) callback)
+  (declare (ignore backend))
+  (setf (mock-view-keypress-callback view) callback))
+
+(defmethod slt::backend-on-close ((backend mock-backend) (view mock-view) callback)
+  (declare (ignore backend))
+  (setf (mock-view-close-callback view) callback))
+
+(defmethod slt::backend-focus ((backend mock-backend) (view mock-view))
+  (declare (ignore backend))
+  (setf (mock-view-focused-p view) t))
+
+(defmethod slt::backend-request-exit ((backend mock-backend) (view mock-view))
+  (declare (ignore backend))
+  (setf (mock-view-exit-requested-p view) t))
 
 (defmacro deftest (name (&rest args) &body body)
   `(progn
@@ -63,6 +160,28 @@
 
 (defun make-term (&key (rows 3) (columns 6))
   (make-instance '3bst:term :rows rows :columns columns))
+
+(defun make-mock-emulator (&key (rows 3)
+                                (columns 6)
+                                (window-width 80)
+                                (window-height 60)
+                                (cell-width 10)
+                                (cell-height 20))
+  (let* ((backend (make-instance 'mock-backend))
+         (view (make-mock-view :cell-width cell-width
+                               :cell-height cell-height
+                               :window-width window-width
+                               :window-height window-height))
+         (term (make-term :rows rows :columns columns)))
+    (values (slt::%make-terminal-emulator
+             :term term
+             :backend backend
+             :view view
+             :rows rows
+             :columns columns
+             :poll-interval 16)
+            term
+            view)))
 
 (defun collect-process-output (process stream &key (timeout-seconds 2.0))
   (let ((deadline (+ (get-internal-real-time)
@@ -194,6 +313,10 @@
             (terminal-process-environment :term-name nil
                                           :base-environment '("HOME=/tmp"))))
 
+(deftest backend-registry-exposes-the-ltk-backend ()
+  (is (member :ltk (available-backends)))
+  (is (typep (make-backend :ltk) 'slt::terminal-backend)))
+
 (deftest strip-unsupported-control-strings-removes-dcs-and-keeps-text ()
   (let* ((escape (string (code-char 27)))
          (dcs-sequence (concatenate 'string escape "Pzz" escape "\\"))
@@ -263,6 +386,28 @@
     (handle-term-input term input)
     (is-equal "A" (cell-view-char (term-cell-view term 0 0)))
     (is-equal "B" (cell-view-char (term-cell-view term 0 1)))))
+
+(deftest render-emulator-delegates-rendering-through-the-backend-interface ()
+  (multiple-value-bind (emulator term view)
+      (make-mock-emulator :rows 2 :columns 4)
+    (3bst:handle-input "hi" :term term)
+    (render-emulator emulator :force nil)
+    (is-equal '(0) (mock-view-rendered-rows view))
+    (is-equal '() (dirty-rows term))))
+
+(deftest apply-resize-uses-backend-window-metrics-and-resizes-the-view ()
+  (multiple-value-bind (emulator term view)
+      (make-mock-emulator :rows 1
+                          :columns 1
+                          :window-width 95
+                          :window-height 41
+                          :cell-width 10
+                          :cell-height 20)
+    (slt::apply-resize emulator)
+    (is (= 2 (3bst:rows term)))
+    (is (= 9 (3bst:columns term)))
+    (is-equal '(2 9) (mock-view-resized-to view))
+    (is-equal '() (dirty-rows term))))
 
 (deftest resize-term-updates-dimensions-and-dirties-everything ()
   (let ((term (make-term :rows 2 :columns 3)))

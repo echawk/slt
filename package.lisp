@@ -14,11 +14,13 @@
    #:default-font-family
    #:dirty-rows
    #:escape-tcl-text
+   #:available-backends
    #:fit-grid-to-size
    #:handle-term-input
    #:keysym->terminal-key
    #:launch-terminal
    #:launch-shell-process
+   #:make-backend
    #:mark-all-dirty
    #:native-pty-supported-p
    #:normalize-event-state
