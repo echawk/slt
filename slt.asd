@@ -1,5 +1,5 @@
 (asdf:defsystem #:slt
-  :description "A simple Common Lisp terminal emulator frontend with pluggable GUI backends."
+  :description "A simple Common Lisp terminal emulator."
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.1.0"
