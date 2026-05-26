@@ -5,7 +5,7 @@ BUILD_OUTPUT ?= build/slt
 
 .PHONY: qlot-install test run run-sdl2 dump clean
 
-qlot-install: qlfile qlfile.lock
+qlot-install: qlfile
 	XDG_CACHE_HOME="$(CACHE_DIR)" $(QLOT) install
 
 test: qlot-install
