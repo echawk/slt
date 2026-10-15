@@ -15,6 +15,7 @@
                (:file "engine")
                (:file "engine-3bst")
                (:file "transport")
+               (:file "gpu")
                (:file "frontend")))
 
 (asdf:defsystem #:slt
@@ -22,7 +23,8 @@
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.2.0"
-  :depends-on (:slt/core :clingon :ltk :sdl2 :sdl2-ttf :sdl2-image)
+  :depends-on (:slt/core :clingon :ltk :sdl2 :sdl2-ttf :sdl2-image
+               (:feature :darwin :slt/cocoa))
   :pathname "src/"
   :serial t
   :components ((:file "ltk-backend")
@@ -65,3 +67,13 @@
   :depends-on (:slt/core :ghostty-vt)
   :pathname "src/"
   :components ((:file "engine-ghostty")))
+
+(asdf:defsystem #:slt/cocoa
+  :description "Native macOS backend: AppKit window, Metal renderer, CoreText glyphs."
+  :depends-on (:slt/core :cocoas :float-features)
+  :pathname "src/macos/"
+  :serial t
+  :components ((:file "objc")
+               (:file "coretext")
+               (:file "metal")
+               (:file "cocoa-backend")))

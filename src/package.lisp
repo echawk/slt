@@ -79,6 +79,8 @@
    #:available-backends
    #:make-backend
    #:backend-render-grid
+   #:default-backend
+   #:*option-as-meta*
    ;; Frontend
    #:launch-terminal
    #:terminal-emulator

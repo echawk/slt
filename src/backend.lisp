@@ -2,7 +2,7 @@
 
 (defclass terminal-backend () ())
 
-(defparameter *backend-constructors* (make-hash-table :test #'eq))
+(defvar *backend-constructors* (make-hash-table :test #'eq))
 
 (defun normalize-backend-name (designator)
   (etypecase designator

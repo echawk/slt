@@ -25,6 +25,12 @@
   (title "slt" :type string)
   (closed-p nil))
 
+(defun default-backend ()
+  "The native backend when one is loaded for this platform, else LTK."
+  (if (and (uiop:os-macosx-p) (member :cocoa (available-backends)))
+      :cocoa
+      :ltk))
+
 (defun user-config-pathname ()
   (uiop:xdg-config-home "slt/init.lisp"))
 
@@ -213,7 +219,7 @@ side of the PTY has closed, otherwise the number of octets processed."
 
 (defun launch-terminal (&key
                           (backend (or (uiop:getenv "SLT_BACKEND")
-                                       :ltk))
+                                       (default-backend)))
                           (engine (or (uiop:getenv "SLT_ENGINE")
                                       *default-engine*))
                           (rows 24)

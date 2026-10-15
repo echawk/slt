@@ -750,6 +750,35 @@
           (format nil "~(~a~) ~(~a~): ~{~a~^; ~}"
                   (first result) (third result) (fourth result))))))
 
+(defun fake-rasterizer (string style pixels stride x y width height)
+  "Mark each rasterized slot with the first character's code in its corner."
+  (declare (ignore style width height))
+  (setf (aref pixels (+ x (* stride y))) (mod (char-code (char string 0)) 256)))
+
+(deftest pack-grid-assigns-atlas-slots-and-colors ()
+  (let* ((grid (engine-grid (feed (make-test-engine :rows 1 :columns 4)
+                                  :esc "[31;4mA" :esc "[0mA" (string (code-char #x4E2D)))))
+         (atlas (slt::make-glyph-atlas 2 2 #'fake-rasterizer :width 16 :height 16))
+         (instances (slt::pack-grid grid atlas (make-palette) nil)))
+    ;; A (red, underlined), A again (same glyph, same slot), then a wide glyph.
+    (is-equal (list #xCD0000 1 slt::+gpu-flag-underline+)
+              (list (aref instances 0) (aref instances 2) (aref instances 3)))
+    (is-equal 1 (aref instances 6) "repeated glyph reuses its slot")
+    (is-equal 2 (aref instances 10) "wide glyph takes two fresh slots")
+    (is-equal 3 (aref instances 14) "spacer draws the wide glyph's right half")
+    (is-equal (char-code #\A) (aref (slt::glyph-atlas-pixels atlas) 2))))
+
+(deftest pack-grid-recovers-when-the-atlas-fills ()
+  (let* ((grid (engine-grid (feed (make-test-engine :rows 1 :columns 8) "abcdefgh")))
+         ;; Room for three glyphs besides the blank slot.
+         (atlas (slt::make-glyph-atlas 4 4 #'fake-rasterizer :width 8 :height 8))
+         (generation (slt::glyph-atlas-generation atlas))
+         (instances (slt::pack-grid grid atlas (make-palette) nil)))
+    (is (> (slt::glyph-atlas-generation atlas) generation))
+    (is (> (slt::glyph-atlas-height atlas) 8) "atlas grew to fit the screen")
+    (is (loop for cell below 8 always (plusp (aref instances (+ 2 (* 4 cell)))))
+        "every glyph has a slot")))
+
 (defun run-tests ()
   (let ((failures '()))
     (dolist (test (reverse *tests*))

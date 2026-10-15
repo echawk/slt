@@ -28,6 +28,7 @@ clingon, ghcr.io/ocicl/clingon@sha256:27d1426613e66fd28223c737bd7886dfdd4f20df74
 clingon.demo, ghcr.io/ocicl/clingon@sha256:27d1426613e66fd28223c737bd7886dfdd4f20df742212bd0903c2fc6791871f, clingon-20260807-e7e936b/clingon.demo.asd
 clingon.intro, ghcr.io/ocicl/clingon@sha256:27d1426613e66fd28223c737bd7886dfdd4f20df742212bd0903c2fc6791871f, clingon-20260807-e7e936b/clingon.intro.asd
 clingon.test, ghcr.io/ocicl/clingon@sha256:27d1426613e66fd28223c737bd7886dfdd4f20df742212bd0903c2fc6791871f, clingon-20260807-e7e936b/clingon.test.asd
+cocoas, git+https://codeberg.org/shinmera/cocoas@d35ee431cf7fc017bb29242fd0b6d1c564fc0808, cocoas-d35ee43/cocoas.asd
 defpackage-plus, ghcr.io/ocicl/defpackage-plus@sha256:860cd29dded7b30c418ac022b2af8fa5daf947c0164b82f526662ec76bf3de14, defpackage-plus-20240503-5492e27/defpackage-plus.asd
 documentation-utils, ghcr.io/ocicl/documentation-utils@sha256:b2a1b3f3bcd1a738af85ae2b0168d408c177661eab6d6bbebb254e394d983f54, documentation-utils-20230511-98630dd/documentation-utils.asd
 float-features, ghcr.io/ocicl/float-features@sha256:96d7f31d99c87db8771f3f4e4866df1f09f9f3c0c7bca86b6d221bba403c83b1, float-features-20261011-ee18952/float-features.asd
@@ -51,6 +52,7 @@ trivial-features, ghcr.io/ocicl/trivial-features@sha256:ab71fa7a6cbef84578616795
 trivial-features-tests, ghcr.io/ocicl/trivial-features@sha256:ab71fa7a6cbef84578616795f3af8ebb09d3bce1e6b89da3fc80db19236cc5b4, trivial-features-20260908-828246a/trivial-features-tests.asd
 trivial-garbage, ghcr.io/ocicl/trivial-garbage@sha256:e76c38568f7ff0a2564ab47e27e0b2293f00f258e6510f2abec4d46920f2c4db, trivial-garbage-20260829-f0663f7/trivial-garbage.asd
 trivial-indent, ghcr.io/ocicl/trivial-indent@sha256:3a53102f540ff03cf3d1ed673575de993590ef42e239787242a2e636e12bff75, trivial-indent-20261007-b181b48/trivial-indent.asd
+trivial-main-thread, ghcr.io/ocicl/trivial-main-thread@sha256:341b7b7e33f96dc9ae8cf1e24396823ff7071be6ac9403c5780a22e70eddaac0, trivial-main-thread-20260812-f237084/trivial-main-thread.asd
 trivial-timeout, ghcr.io/ocicl/trivial-timeout@sha256:18f5f87e1fa3a35e5608cd424d22c2b24f581f810d9f9f8c6229b849c2f239ad, trivial-timeout-20240503-e70d9b4/trivial-timeout.asd
 trivial-timeout-test, ghcr.io/ocicl/trivial-timeout@sha256:18f5f87e1fa3a35e5608cd424d22c2b24f581f810d9f9f8c6229b849c2f239ad, trivial-timeout-20240503-e70d9b4/trivial-timeout-test.asd
 uffi, ghcr.io/ocicl/cffi@sha256:ff62b9cedea80fe2c6ea0701757e2b301b6ee9aafa1ae720966ff2611e94f76b, cffi-20260821-787d3cd/uffi-compat/uffi.asd
