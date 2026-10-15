@@ -1,0 +1,6 @@
+/.cache/
+/build/
+/ocicl/
+/.deps/
+/lib/*/build/
+*.fasl

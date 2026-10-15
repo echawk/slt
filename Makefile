@@ -1,31 +1,27 @@
-QLOT ?= qlot
-SBCL ?= sbcl
-CACHE_DIR ?= $(CURDIR)/.cache
+OCICL ?= ocicl
 BUILD_OUTPUT ?= build/slt
+LISP = scripts/lisp
 
-.PHONY: qlot-install test run run-sdl2 dump clean
+.PHONY: deps test run run-sdl2 dump clean
 
-qlot-install: qlfile
-	XDG_CACHE_HOME="$(CACHE_DIR)" $(QLOT) install
+deps: ocicl/.stamp
 
-test: qlot-install
-	XDG_CACHE_HOME="$(CACHE_DIR)" $(QLOT) exec $(SBCL) --noinform --no-sysinit --no-userinit --non-interactive \
-		--eval '(setf uiop/lisp-build:*compile-file-warnings-behaviour* :warn uiop/lisp-build:*compile-file-failure-behaviour* :warn)' \
-		--eval '(asdf:load-asd (merge-pathnames "slt.asd" (truename ".")))' \
-		--eval '(asdf:test-system :slt)'
+ocicl/.stamp: ocicl.csv
+	$(OCICL) install
+	touch $@
 
-run: qlot-install
+test: deps
+	./run-tests
+
+run: deps
 	./run-slt $(ARGS)
 
-run-sdl2: qlot-install
+run-sdl2: deps
 	SLT_BACKEND=sdl2 ./run-slt $(ARGS)
 
-$(BUILD_OUTPUT): qlot-install
+$(BUILD_OUTPUT): deps
 	mkdir -p "$(@D)"
-	XDG_CACHE_HOME="$(CACHE_DIR)" $(QLOT) exec $(SBCL) --noinform --no-sysinit --no-userinit --non-interactive \
-		--eval '(setf uiop/lisp-build:*compile-file-warnings-behaviour* :warn uiop/lisp-build:*compile-file-failure-behaviour* :warn)' \
-		--eval '(asdf:load-asd (merge-pathnames "slt.asd" (truename ".")))' \
-		--eval '(asdf:load-system :slt)' \
+	$(LISP) --eval '(asdf:load-system :slt)' \
 		--eval '(slt:dump-executable :output "$(BUILD_OUTPUT)")'
 
 dump: $(BUILD_OUTPUT)

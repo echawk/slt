@@ -3,7 +3,8 @@
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.1.0"
-  :depends-on (:3bst :clingon :ltk :osicat :sdl2 :sdl2-ttf :sdl2-image)
+  :depends-on (:3bst :cffi :clingon :ltk :osicat :sdl2 :sdl2-ttf :sdl2-image
+               (:feature :sbcl :sb-posix))
   :serial t
   :components ((:file "package")
                (:file "core")

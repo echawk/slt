@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+# Run SBCL with ASDF confined to this project and its ocicl/ dependency tree.
+# Usage: scripts/lisp --eval '...' [...]
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+: "${SBCL:=sbcl}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$root/.cache}"
+export CL_SOURCE_REGISTRY="$root/:$root/ocicl//:$root/lib//"
+exec "$SBCL" --dynamic-space-size "${SLT_HEAP_MB:-4096}" --noinform --no-sysinit --no-userinit --non-interactive \
+  --eval '(require :asdf)' \
+  --eval '(setf uiop/lisp-build:*compile-file-warnings-behaviour* :warn uiop/lisp-build:*compile-file-failure-behaviour* :warn)' \
+  "$@"
