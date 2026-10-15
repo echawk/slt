@@ -15,6 +15,9 @@
 
 (defmethod initialize-instance :after ((engine 3bst-engine) &key (rows 24) (columns 80))
   (let ((term (make-instance '3bst:term :rows rows :columns columns)))
+    ;; A fresh 3bst term has neither autowrap nor tab stops set and treats
+    ;; LF as CRLF; st's reset establishes the expected power-on state.
+    (3bst::treset :term term)
     (setf (slot-value engine 'term) term
           (3bst::on-set-title term)
           (lambda (term title)

@@ -743,6 +743,13 @@
     (is-equal "/tmp/slt-root/dist/custom-slt"
               (namestring relative-output))))
 
+(deftest conformance-suite-passes-on-3bst ()
+  (let ((results (slt/conformance:run-conformance :engines '(:3bst))))
+    (dolist (result results)
+      (is (member (third result) '(:pass :xfail))
+          (format nil "~(~a~) ~(~a~): ~{~a~^; ~}"
+                  (first result) (third result) (fourth result))))))
+
 (defun run-tests ()
   (let ((failures '()))
     (dolist (test (reverse *tests*))

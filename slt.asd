@@ -32,10 +32,24 @@
   :in-order-to ((test-op (test-op "slt/tests"))))
 
 (asdf:defsystem #:slt/tests
-  :depends-on (:slt)
+  :depends-on (:slt :slt/conformance)
   :pathname "t/"
   :serial t
   :components ((:file "tests"))
   :perform (test-op (operation component)
              (declare (ignore operation component))
              (uiop:symbol-call :slt/tests :run-tests)))
+
+(asdf:defsystem #:slt/conformance
+  :description "Engine conformance suite: byte streams with expected screens."
+  :depends-on (:slt/core)
+  :pathname "conformance/"
+  :serial t
+  :components ((:file "harness")
+               (:file "cases")))
+
+(asdf:defsystem #:slt/libvterm
+  :description "libvterm engine for slt (requires lib/cl-libvterm to be built)."
+  :depends-on (:slt/core :libvterm)
+  :pathname "src/"
+  :components ((:file "engine-libvterm")))
