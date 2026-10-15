@@ -284,3 +284,17 @@
 
 (define-vt-case unknown-csi-is-ignored () ("a" :csi "?9999z" "b")
   (:row 0 "ab"))
+
+;;; Resizing
+
+(define-vt-case resize-grow-keeps-cursor-and-text (:rows 4 :columns 10)
+    ("ab" #\Return #\Linefeed "cd" (:resize 6 20) "X")
+  (:screen "ab" "cdX" "" "" "" "")
+  (:cursor 1 3))
+
+(define-vt-case resize-narrower-truncates-rows
+    (:rows 3 :columns 10 :known-failures (:ghostty)
+     :description "xterm behavior; Ghostty reflows wrapped text instead.")
+    ("abcdefgh" (:resize 3 4) #\Return #\Linefeed "x")
+  (:row 0 "abcd")
+  (:row 1 "x"))

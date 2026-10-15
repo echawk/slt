@@ -15,3 +15,8 @@ slt's conformance suite (`conformance/cases.lisp`).
 - REP (`CSI b`) repeats the last printed character.
 - `tputc` refetches the glyph after wrapping, so a wide character that
   wraps gets its wide attribute on the cell it was written to.
+- `tresize` keeps the cursor where it was: st restores a by-value copy of
+  the cursor after clearing both screens, but the port "copied" the same
+  object, so the cursor was reset to the saved position.  It also moves
+  the right terminal's cursor (`:term` was missing from `tmoveto`) and
+  slides lines up rather than down when shrinking below the cursor.

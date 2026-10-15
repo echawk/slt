@@ -26,7 +26,8 @@
 ;;;;   (:title "string")
 ;;;;
 ;;;; Input is a list of parts: strings, :esc, :csi (ESC [), :osc (ESC ]),
-;;;; :bel, :st (ESC \), or (:bytes n ...) for raw octets.  A part of
+;;;; :bel, :st (ESC \), (:bytes n ...) for raw octets, or (:resize ROWS
+;;;; COLUMNS) to resize the engine at that point.  A part of
 ;;;; :split makes the runner feed everything before it separately, to
 ;;;; exercise state carried across reads.
 
@@ -73,17 +74,24 @@
                                 (make-list (second part) :initial-element one)))))))))
 
 (defun input-chunks (input)
-  "Split INPUT at :SPLIT markers into a list of octet vectors."
-  (let ((chunks '()) (current '()))
-    (dolist (part input)
-      (if (eq part :split)
-          (progn (push (reverse current) chunks)
-                 (setf current '()))
-          (push part current)))
-    (push (reverse current) chunks)
-    (mapcar (lambda (parts)
-              (apply #'concatenate 'slt::octets (mapcar #'part-octets parts)))
-            (nreverse chunks))))
+  "Split INPUT into a list of steps: octet vectors to feed, separated at
+:SPLIT markers, and (:RESIZE ROWS COLUMNS) steps."
+  (let ((steps '()) (current '()))
+    (flet ((flush ()
+             (when current
+               (push (apply #'concatenate 'slt::octets
+                            (mapcar #'part-octets (reverse current)))
+                     steps)
+               (setf current '()))))
+      (dolist (part input)
+        (cond
+          ((eq part :split) (flush))
+          ((and (consp part) (eq (first part) :resize))
+           (flush)
+           (push part steps))
+          (t (push part current))))
+      (flush))
+    (nreverse steps)))
 
 (defun color-designator (color)
   (cond
@@ -172,8 +180,10 @@
                                           (lambda (string) (setf title string)))))
                  (unwind-protect
                       (progn
-                        (dolist (chunk (input-chunks (vt-case-input case)))
-                          (engine-feed engine chunk))
+                        (dolist (step (input-chunks (vt-case-input case)))
+                          (if (consp step)
+                              (engine-resize engine (second step) (third step))
+                              (engine-feed engine step)))
                         (let ((grid (engine-update-grid engine (make-grid 1 1)))
                               (reply-string (get-output-stream-string replies)))
                           (loop for expectation in (vt-case-expectations case)

@@ -1,0 +1,44 @@
+#!/usr/bin/env sh
+# End-to-end test of the web frontend: start a throwaway server on a free
+# port, run the protocol checks, then the browser checks when Chrome is
+# available ($SLT_CHROME, or scripts/fetch-chrome-headless).
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+port=${SLT_TEST_PORT:-18471}
+token=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+out=${SLT_TEST_OUT:-$root/build/web-test}
+mkdir -p "$out"
+log="$out/server.log"
+
+scripts/lisp \
+  --eval '(asdf:load-system :slt/web)' \
+  --eval "(setf slt:*web-port* $port slt:*web-token* \"$token\")" \
+  --eval '(slt:launch-terminal :backend :web :shell "/bin/sh" :load-config nil)' \
+  >"$log" 2>&1 &
+server=$!
+trap 'kill $server 2>/dev/null || true' EXIT INT TERM
+
+i=0
+until grep -q "serving on" "$log"; do
+  i=$((i + 1))
+  if [ $i -gt 600 ] || ! kill -0 $server 2>/dev/null; then
+    echo "server did not start; see $log" >&2
+    exit 1
+  fi
+  sleep 0.2
+done
+
+status=0
+node web/test/protocol.mjs "http://127.0.0.1:$port" "$token" || status=1
+chrome=${SLT_CHROME:-}
+if [ -z "$chrome" ] && [ -x "$root/.deps/chrome/chrome-headless-shell-mac-arm64/chrome-headless-shell" ]; then
+  chrome="$root/.deps/chrome/chrome-headless-shell-mac-arm64/chrome-headless-shell"
+fi
+if [ -n "$chrome" ]; then
+  node web/test/browser.mjs "$chrome" "http://127.0.0.1:$port" "$token" "$out" || status=1
+  echo "screenshots in $out"
+else
+  echo "skipping browser checks (set SLT_CHROME or run scripts/fetch-chrome-headless)"
+fi
+exit $status

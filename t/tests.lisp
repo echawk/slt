@@ -779,6 +779,49 @@
     (is (loop for cell below 8 always (plusp (aref instances (+ 2 (* 4 cell)))))
         "every glyph has a slot")))
 
+(defun wait-until (predicate &key (timeout 5))
+  (loop with deadline = (+ (get-internal-real-time) (* timeout internal-time-units-per-second))
+        until (funcall predicate)
+        when (> (get-internal-real-time) deadline)
+          return nil
+        do (sleep 0.02)
+        finally (return t)))
+
+(defun headless-screen-text (view)
+  (let ((grid (headless-view-grid view)))
+    (if grid (format nil "~{~a~%~}" (grid-text grid)) "")))
+
+(deftest headless-backend-runs-a-shell-end-to-end ()
+  (let* ((backend (make-instance 'headless-backend))
+         (thread (bt:make-thread
+                  (lambda ()
+                    (launch-terminal :backend backend :shell "/bin/sh"
+                                     :rows 6 :columns 40 :load-config nil))
+                  :name "slt headless test")))
+    (unwind-protect
+         (progn
+           (is (wait-until (lambda () (slt::headless-backend-view backend))))
+           (let ((view (slt::headless-backend-view backend)))
+             (is (wait-until (lambda () (search "$" (headless-screen-text view)))))
+             (loop for char across "echo hel"
+                   do (headless-key view (string char) (string char) 0))
+             (headless-paste view "lo-headless")
+             (headless-key view "" "Return" 0)
+             (is (wait-until (lambda ()
+                               (search (format nil "~%hello-headless")
+                                       (headless-screen-text view))))
+                 "typed and pasted input reaches the shell")
+             (headless-resize-cells view 10 50)
+             (is (wait-until (lambda ()
+                               (let ((grid (headless-view-grid view)))
+                                 (and grid (= 10 (grid-rows grid)) (= 50 (grid-columns grid))))))
+                 "window resize reaches the grid")
+             (headless-close view)
+             (is (wait-until (lambda () (not (bt:thread-alive-p thread)))))))
+      (when (bt:thread-alive-p thread)
+        (setf (slt::headless-backend-quit-p backend) t)
+        (bt:join-thread thread)))))
+
 (defun run-tests ()
   (let ((failures '()))
     (dolist (test (reverse *tests*))

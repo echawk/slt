@@ -80,6 +80,30 @@
    #:make-backend
    #:backend-render-grid
    #:default-backend
+   #:backend-bind-paste
+   #:paste-text
+   ;; Headless backend
+   #:headless-backend
+   #:headless-view
+   #:headless-view-grid
+   #:headless-view-title
+   #:headless-view-rows
+   #:headless-view-columns
+   #:headless-view-render-count
+   #:headless-present
+   #:headless-call
+   #:headless-key
+   #:headless-paste
+   #:headless-resize-window
+   #:headless-resize-cells
+   #:headless-close
+   ;; Web backend
+   #:web-backend
+   #:web-url
+   #:*web-host*
+   #:*web-port*
+   #:*web-token*
+   #:*web-allowed-origins*
    #:*option-as-meta*
    ;; Frontend
    #:launch-terminal

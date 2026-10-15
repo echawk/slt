@@ -2,7 +2,7 @@ OCICL ?= ocicl
 BUILD_OUTPUT ?= build/slt
 LISP = scripts/lisp
 
-.PHONY: deps test conformance libvterm ghostty run run-sdl2 dump clean
+.PHONY: deps test web-test conformance libvterm ghostty run run-sdl2 dump clean
 
 deps: ocicl/.stamp
 
@@ -21,6 +21,11 @@ libvterm:
 # after `ocicl latest` moves it to a new directory).
 ghostty: deps
 	sh "$$(dirname "ocicl/$$(awk -F', ' '$$1 == "ghostty-vt" {print $$3}' ocicl.csv)")/scripts/build-libghostty-vt.sh"
+
+# Web frontend end to end; browser checks need $$SLT_CHROME or
+# scripts/fetch-chrome-headless.
+web-test: deps
+	scripts/web-test
 
 conformance: deps
 	$(LISP) --eval '(asdf:load-system :slt/conformance)' \

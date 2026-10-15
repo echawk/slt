@@ -124,17 +124,18 @@
                               :pixel-height (* rows cell-height)))))))
 
 (defun schedule-resize (emulator)
-  (when (terminal-emulator-resize-after-id emulator)
-    (backend-cancel-scheduled (terminal-emulator-backend emulator)
-                              (terminal-emulator-view emulator)
-                              (terminal-emulator-resize-after-id emulator)))
-  (setf (terminal-emulator-resize-after-id emulator)
-        (backend-schedule (terminal-emulator-backend emulator)
-                          (terminal-emulator-view emulator)
-                          120
-                          (lambda ()
-                            (unless (terminal-emulator-closed-p emulator)
-                              (apply-resize emulator))))))
+  "Apply the window's size shortly.  Requests arriving while one is pending
+join it rather than postponing it, so a steady stream of resize events
+(a window being dragged) cannot starve it; APPLY-RESIZE reads the size
+current when it runs."
+  (unless (terminal-emulator-resize-after-id emulator)
+    (setf (terminal-emulator-resize-after-id emulator)
+          (backend-schedule (terminal-emulator-backend emulator)
+                            (terminal-emulator-view emulator)
+                            120
+                            (lambda ()
+                              (unless (terminal-emulator-closed-p emulator)
+                                (apply-resize emulator)))))))
 
 (defun handle-keypress (emulator char keysym state)
   (let ((key (event-key char keysym))
@@ -145,6 +146,15 @@
                    (engine-encode-key (terminal-emulator-engine emulator)
                                       key
                                       modifiers)))))
+
+(defun paste-text (emulator text)
+  "Send TEXT to the child as a paste, bracketed when the child asked for it."
+  (let ((engine (terminal-emulator-engine emulator))
+        (esc (code-char 27)))
+    (write-input emulator
+                 (if (engine-mode engine :bracketed-paste)
+                     (format nil "~c[200~~~a~c[201~~" esc text esc)
+                     text))))
 
 (defun pump-process-output (emulator)
   "Feed pending child output to the engine.  Return :EOF once the child's
@@ -297,6 +307,10 @@ side of the PTY has closed, otherwise the number of octets processed."
                                 view
                                 (lambda (char keysym state)
                                   (handle-keypress emulator char keysym state)))
+         (backend-bind-paste backend-instance
+                             view
+                             (lambda (text)
+                               (paste-text emulator text)))
          (backend-on-close backend-instance
                            view
                            (lambda ()

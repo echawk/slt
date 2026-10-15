@@ -50,6 +50,11 @@
 (defgeneric backend-bind-resize (backend view callback))
 (defgeneric backend-bind-keypress (backend view callback))
 (defgeneric backend-on-close (backend view callback))
+(defgeneric backend-bind-paste (backend view callback)
+  (:documentation "Arrange for CALLBACK to be called with pasted text.")
+  (:method (backend view callback)
+    (declare (ignore backend view callback))
+    nil))
 (defgeneric backend-focus (backend view))
 (defgeneric backend-request-exit (backend view))
 

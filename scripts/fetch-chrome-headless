@@ -1,0 +1,22 @@
+#!/usr/bin/env sh
+# Download Google's chrome-headless-shell (Chrome for Testing) into .deps/
+# for the browser half of scripts/web-test.  Prints the binary's path.
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+dest="$root/.deps/chrome"
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) platform=mac-arm64 ;;
+  Darwin-x86_64) platform=mac-x64 ;;
+  Linux-x86_64) platform=linux64 ;;
+  *) echo "no chrome-headless-shell build for $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+esac
+binary="$dest/chrome-headless-shell-$platform/chrome-headless-shell"
+if [ ! -x "$binary" ]; then
+  mkdir -p "$dest"
+  version=$(curl -fsSL https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json |
+            python3 -c 'import json, sys; print(json.load(sys.stdin)["channels"]["Stable"]["version"])')
+  curl -fsSL -o "$dest/shell.zip" \
+    "https://storage.googleapis.com/chrome-for-testing-public/$version/$platform/chrome-headless-shell-$platform.zip"
+  (cd "$dest" && unzip -q -o shell.zip && rm shell.zip)
+fi
+echo "$binary"

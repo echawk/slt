@@ -1,9 +1,11 @@
+(pushnew :hunchentoot-no-ssl *features*) ; the web backend serves plain HTTP on localhost
+
 (asdf:defsystem #:slt/core
   :description "Engine-neutral terminal core: grid, engines, hooks, PTY transport."
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.2.0"
-  :depends-on (:3bst :babel :cffi :osicat (:feature :sbcl :sb-posix))
+  :depends-on (:3bst :babel :bordeaux-threads :cffi :osicat (:feature :sbcl :sb-posix))
   :pathname "src/"
   :serial t
   :components ((:file "package")
@@ -16,14 +18,15 @@
                (:file "engine-3bst")
                (:file "transport")
                (:file "gpu")
-               (:file "frontend")))
+               (:file "frontend")
+               (:file "headless-backend")))
 
 (asdf:defsystem #:slt
   :description "A Common Lisp terminal emulator with pluggable engines and GUI backends."
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.2.0"
-  :depends-on (:slt/core :clingon :ltk :sdl2 :sdl2-ttf :sdl2-image
+  :depends-on (:slt/core :slt/web :clingon :ltk :sdl2 :sdl2-ttf :sdl2-image
                (:feature :darwin :slt/cocoa))
   :pathname "src/"
   :serial t
@@ -77,3 +80,9 @@
                (:file "coretext")
                (:file "metal")
                (:file "cocoa-backend")))
+
+(asdf:defsystem #:slt/web
+  :description "Web frontend: serves web/slt-terminal.js and streams the grid over a WebSocket."
+  :depends-on (:slt/core :hunchentoot :hunchensocket :com.inuoe.jzon)
+  :pathname "src/web/"
+  :components ((:file "web-backend")))

@@ -59,6 +59,14 @@
                         :key :title
                         :long-name "title"
                         :description "Window title.")
+   (clingon:make-option :string
+                        :key :web-host
+                        :long-name "web-host"
+                        :description "Address the web backend listens on (default 127.0.0.1).")
+   (clingon:make-option :integer
+                        :key :web-port
+                        :long-name "web-port"
+                        :description "Port the web backend listens on (default 8080).")
    (clingon:make-option :flag
                         :key :no-config
                         :long-name "no-config"
@@ -137,7 +145,9 @@
        (format stream "~(~a~)~%" engine))
      t)
     (t
-     (apply launcher (command-launch-arguments command)))))
+     (let ((*web-host* (or (clingon:getopt command :web-host nil) *web-host*))
+           (*web-port* (or (clingon:getopt command :web-port nil) *web-port*)))
+       (apply launcher (command-launch-arguments command))))))
 
 (defun cli-command-handler (command)
   (handle-cli-command command))

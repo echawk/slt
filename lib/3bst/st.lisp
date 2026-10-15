@@ -1562,9 +1562,10 @@ child process"
       ;; slide screen to keep cursor where we expect it - tscrollup
       ;; would work here, but we can optimize to memmove because we're
       ;; freeing the earlier lines
-      (replace (screen term) (screen term) :start1 slide :start2 0)
+      (replace (screen term) (screen term) :start1 0 :start2 slide)
       (replace (alternate-screen term) (alternate-screen term)
-               :start1 slide :start2 0))
+               :start1 0 :start2 slide)
+      (decf (y (cursor term)) slide))
     ;; possibly should make these adjustable arrays?
     (setf (slot-value term 'screen) (adjust-array (screen term) rows))
     (setf (slot-value term 'alternate-screen)
@@ -1608,9 +1609,15 @@ child process"
     ;; reset scrolling region
     (tsetscroll 0 (1- rows) :term term)
     ;; make use of the LIMIT in tmoveto
-    (tmoveto (x (cursor term)) (y (cursor term)))
-    ;; Clearing both screens (it makes dirty all lines)
-    (let ((c (cursor term)))
+    (tmoveto (x (cursor term)) (y (cursor term)) :term term)
+    ;; Clearing both screens (it makes dirty all lines).  st copies the
+    ;; cursor struct here; keep our own copy since TCURSOR mutates it.
+    (let* ((live (cursor term))
+           (c (make-instance 'tcursor)))
+      (setf (attributes c) (attributes live)
+            (x c) (x live)
+            (y c) (y live)
+            (state c) (state live))
       (loop repeat 2
          do (when (and (< mincol columns) (< 0 minrow))
               (tclearregion mincol 0 (1- columns) (1- minrow) :term term))

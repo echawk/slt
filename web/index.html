@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slt</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #111; color: #ddd;
+    font: 13px system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { display: flex; gap: 12px; align-items: center; padding: 6px 12px; }
+  header .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  slt-terminal { flex: 1; min-height: 0; margin: 0 8px 8px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="title" id="title">slt</span>
+  <label>Theme <select id="theme"></select></label>
+  <label>Size <input id="size" type="number" min="8" max="32" value="14" style="width: 4em"></label>
+</header>
+<slt-terminal id="term"></slt-terminal>
+<script type="module">
+  import { SltTerminalElement } from "./slt-terminal.js";
+
+  // Example themes: any subset of DEFAULT_THEME's keys can be given.
+  const themes = {
+    "xterm": {},
+    "Solarized Dark": {
+      background: "#002b36", foreground: "#839496", cursor: "#93a1a1",
+      palette: ["#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5",
+                "#002b36", "#cb4b16", "#586e75", "#657b83", "#839496", "#6c71c4", "#93a1a1", "#fdf6e3"],
+    },
+    "Catppuccin Latte": {
+      background: "#eff1f5", foreground: "#4c4f69", cursor: "#dc8a78", boldIsBright: false,
+      selection: "rgba(124, 127, 147, 0.3)",
+      palette: ["#5c5f77", "#d20f39", "#40a02b", "#df8e1d", "#1e66f5", "#ea76cb", "#179299", "#acb0be",
+                "#6c6f85", "#d20f39", "#40a02b", "#df8e1d", "#1e66f5", "#ea76cb", "#179299", "#bcc0cc"],
+    },
+  };
+
+  const params = new URLSearchParams(location.search);
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = `${scheme}//${location.host}/ws?token=${encodeURIComponent(params.get("token") ?? "")}`;
+  const element = document.getElementById("term");
+  const select = document.getElementById("theme");
+  const size = document.getElementById("size");
+
+  for (const name of Object.keys(themes)) {
+    const option = document.createElement("option");
+    option.value = option.textContent = name;
+    select.append(option);
+  }
+  select.selectedIndex = 0;
+  const theme = () => ({ ...(themes[select.value] ?? {}), fontSize: size.value + "px" });
+  element.setAttribute("theme", JSON.stringify(theme()));
+  element.setAttribute("url", url);
+
+  select.addEventListener("change", () => element.setAttribute("theme", JSON.stringify(theme())));
+  size.addEventListener("change", () => element.setAttribute("theme", JSON.stringify(theme())));
+  element.addEventListener("title", (e) => {
+    document.title = e.detail || "slt";
+    document.getElementById("title").textContent = e.detail || "slt";
+  });
+  element.addEventListener("exit", () => document.getElementById("title").textContent += " (exited)");
+  element.addEventListener("open", () => element.terminal.focus());
+</script>
+</body>
+</html>
