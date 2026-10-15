@@ -53,3 +53,15 @@
   :depends-on (:slt/core :libvterm)
   :pathname "src/"
   :components ((:file "engine-libvterm")))
+
+(asdf:defsystem #:slt/bench
+  :description "Engine throughput benchmarks."
+  :depends-on (:slt/core)
+  :pathname "bench/"
+  :components ((:file "throughput")))
+
+(asdf:defsystem #:slt/ghostty
+  :description "libghostty-vt engine for slt (run 'make ghostty' first)."
+  :depends-on (:slt/core :ghostty-vt)
+  :pathname "src/"
+  :components ((:file "engine-ghostty")))
