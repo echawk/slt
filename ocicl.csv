@@ -31,6 +31,7 @@ clingon.test, ghcr.io/ocicl/clingon@sha256:27d1426613e66fd28223c737bd7886dfdd4f2
 defpackage-plus, ghcr.io/ocicl/defpackage-plus@sha256:860cd29dded7b30c418ac022b2af8fa5daf947c0164b82f526662ec76bf3de14, defpackage-plus-20240503-5492e27/defpackage-plus.asd
 documentation-utils, ghcr.io/ocicl/documentation-utils@sha256:b2a1b3f3bcd1a738af85ae2b0168d408c177661eab6d6bbebb254e394d983f54, documentation-utils-20230511-98630dd/documentation-utils.asd
 float-features, ghcr.io/ocicl/float-features@sha256:96d7f31d99c87db8771f3f4e4866df1f09f9f3c0c7bca86b6d221bba403c83b1, float-features-20261011-ee18952/float-features.asd
+ghostty-vt, git+https://github.com/echawk/cl-ghostty-vt@30892ccb54d72c1740d391b3144b7c248b237626#ref=main, cl-ghostty-vt-30892cc/ghostty-vt.asd
 global-vars, ghcr.io/ocicl/global-vars@sha256:d197e871c9c9abc4bf31b1186f5fd28f0ca848ebe2e9dddf2d82ecee01dbdc65, global-vars-20240503-c749f32/global-vars.asd
 global-vars-test, ghcr.io/ocicl/global-vars@sha256:d197e871c9c9abc4bf31b1186f5fd28f0ca848ebe2e9dddf2d82ecee01dbdc65, global-vars-20240503-c749f32/global-vars-test.asd
 ltk, ghcr.io/ocicl/ltk@sha256:7b5144463f26c4024779ce84d8bf82c809dd063af77f1c00a1cd7a0baefc7d2b, ltk-20240503-2ec6a15/ltk/ltk.asd

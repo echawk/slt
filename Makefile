@@ -17,8 +17,10 @@ test: deps
 libvterm:
 	lib/cl-libvterm/scripts/build-libvterm.sh
 
-ghostty:
-	lib/cl-ghostty-vt/scripts/build-libghostty-vt.sh
+# Builds libghostty-vt inside the ocicl-installed ghostty-vt tree (rerun
+# after `ocicl latest` moves it to a new directory).
+ghostty: deps
+	sh "$$(dirname "ocicl/$$(awk -F', ' '$$1 == "ghostty-vt" {print $$3}' ocicl.csv)")/scripts/build-libghostty-vt.sh"
 
 conformance: deps
 	$(LISP) --eval '(asdf:load-system :slt/conformance)' \
