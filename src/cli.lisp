@@ -14,6 +14,11 @@
                         :short-name #\b
                         :long-name "backend"
                         :description "GUI backend to use.")
+   (clingon:make-option :string
+                        :key :engine
+                        :short-name #\e
+                        :long-name "engine"
+                        :description "Terminal engine (VT implementation) to use.")
    (clingon:make-option :integer
                         :key :rows
                         :long-name "rows"
@@ -55,6 +60,14 @@
                         :long-name "title"
                         :description "Window title.")
    (clingon:make-option :flag
+                        :key :no-config
+                        :long-name "no-config"
+                        :description "Do not load the user init file.")
+   (clingon:make-option :flag
+                        :key :list-engines
+                        :long-name "list-engines"
+                        :description "Print the available terminal engines and exit.")
+   (clingon:make-option :flag
                         :key :list-backends
                         :long-name "list-backends"
                         :description "Print the available GUI backends and exit.")))
@@ -75,6 +88,9 @@
                                               :backend
                                               (or (clingon:getopt command :backend nil)
                                                   (cli-backend-argument command))))
+    (setf arguments (%append-keyword-argument arguments
+                                              :engine
+                                              (clingon:getopt command :engine nil)))
     (setf arguments (%append-keyword-argument arguments
                                               :rows
                                               (clingon:getopt command :rows nil)))
@@ -105,6 +121,8 @@
     (setf arguments (%append-keyword-argument arguments
                                               :title
                                               (clingon:getopt command :title nil)))
+    (when (clingon:getopt command :no-config nil)
+      (setf arguments (append arguments (list :load-config nil))))
     arguments))
 
 (defun handle-cli-command (command &key (launcher #'launch-terminal)
@@ -113,6 +131,10 @@
     ((clingon:getopt command :list-backends nil)
      (dolist (backend (available-backends))
        (format stream "~(~a~)~%" backend))
+     t)
+    ((clingon:getopt command :list-engines nil)
+     (dolist (engine (available-engines))
+       (format stream "~(~a~)~%" engine))
      t)
     (t
      (apply launcher (command-launch-arguments command)))))
@@ -123,7 +145,7 @@
 (defun make-cli-command ()
   (clingon:make-command
    :name "slt"
-   :description "A small terminal emulator with pluggable GUI backends."
+   :description "A terminal emulator with pluggable engines and GUI backends."
    :version (system-version)
    :authors '("Ethan Hawk <ethhawk@iu.edu>")
    :license "MIT"

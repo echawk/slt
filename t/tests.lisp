@@ -1,49 +1,13 @@
 (uiop:define-package #:slt/tests
-  (:use #:cl)
+  (:use #:cl #:slt)
   (:import-from #:slt
-                #:available-backends
-                #:cell-char-string
-                #:cell-view-bg
-                #:cell-view-char
-                #:cell-view-cursor-p
-                #:cell-view-fg
-                #:clear-dirty-rows
-                #:color->hex
-                #:command-launch-arguments
-                #:decode-modifier-state
-                #:default-executable-name
-                #:default-executable-output
-                #:default-font-family
-                #:dirty-rows
                 #:escape-tcl-text
-                #:fit-grid-to-size
-                #:handle-term-input
-                #:keysym->terminal-key
-                #:launch-shell-process
-                #:make-backend
-                #:mark-all-dirty
-                #:native-pty-supported-p
                 #:normalize-event-state
-                #:normalize-executable-output
-                #:pick-font-family
-                #:parse-cli-arguments
-                #:process-alive-p
-                #:read-available-output
-                #:render-emulator
-                #:render-row-command-string
-                #:replace-environment-variable
-                #:resolve-cell-dimensions
-                #:resolve-font-family
                 #:render-text-command
-                #:resize-process-pty
-                #:resize-term
+                #:replace-environment-variable
                 #:strip-unsupported-control-strings
                 #:tcl-bool
-                #:terminal-process-environment
-                #:terminal-font-size
-                #:terminate-process
-                #:term-cell-view
-                #:translate-key-event)
+                #:terminal-process-environment)
   (:export #:run-tests))
 
 (in-package #:slt/tests)
@@ -106,9 +70,9 @@
   (setf (mock-view-resized-to view) (list rows columns))
   view)
 
-(defmethod slt::backend-render-rows ((backend mock-backend) (view mock-view) term rows)
-  (declare (ignore backend term))
-  (setf (mock-view-rendered-rows view) rows)
+(defmethod slt::backend-render-grid ((backend mock-backend) (view mock-view) grid)
+  (declare (ignore backend))
+  (setf (mock-view-rendered-rows view) (grid-dirty-rows grid))
   view)
 
 (defmethod slt::backend-set-title ((backend mock-backend) (view mock-view) title)
@@ -163,8 +127,23 @@
               expected-value
               actual-value))))
 
-(defun make-term (&key (rows 3) (columns 6))
-  (make-instance '3bst:term :rows rows :columns columns))
+(defun make-test-engine (&key (rows 3) (columns 6) (engine :3bst))
+  (make-engine engine :rows rows :columns columns))
+
+(defun feed (engine &rest parts)
+  "Feed PARTS to ENGINE; characters and strings are concatenated, with
+:ESC standing for the escape character."
+  (engine-feed-string engine
+                      (apply #'concatenate 'string
+                             (mapcar (lambda (part)
+                                       (case part
+                                         (:esc (string (code-char 27)))
+                                         (t (string part))))
+                                     parts)))
+  engine)
+
+(defun engine-grid (engine)
+  (engine-update-grid engine (make-grid 1 1)))
 
 (defun make-mock-emulator (&key (rows 3)
                                 (columns 6)
@@ -177,15 +156,19 @@
                                :cell-height cell-height
                                :window-width window-width
                                :window-height window-height))
-         (term (make-term :rows rows :columns columns)))
+         (engine (make-test-engine :rows rows :columns columns))
+         (grid (make-grid rows columns)))
+    (engine-update-grid engine grid)
+    (grid-clear-dirty grid)
     (values (slt::%make-terminal-emulator
-             :term term
+             :engine engine
+             :grid grid
              :backend backend
              :view view
              :rows rows
              :columns columns
              :poll-interval 16)
-            term
+            engine
             view)))
 
 (defun collect-process-output (process stream &key (timeout-seconds 2.0))
@@ -227,6 +210,14 @@
         return output
       do (sleep 0.05))))
 
+(defvar *accumulated-output* (make-hash-table :test #'eq))
+
+(defun get-output-stream-string* (stream)
+  "Like GET-OUTPUT-STREAM-STRING, but cumulative across calls."
+  (setf (gethash stream *accumulated-output*)
+        (concatenate 'string (gethash stream *accumulated-output* "")
+                     (get-output-stream-string stream))))
+
 (defun make-temp-directory ()
   (let ((directory (merge-pathnames
                     (format nil "slt-tests-~d-~d/"
@@ -245,16 +236,9 @@
     (write-string contents stream))
   pathname)
 
-(deftest color->hex-converts-basic-palette ()
-  (is-equal "#CD0000" (color->hex 1)))
-
-(deftest cell-char-string-hides-nulls-and-invisible-cells ()
-  (is-equal " " (cell-char-string (code-char 0) '()))
-  (is-equal " " (cell-char-string #\X '(:invisible)))
-  (is-equal "A" (cell-char-string #\A '())))
-
 (deftest decode-modifier-state-reads-known-bits ()
-  (is-equal '(:shift :control :mod1) (decode-modifier-state #x0D)))
+  (is-equal '(:shift :control :meta) (decode-modifier-state #x0D))
+  (is-equal '(:super) (decode-modifier-state #x40)))
 
 (deftest tcl-bool-converts-lisp-booleans-to-tcl-integers ()
   (is-equal 1 (tcl-bool t))
@@ -343,11 +327,9 @@
   (is (typep (make-backend :sdl2) 'slt::terminal-backend))
   (is (typep (make-backend "sdl2") 'slt::terminal-backend)))
 
-(deftest sdl-hex-color-rgba-parses-rgb-strings ()
-  (multiple-value-bind (red green blue alpha)
-      (slt::hex-color-rgba "#A1B2C3")
-    (is-equal '(161 178 195 255)
-              (list red green blue alpha))))
+(deftest hex->rgb-and-rgb->hex-round-trip ()
+  (is-equal #xA1B2C3 (hex->rgb "#A1B2C3"))
+  (is-equal "#A1B2C3" (rgb->hex #xA1B2C3)))
 
 (deftest sdl-modifiers->state-translates-common-sdl-keywords ()
   (is-equal #x4D
@@ -433,6 +415,11 @@
               (strip-unsupported-control-strings
                (concatenate 'string "x" c1-dcs-sequence "y")))))
 
+(deftest strip-unsupported-control-strings-keeps-plain-introducer-letters ()
+  ;; Regression: a bare P, _ or ^ used to start a control string and
+  ;; swallow the rest of the chunk.
+  (is-equal "echo Python ^_^" (strip-unsupported-control-strings "echo Python ^_^")))
+
 (deftest fit-grid-to-size-computes-terminal-dimensions-from-pixels ()
   (multiple-value-bind (columns rows)
       (fit-grid-to-size 800 432 10 18)
@@ -444,61 +431,127 @@
     (is-equal 1 rows)))
 
 (deftest keysym->terminal-key-maps-special-and-function-keys ()
-  (is-equal :prior (keysym->terminal-key "Prior"))
-  (is-equal :kp_3 (keysym->terminal-key "KP_3"))
+  (is-equal :page-up (keysym->terminal-key "Prior"))
+  (is-equal #\3 (keysym->terminal-key "KP_3"))
+  (is-equal :enter (keysym->terminal-key "KP_Enter"))
   (is-equal :f12 (keysym->terminal-key "F12"))
   (is-equal nil (keysym->terminal-key "NoSuchKey")))
 
 (deftest translate-key-event-handles-characters-and-control-sequences ()
-  (let ((term (make-term)))
-    (is-equal "a" (translate-key-event term "a" "a" 0))
-    (is-equal (string (code-char 3))
-              (translate-key-event term "c" "c" #x04))
-    (is-equal (string (code-char 24))
-              (translate-key-event term "" "x" #x04))
-    (is-equal (format nil "~Cz" (code-char 27))
-              (translate-key-event term "z" "z" #x08))
-    (is-equal (format nil "~C[A" (code-char 27))
-              (translate-key-event term "" "Up" 0))
-    (is-equal (format nil "~C[6~~" (code-char 27))
-              (translate-key-event term "" "Next" 0))
-    (is-equal (string #\Return)
-              (translate-key-event term "" "Return" 0))))
+  (let ((engine (make-test-engine))
+        (esc (code-char 27)))
+    (is-equal "a" (translate-key-event engine "a" "a" 0))
+    (is-equal (string (code-char 3)) (translate-key-event engine "c" "c" #x04))
+    (is-equal (string (code-char 24)) (translate-key-event engine "" "x" #x04))
+    (is-equal (format nil "~Cz" esc) (translate-key-event engine "z" "z" #x08))
+    (is-equal (format nil "~C[A" esc) (translate-key-event engine "" "Up" 0))
+    (is-equal (format nil "~C[1;5A" esc) (translate-key-event engine "" "Up" #x04))
+    (is-equal (format nil "~C[6~~" esc) (translate-key-event engine "" "Next" 0))
+    (is-equal (format nil "~COP" esc) (translate-key-event engine "" "F1" 0))
+    (is-equal (format nil "~C[15;2~~" esc) (translate-key-event engine "" "F5" #x01))
+    (is-equal (format nil "~C[Z" esc) (translate-key-event engine "" "Tab" #x01))
+    (is-equal (string #\Return) (translate-key-event engine "" "Return" 0))))
 
-(deftest dirty-row-helpers-track-render-work ()
-  (let ((term (make-term :rows 2 :columns 4)))
-    (3bst:handle-input "hi" :term term)
-    (is-equal '(0) (dirty-rows term))
-    (clear-dirty-rows term)
-    (is-equal '() (dirty-rows term))
-    (mark-all-dirty term)
-    (is-equal '(0 1) (dirty-rows term))))
+(deftest application-cursor-mode-changes-arrow-encoding ()
+  (let ((engine (make-test-engine)))
+    (feed engine :esc "[?1h")
+    (is-equal (format nil "~COA" (code-char 27))
+              (engine-encode-key engine :up '()))))
 
-(deftest handle-term-input-marks-cursor-motion-dirty-even-without-glyph-changes ()
-  (let ((term (make-term :rows 2 :columns 4)))
-    (clear-dirty-rows term)
-    (handle-term-input term (format nil "~C[C" (code-char 27)))
-    (is-equal '(0) (dirty-rows term))
-    (is (= 1 (3bst::x (3bst::cursor term))))))
+(deftest utf8-decoder-handles-sequences-split-across-reads ()
+  (let ((decoder (slt::make-utf8-decoder))
+        (octets (slt::string->octets "a→b")))
+    (is-equal 5 (length octets))
+    (is-equal "a" (slt::utf8-decode decoder octets :end 2))
+    (is-equal "→b" (slt::utf8-decode decoder octets :start 2))
+    (is-equal (string (code-char #xFFFD))
+              (slt::utf8-decode decoder (coerce #(#xFF) 'slt::octets)))))
 
-(deftest handle-term-input-ignores-unsupported-dcs-sequences ()
-  (let* ((term (make-term :rows 1 :columns 4))
-         (escape (string (code-char 27)))
-         (input (concatenate 'string "A" escape "Pzz" escape "\\" "B")))
-    (handle-term-input term input)
-    (is-equal "A" (cell-view-char (term-cell-view term 0 0)))
-    (is-equal "B" (cell-view-char (term-cell-view term 0 1)))))
+(deftest hooks-run-in-order-and-can-be-removed ()
+  (let ((slt::*bell-hook* '())
+        (calls '()))
+    (flet ((first-hook (x) (push (list :first x) calls))
+           (second-hook (x) (push (list :second x) calls)))
+      (add-hook 'slt::*bell-hook* #'second-hook)
+      (add-hook 'slt::*bell-hook* #'first-hook)
+      (run-hook 'slt::*bell-hook* 1)
+      (is-equal '((:second 1) (:first 1)) calls)
+      (remove-hook 'slt::*bell-hook* #'first-hook)
+      (is-equal 1 (length slt::*bell-hook*)))))
+
+(deftest engine-registry-exposes-3bst ()
+  (is (member :3bst (available-engines)))
+  (is (typep (make-engine :3bst :rows 2 :columns 2) 'engine)))
+
+(deftest engine-update-grid-copies-text-colors-and-cursor ()
+  (let* ((engine (feed (make-test-engine :rows 2 :columns 6)
+                       "a" :esc "[31mR" :esc "[1;7mX"))
+         (grid (engine-grid engine)))
+    (is-equal '("aRX" "") (grid-text grid))
+    (is-equal +color-default+ (aref (grid-fg grid) 0))
+    (is-equal (palette-color 1) (aref (grid-fg grid) 1))
+    (is-equal '(:bold :inverse) (attributes->list (aref (grid-attrs grid) 2)))
+    (is-equal 0 (grid-cursor-row grid))
+    (is-equal 3 (grid-cursor-column grid))))
+
+(deftest engine-update-grid-tracks-dirty-rows-and-cursor-motion ()
+  (let* ((engine (make-test-engine :rows 3 :columns 4))
+         (grid (engine-grid engine)))
+    (grid-clear-dirty grid)
+    (feed engine :esc "[3;1H")
+    (engine-update-grid engine grid)
+    (is-equal '(0 2) (grid-dirty-rows grid))
+    (grid-clear-dirty grid)
+    (feed engine "x")
+    (engine-update-grid engine grid)
+    (is-equal '(2) (grid-dirty-rows grid))))
+
+(deftest engine-ignores-unsupported-dcs-sequences ()
+  (let ((grid (engine-grid (feed (make-test-engine :rows 1 :columns 4)
+                                 "A" :esc "Pzz" :esc "\\" "B"))))
+    (is-equal "AB" (grid-row-text grid 0))))
+
+(deftest engine-replies-to-device-attributes-through-output-function ()
+  (let* ((replies '())
+         (engine (make-engine :3bst :rows 2 :columns 4
+                                    :output-function (lambda (s) (push s replies)))))
+    (feed engine :esc "[c")
+    (is replies)
+    (is (char= (code-char 27) (char (first replies) 0)))))
+
+(deftest engine-reports-title-changes ()
+  (let* ((title nil)
+         (engine (make-engine :3bst :rows 2 :columns 4
+                                    :title-function (lambda (s) (setf title s)))))
+    (feed engine :esc "]2;hello" (code-char 7))
+    (is-equal "hello" title)))
+
+(deftest cell-rgb-resolves-palette-inverse-and-cursor ()
+  (let* ((palette (make-palette :foreground #xAAAAAA :background #x111111
+                                :cursor #x00FF00))
+         (grid (engine-grid (feed (make-test-engine :rows 1 :columns 4)
+                                  :esc "[31mR" :esc "[0;7mI" :esc "[0m"))))
+    (is-equal (list #xCD0000 #x111111) (multiple-value-list (cell-rgb grid 0 palette)))
+    (is-equal (list #x111111 #xAAAAAA) (multiple-value-list (cell-rgb grid 1 palette)))
+    (is-equal #x00FF00 (nth-value 1 (cell-rgb grid 2 palette)))))
+
+(deftest grid-handles-wide-characters ()
+  (let ((grid (engine-grid (feed (make-test-engine :rows 1 :columns 4)
+                                 (string (code-char #x4E2D)) "x"))))
+    (is-equal (format nil "~Cx" (code-char #x4E2D)) (grid-row-text grid 0))
+    (is (logtest slt::+attr-wide+ (aref (grid-attrs grid) 0)))
+    (is (logtest slt::+attr-wide-spacer+ (aref (grid-attrs grid) 1)))))
 
 (deftest render-emulator-delegates-rendering-through-the-backend-interface ()
-  (multiple-value-bind (emulator term view)
+  (multiple-value-bind (emulator engine view)
       (make-mock-emulator :rows 2 :columns 4)
-    (3bst:handle-input "hi" :term term)
-    (render-emulator emulator :force nil)
+    (feed engine "hi")
+    (render-emulator emulator)
     (is-equal '(0) (mock-view-rendered-rows view))
-    (is-equal '() (dirty-rows term))))
+    (is-equal '() (grid-dirty-rows (slt::terminal-emulator-grid emulator)))))
 
 (deftest apply-resize-uses-backend-window-metrics-and-resizes-the-view ()
-  (multiple-value-bind (emulator term view)
+  (multiple-value-bind (emulator engine view)
       (make-mock-emulator :rows 1
                           :columns 1
                           :window-width 95
@@ -506,27 +559,39 @@
                           :cell-width 10
                           :cell-height 20)
     (slt::apply-resize emulator)
-    (is (= 2 (3bst:rows term)))
-    (is (= 9 (3bst:columns term)))
+    (is (= 2 (engine-rows engine)))
+    (is (= 9 (engine-columns engine)))
     (is-equal '(2 9) (mock-view-resized-to view))
-    (is-equal '() (dirty-rows term))))
+    (is-equal 2 (grid-rows (slt::terminal-emulator-grid emulator)))
+    (is-equal '() (grid-dirty-rows (slt::terminal-emulator-grid emulator)))))
 
-(deftest resize-term-updates-dimensions-and-dirties-everything ()
-  (let ((term (make-term :rows 2 :columns 3)))
-    (resize-term term 4 5)
-    (is (= 4 (3bst:rows term)))
-    (is (= 5 (3bst:columns term)))
-    (is-equal '(0 1 2 3) (dirty-rows term))))
+(deftest key-hook-can-consume-keys ()
+  (multiple-value-bind (emulator engine) (make-mock-emulator :rows 1 :columns 8)
+    (let ((slt::*key-hook* (list (lambda (emulator key modifiers)
+                                   (declare (ignore emulator modifiers))
+                                   (eql key #\q)))))
+      (slt::handle-keypress emulator "q" "q" 0)
+      (slt::handle-keypress emulator "w" "w" 0)
+      (is-equal "w" (grid-row-text (engine-grid engine) 0)))))
 
-(deftest term-cell-view-exposes-character-and-colors ()
-  (let ((term (make-term :rows 1 :columns 4)))
-    (3bst:handle-input (format nil "~c[31mR" (code-char 27)) :term term)
-    (let ((cell (term-cell-view term 0 0)))
-      (is-equal "R" (cell-view-char cell))
-      (is-equal "#CD0000" (cell-view-fg cell))
-      (is-equal "#000000" (cell-view-bg cell))
-      (is (not (cell-view-cursor-p cell))))
-    (is (cell-view-cursor-p (term-cell-view term 0 1)))))
+(deftest octet-transport-round-trips-through-a-pty ()
+  (multiple-value-bind (process) (launch-shell-process "/bin/sh" :rows 24 :columns 80)
+    (unwind-protect
+         (let ((fd (slt::set-fd-nonblocking (slt::process-fd process)))
+               (buffer (make-array 4096 :element-type '(unsigned-byte 8)))
+               (output (make-string-output-stream)))
+           (write-octets fd (slt::string->octets (format nil "printf 'oct%sok\\n' -~%")))
+           (loop with deadline = (+ (get-internal-real-time)
+                                    (* 3 internal-time-units-per-second))
+                 for count = (read-available-octets fd buffer)
+                 do (when (and (integerp count) (plusp count))
+                      (write-string (babel:octets-to-string buffer :end count) output))
+                 until (or (search "oct-ok" (get-output-stream-string* output))
+                           (eq count :eof)
+                           (> (get-internal-real-time) deadline))
+                 do (sleep 0.02))
+           (is (search "oct-ok" (get-output-stream-string* output))))
+      (ignore-errors (terminate-process process)))))
 
 (deftest native-pty-transport-runs-shell-commands-through-a-single-stream ()
   (is (native-pty-supported-p))
@@ -606,6 +671,7 @@
 
 (deftest parse-cli-arguments-translates-runtime-flags-into-launch-keywords ()
   (let* ((command (parse-cli-arguments '("--backend" "sdl2"
+                                         "--engine" "3bst"
                                          "--rows" "30"
                                          "--columns" "120"
                                          "--font-family" "JetBrains Mono"
@@ -615,9 +681,11 @@
                                          "--shell" "/bin/zsh"
                                          "--term" "xterm-direct"
                                          "--poll-interval" "25"
-                                         "--title" "scratch")))
+                                         "--title" "scratch"
+                                         "--no-config")))
          (arguments (command-launch-arguments command)))
     (is-equal '(:backend "sdl2"
+                :engine "3bst"
                 :rows 30
                 :columns 120
                 :font-family "JetBrains Mono"
@@ -627,7 +695,8 @@
                 :shell "/bin/zsh"
                 :term-name "xterm-direct"
                 :poll-interval 25
-                :title "scratch")
+                :title "scratch"
+                :load-config nil)
               arguments)))
 
 (deftest parse-cli-arguments-keeps-bare-backend-compatibility ()

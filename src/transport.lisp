@@ -285,3 +285,52 @@
             (unless ok
               (error "TIOCSWINSZ failed with errno ~A" errno)))))))
   process)
+
+;;; Octet I/O directly on the PTY descriptor.  Reading characters through
+;;; an fd-stream decodes one character per call and can stall on split
+;;; UTF-8 sequences; engines want raw bytes in large chunks instead.
+
+(defun process-fd (process)
+  (let ((stream (process-pty-stream process)))
+    (and stream (sb-sys:fd-stream-fd stream))))
+
+(defun set-fd-nonblocking (fd)
+  (let ((flags (sb-posix:fcntl fd sb-posix:f-getfl)))
+    (sb-posix:fcntl fd sb-posix:f-setfl (logior flags sb-posix:o-nonblock)))
+  fd)
+
+(defun read-available-octets (fd buffer &key (start 0))
+  "Read whatever is available on non-blocking FD into BUFFER from START.
+Return the number of octets read, 0 when nothing is pending, or :EOF once
+the other side has closed (Linux reports EIO when the child exits)."
+  (declare (type octets buffer)
+           (type fixnum start))
+  (let ((length (- (length buffer) start)))
+    (when (<= length 0)
+      (return-from read-available-octets 0))
+    (multiple-value-bind (count errno)
+        (sb-sys:with-pinned-objects (buffer)
+          (sb-unix:unix-read fd
+                             (sb-sys:sap+ (sb-sys:vector-sap buffer) start)
+                             length))
+      (cond
+        ((null count)
+         (if (or (= errno sb-unix:eagain) (= errno sb-unix:eintr))
+             0
+             :eof))
+        ((zerop count) :eof)
+        (t count)))))
+
+(defun write-octets (fd octets &key (start 0) (end (length octets)))
+  "Write OCTETS[START, END) to FD, waiting while a non-blocking FD is full."
+  (declare (type octets octets))
+  (loop while (< start end)
+        do (multiple-value-bind (count errno)
+               (sb-sys:with-pinned-objects (octets)
+                 (sb-unix:unix-write fd octets start (- end start)))
+             (cond
+               (count (incf start count))
+               ((or (= errno sb-unix:eagain) (= errno sb-unix:eintr))
+                (sb-sys:wait-until-fd-usable fd :output 0.05))
+               (t (error "write to PTY failed: ~a" (sb-int:strerror errno))))))
+  end)

@@ -39,7 +39,12 @@
   cell-height
   rows
   columns
-  (glyph-cache (make-hash-table :test #'equal))
+  (glyph-cache (make-hash-table :test #'eql))
+  ;; Persistent render target holding the whole grid; only dirty rows are
+  ;; redrawn into it, then it is copied to the window.
+  target
+  (target-width 0)
+  (target-height 0)
   resize-callback
   keypress-callback
   close-callback
@@ -251,9 +256,18 @@
   (clrhash (sdl2-view-glyph-cache view))
   view)
 
+(defun destroy-sdl-target (view)
+  (when (sdl2-view-target view)
+    (ignore-errors (sdl2:destroy-texture (sdl2-view-target view)))
+    (setf (sdl2-view-target view) nil
+          (sdl2-view-target-width view) 0
+          (sdl2-view-target-height view) 0))
+  view)
+
 (defun destroy-sdl-view (view)
   (when view
     (clear-glyph-cache view)
+    (destroy-sdl-target view)
     (ignore-errors
       (when (sdl2-view-font view)
         (sdl2-ttf:close-font (sdl2-view-font view))))
@@ -265,86 +279,165 @@
         (sdl2:destroy-window (sdl2-view-window view)))))
   view)
 
-(defun ensure-glyph-texture (view text foreground)
-  (unless (or (null text)
-              (zerop (length text))
-              (string= text " "))
-    (let* ((key (list text foreground))
-           (cache (sdl2-view-glyph-cache view))
-           (entry (gethash key cache)))
-      (or entry
-          (multiple-value-bind (red green blue alpha)
-              (hex-color-rgba foreground)
-            (let* ((surface (sdl2-ttf::render-utf8-blended (sdl2-view-font view)
-                                                           text
-                                                           red
-                                                           green
-                                                           blue
-                                                           alpha))
-                   (texture (sdl2:create-texture-from-surface
-                             (sdl2-view-renderer view)
-                             surface))
-                   (new-entry (make-glyph-texture :texture texture
-                                                  :width (sdl2:texture-width texture)
-                                                  :height (sdl2:texture-height texture))))
-              (sdl2:free-surface surface)
-              (setf (gethash key cache) new-entry)
-              new-entry))))))
+(defun ensure-sdl-target (view grid)
+  "Make sure the render target matches GRID's pixel size.  Return true when
+it was (re)created, in which case its contents are undefined."
+  (let ((width (* (grid-columns grid) (sdl2-view-cell-width view)))
+        (height (* (grid-rows grid) (sdl2-view-cell-height view))))
+    (unless (and (sdl2-view-target view)
+                 (= width (sdl2-view-target-width view))
+                 (= height (sdl2-view-target-height view)))
+      (destroy-sdl-target view)
+      (setf (sdl2-view-target view)
+            (sdl2:create-texture (sdl2-view-renderer view)
+                                 :argb8888 :target (max 1 width) (max 1 height))
+            (sdl2-view-target-width view) width
+            (sdl2-view-target-height view) height)
+      t)))
 
-(defun draw-sdl-cell (view renderer cell row column background-rect glyph-rect)
-  (multiple-value-bind (red green blue alpha)
-      (hex-color-rgba (cell-view-bg cell))
-    (setf (sdl2:rect-x background-rect) (* column (sdl2-view-cell-width view))
-          (sdl2:rect-y background-rect) (* row (sdl2-view-cell-height view))
-          (sdl2:rect-width background-rect) (sdl2-view-cell-width view)
-          (sdl2:rect-height background-rect) (sdl2-view-cell-height view))
-    (sdl2:set-render-draw-color renderer red green blue alpha)
-    (sdl2:render-fill-rect renderer background-rect))
-  (let ((glyph (ensure-glyph-texture view
-                                     (cell-view-char cell)
-                                     (cell-view-fg cell))))
-    (when glyph
-      (setf (sdl2:rect-x glyph-rect)
-            (+ (* column (sdl2-view-cell-width view))
-               (max 0 (floor (- (sdl2-view-cell-width view)
-                                (glyph-texture-width glyph))
-                             2)))
-            (sdl2:rect-y glyph-rect)
-            (+ (* row (sdl2-view-cell-height view))
-               (max 0 (floor (- (sdl2-view-cell-height view)
-                                (glyph-texture-height glyph))
-                             2)))
-            (sdl2:rect-width glyph-rect) (glyph-texture-width glyph)
-            (sdl2:rect-height glyph-rect) (glyph-texture-height glyph))
-      (sdl2:render-copy renderer
-                        (glyph-texture-texture glyph)
-                        :source-rect (cffi:null-pointer)
-                        :dest-rect glyph-rect))))
+(declaim (inline glyph-cache-key))
+(defun glyph-cache-key (code fg attrs)
+  (declare (type codepoint code) (type rgb fg) (type attributes attrs))
+  (logior (ash code 26)
+          (if (logtest attrs +attr-bold+) (ash 1 25) 0)
+          (if (logtest attrs +attr-italic+) (ash 1 24) 0)
+          fg))
 
-(defun render-sdl-term (view term)
+(defun ensure-glyph-texture (view grid index fg attrs)
+  (let* ((code (aref (grid-codes grid) index))
+         (combining (gethash index (grid-combining grid)))
+         (cache (sdl2-view-glyph-cache view))
+         (key (and (null combining) (glyph-cache-key code fg attrs))))
+    (or (and key (gethash key cache))
+        (let* ((text (grid-cell-string grid index))
+               (font (sdl2-view-font view))
+               (style (append (when (logtest attrs +attr-bold+) '(:bold))
+                              (when (logtest attrs +attr-italic+) '(:italic)))))
+          (when style
+            (sdl2-ttf:set-font-style font style))
+          (let* ((surface (unwind-protect
+                               (sdl2-ttf::render-utf8-blended font text
+                                                              (ldb (byte 8 16) fg)
+                                                              (ldb (byte 8 8) fg)
+                                                              (ldb (byte 8 0) fg)
+                                                              255)
+                            (when style
+                              (sdl2-ttf:set-font-style font '(:normal)))))
+                 (texture (sdl2:create-texture-from-surface
+                           (sdl2-view-renderer view)
+                           surface))
+                 (entry (make-glyph-texture :texture texture
+                                            :width (sdl2:texture-width texture)
+                                            :height (sdl2:texture-height texture))))
+            (sdl2:free-surface surface)
+            (when key
+              (setf (gethash key cache) entry))
+            entry)))))
+
+(defun sdl-set-color (renderer rgb)
+  (sdl2:set-render-draw-color renderer
+                              (ldb (byte 8 16) rgb)
+                              (ldb (byte 8 8) rgb)
+                              (ldb (byte 8 0) rgb)
+                              255))
+
+(defun draw-sdl-row (view grid row palette rect)
+  (let* ((renderer (sdl2-view-renderer view))
+         (cell-width (sdl2-view-cell-width view))
+         (cell-height (sdl2-view-cell-height view))
+         (columns (grid-columns grid))
+         (y (* row cell-height))
+         (base (grid-index grid row 0)))
+    ;; Backgrounds, merged into runs of equal color.
+    (let ((run-start 0)
+          (run-color (nth-value 1 (cell-rgb grid base palette))))
+      (flet ((flush (end)
+               (sdl-set-color renderer run-color)
+               (setf (sdl2:rect-x rect) (* run-start cell-width)
+                     (sdl2:rect-y rect) y
+                     (sdl2:rect-width rect) (* (- end run-start) cell-width)
+                     (sdl2:rect-height rect) cell-height)
+               (sdl2:render-fill-rect renderer rect)))
+        (loop for column from 1 below columns
+              for bg = (nth-value 1 (cell-rgb grid (+ base column) palette))
+              unless (= bg run-color)
+                do (flush column)
+                   (setf run-start column
+                         run-color bg))
+        (flush columns)))
+    ;; Glyphs and decorations.
+    (dotimes (column columns)
+      (let* ((index (+ base column))
+             (code (aref (grid-codes grid) index))
+             (attrs (aref (grid-attrs grid) index))
+             (x (* column cell-width)))
+        (multiple-value-bind (fg bg) (cell-rgb grid index palette)
+          (declare (ignore bg))
+          (unless (or (zerop code)
+                      (= code 32)
+                      (logtest attrs (logior +attr-wide-spacer+ +attr-invisible+)))
+            (let ((glyph (ensure-glyph-texture view grid index fg attrs)))
+              (setf (sdl2:rect-x rect) x
+                    (sdl2:rect-y rect) (+ y (max 0 (floor (- cell-height
+                                                               (glyph-texture-height glyph))
+                                                            2)))
+                    (sdl2:rect-width rect) (glyph-texture-width glyph)
+                    (sdl2:rect-height rect) (glyph-texture-height glyph))
+              (sdl2:render-copy renderer (glyph-texture-texture glyph)
+                                :source-rect (cffi:null-pointer)
+                                :dest-rect rect)))
+          (when (logtest attrs (logior +attr-underline+ +attr-double-underline+
+                                       +attr-strike+))
+            (sdl-set-color renderer fg)
+            (let ((width (* cell-width (if (logtest attrs +attr-wide+) 2 1))))
+              (when (logtest attrs (logior +attr-underline+ +attr-double-underline+))
+                (sdl2:render-draw-line renderer x (+ y cell-height -1)
+                                       (+ x width -1) (+ y cell-height -1)))
+              (when (logtest attrs +attr-double-underline+)
+                (sdl2:render-draw-line renderer x (+ y cell-height -3)
+                                       (+ x width -1) (+ y cell-height -3)))
+              (when (logtest attrs +attr-strike+)
+                (let ((mid (+ y (floor cell-height 2))))
+                  (sdl2:render-draw-line renderer x mid (+ x width -1) mid))))))))
+    ;; Non-block cursors are drawn over the glyph.
+    (when (and (grid-cursor-visible-p grid)
+               (= row (grid-cursor-row grid))
+               (not (eq (grid-cursor-shape grid) :block)))
+      (sdl-set-color renderer (palette-cursor palette))
+      (let ((x (* (grid-cursor-column grid) cell-width)))
+        (if (eq (grid-cursor-shape grid) :bar)
+            (setf (sdl2:rect-x rect) x (sdl2:rect-y rect) y
+                  (sdl2:rect-width rect) 2 (sdl2:rect-height rect) cell-height)
+            (setf (sdl2:rect-x rect) x (sdl2:rect-y rect) (+ y cell-height -2)
+                  (sdl2:rect-width rect) cell-width (sdl2:rect-height rect) 2))
+        (sdl2:render-fill-rect renderer rect)))))
+
+(defun render-sdl-grid (view grid &optional (palette *palette*))
   (let ((renderer (sdl2-view-renderer view)))
-    (sdl2:set-render-draw-color renderer 0 0 0 255)
+    (when (ensure-sdl-target view grid)
+      (grid-mark-all-dirty grid))
+    (sdl2:set-render-target renderer (sdl2-view-target view))
+    (sdl2:with-rects ((rect 0 0 0 0))
+      (dotimes (row (grid-rows grid))
+        (when (= 1 (sbit (grid-dirty grid) row))
+          (draw-sdl-row view grid row palette rect))))
+    (sdl2:set-render-target renderer nil)
+    (sdl-set-color renderer (palette-background palette))
     (sdl2:render-clear renderer)
-    (sdl2:with-rects ((background-rect 0 0 0 0)
-                      (glyph-rect 0 0 0 0))
-      (dotimes (row (3bst:rows term))
-        (dotimes (column (3bst:columns term))
-          (draw-sdl-cell view
-                         renderer
-                         (term-cell-view term row column)
-                         row
-                         column
-                         background-rect
-                         glyph-rect))))
+    (sdl2:with-rects ((dest 0 0 (sdl2-view-target-width view)
+                            (sdl2-view-target-height view)))
+      (sdl2:render-copy renderer (sdl2-view-target view)
+                        :source-rect (cffi:null-pointer)
+                        :dest-rect dest))
     (sdl2:render-present renderer))
   view)
 
 (defun create-sdl-renderer (window)
   (or (ignore-errors
-        (sdl2:create-renderer window nil '(:accelerated :presentvsync)))
+        (sdl2:create-renderer window nil '(:accelerated :presentvsync :targettexture)))
       (ignore-errors
-        (sdl2:create-renderer window nil '(:accelerated)))
-      (sdl2:create-renderer window nil '(:software))))
+        (sdl2:create-renderer window nil '(:accelerated :targettexture)))
+      (sdl2:create-renderer window nil '(:software :targettexture))))
 
 (defun maybe-dispatch-sdl-close (view)
   (unless (sdl2-view-close-dispatched-p view)
@@ -491,9 +584,9 @@
         (sdl2-view-columns view) columns)
   view)
 
-(defmethod backend-render-rows ((backend sdl2-backend) (view sdl2-view) term rows)
-  (declare (ignore backend rows))
-  (render-sdl-term view term))
+(defmethod backend-render-grid ((backend sdl2-backend) (view sdl2-view) grid)
+  (declare (ignore backend))
+  (render-sdl-grid view grid))
 
 (defmethod backend-set-title ((backend sdl2-backend) (view sdl2-view) title)
   (declare (ignore backend))

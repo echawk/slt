@@ -4,7 +4,7 @@
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 : "${SBCL:=sbcl}"
-export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$root/.cache}"
+export XDG_CACHE_HOME="$root/.cache"
 export CL_SOURCE_REGISTRY="$root/:$root/ocicl//:$root/lib//"
 exec "$SBCL" --dynamic-space-size "${SLT_HEAP_MB:-4096}" --noinform --no-sysinit --no-userinit --non-interactive \
   --eval '(require :asdf)' \

@@ -54,23 +54,31 @@
           font-name
           (escape-tcl-text text)))
 
-(defun render-row-command-string (view term row)
+(defvar *hex-color-cache* (make-hash-table))
+
+(defun rgb-hex (rgb)
+  (or (gethash rgb *hex-color-cache*)
+      (setf (gethash rgb *hex-color-cache*) (rgb->hex rgb))))
+
+(defun render-row-command-string (view grid row &optional (palette *palette*))
   (with-output-to-string (out)
-    (dotimes (column (3bst:columns term))
-      (let* ((cell (term-cell-view term row column))
+    (dotimes (column (grid-columns grid))
+      (let* ((index (grid-index grid row column))
              (background (aref (ltk-view-background-items view) row column))
              (text (aref (ltk-view-text-items view) row column)))
-        (format out "~A itemconfigure ~A -fill {~A} -outline {~A}~%"
-                (ltk:widget-path (ltk::canvas background))
-                (ltk::handle background)
-                (cell-view-bg cell)
-                (cell-view-bg cell))
-        (format out "~A~%"
-                (render-text-command (ltk:widget-path (ltk::canvas text))
-                                     (ltk::handle text)
-                                     (ltk-view-font-name view)
-                                     (cell-view-fg cell)
-                                     (cell-view-char cell)))))))
+        (multiple-value-bind (fg bg) (cell-rgb grid index palette)
+          (let ((bg-hex (rgb-hex bg)))
+            (format out "~A itemconfigure ~A -fill {~A} -outline {~A}~%"
+                    (ltk:widget-path (ltk::canvas background))
+                    (ltk::handle background)
+                    bg-hex
+                    bg-hex))
+          (format out "~A~%"
+                  (render-text-command (ltk:widget-path (ltk::canvas text))
+                                       (ltk::handle text)
+                                       (ltk-view-font-name view)
+                                       (rgb-hex fg)
+                                       (grid-cell-string grid index))))))))
 
 (defun build-grid-items (rows columns cell-width cell-height font-name)
   (let ((specs '()))
@@ -175,13 +183,16 @@
   (declare (ignore backend))
   (ltk-rebuild-grid view rows columns))
 
-(defmethod backend-render-rows ((backend ltk-backend) (view ltk-view) term rows)
+(defmethod backend-render-grid ((backend ltk-backend) (view ltk-view) grid)
   (declare (ignore backend))
-  (when rows
-    (ltk:format-wish "~A"
-                     (with-output-to-string (out)
-                       (dolist (row rows)
-                         (write-string (render-row-command-string view term row) out)))))
+  (ltk:format-wish "~A"
+                   (with-output-to-string (out)
+                     (loop for row below (min (grid-rows grid)
+                                              (array-dimension
+                                               (ltk-view-text-items view) 0))
+                           when (= 1 (sbit (grid-dirty grid) row))
+                             do (write-string (render-row-command-string view grid row)
+                                              out))))
   view)
 
 (defmethod backend-set-title ((backend ltk-backend) (view ltk-view) title)
