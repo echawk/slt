@@ -49,11 +49,11 @@ and compares the resulting screens. `slt/bench` measures throughput.
 | `cocoa` | macOS default: AppKit window, Metal renderer, CoreText glyphs |
 | `ltk` | Tk; portable fallback (needs `wish`), the default elsewhere |
 | `sdl2` | SDL2 renderer (`slt/sdl2`; needs SDL2, SDL2_ttf and SDL2_image) |
-
 | `web` | serves a browser terminal; see [web/README.md](web/README.md) |
 | `headless` | no UI; for tests, scripting and remote frontends |
 
 Choose one with `--backend NAME` or `SLT_BACKEND=NAME`.
+
 Native OpenGL and Vulkan backends for Linux and the BSDs, which would
 work on both X11 and Wayland, are sketched in
 [doc/gpu-backends.md](doc/gpu-backends.md).
