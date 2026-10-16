@@ -276,8 +276,16 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
                                             instances columns cell-count
                                             cell-width cell-height width height
                                             atlas palette)))
-          (msg commands "presentDrawable:" :pointer drawable :void)
-          (msg commands "commit" :void))))))
+          (if (msg (metal-renderer-layer renderer) "presentsWithTransaction" :bool)
+              ;; During a live resize, present in step with the window's
+              ;; Core Animation transaction so frames are never stretched.
+              (progn
+                (msg commands "commit" :void)
+                (msg commands "waitUntilScheduled" :void)
+                (msg drawable "present" :void))
+              (progn
+                (msg commands "presentDrawable:" :pointer drawable :void)
+                (msg commands "commit" :void))))))))
 
 (defun metal-snapshot (renderer instances columns cell-count cell-width cell-height
                        width height atlas palette)

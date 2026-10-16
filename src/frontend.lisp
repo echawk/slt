@@ -2,8 +2,8 @@
 
 (defvar *read-buffer-size* (* 64 1024))
 
-(defvar *read-budget-octets* (* 1024 1024)
-  "The most child output processed per poll before yielding to render.")
+(defvar *frame-interval-ms* 8
+  "Minimum time between renders; output arriving faster is coalesced.")
 
 (defvar *load-user-config* t
   "When true, LAUNCH-TERMINAL loads USER-CONFIG-PATHNAME if it exists.")
@@ -23,7 +23,25 @@
   resize-after-id
   (poll-interval 16 :type fixnum)
   (title "slt" :type string)
-  (closed-p nil))
+  (closed-p nil)
+  ;; The reader thread parses child output while the UI thread renders.
+  ;; LOCK guards the engine; WRITE-LOCK keeps writes to the child whole.
+  (lock (bt:make-recursive-lock "slt engine"))
+  (write-lock (bt:make-lock "slt pty write"))
+  reader-thread
+  ;; Work queued for the UI thread by other threads (see INVOKE-ON-UI).
+  (ui-lock (bt:make-lock "slt ui queue"))
+  (ui-queue '() :type list)
+  (render-requested nil)
+  (last-render-time 0 :type integer))
+
+(defmacro with-engine ((engine emulator) &body body)
+  "Run BODY holding EMULATOR's engine lock, with ENGINE bound to the engine."
+  (let ((e (gensym "EMULATOR")))
+    `(let* ((,e ,emulator)
+            (,engine (terminal-emulator-engine ,e)))
+       (bt:with-recursive-lock-held ((terminal-emulator-lock ,e))
+         ,@body))))
 
 (defun default-backend ()
   "The native backend when one is loaded for this platform, else LTK."
@@ -43,16 +61,67 @@
 (defun send-to-process (emulator string)
   (let ((fd (terminal-emulator-fd emulator)))
     (when (and fd string (plusp (length string)))
-      (handler-case (write-octets fd (string->octets string))
-        (error () nil)))))
+      (bt:with-lock-held ((terminal-emulator-write-lock emulator))
+        (handler-case (write-octets fd (string->octets string))
+          (error () nil))))))
+
+;;; Running work on the UI thread
+
+(defun drain-ui-queue (emulator)
+  "Run the work other threads queued for the UI thread.  UI thread only."
+  (let ((thunks (bt:with-lock-held ((terminal-emulator-ui-lock emulator))
+                  (shiftf (terminal-emulator-ui-queue emulator) '()))))
+    (dolist (thunk (nreverse thunks))
+      (unless (terminal-emulator-closed-p emulator)
+        (funcall thunk)))))
+
+(defun invoke-on-ui (emulator thunk)
+  "Run THUNK on the UI thread soon.  Callable from any thread."
+  (let ((first-p (bt:with-lock-held ((terminal-emulator-ui-lock emulator))
+                   (prog1 (null (terminal-emulator-ui-queue emulator))
+                     (push thunk (terminal-emulator-ui-queue emulator))))))
+    ;; Backends without a wakeup leave the queue to the poll timer.
+    (when first-p
+      (backend-wakeup (terminal-emulator-backend emulator)
+                      (terminal-emulator-view emulator)
+                      (lambda () (drain-ui-queue emulator))))))
+
+(defun request-render (emulator)
+  "Ask for a render on the UI thread, merging requests that arrive before
+it happens.  Callable from any thread."
+  (when (bt:with-lock-held ((terminal-emulator-ui-lock emulator))
+          (unless (terminal-emulator-render-requested emulator)
+            (setf (terminal-emulator-render-requested emulator) t)))
+    (invoke-on-ui emulator (lambda () (render-paced emulator)))))
+
+(defun render-paced (emulator)
+  "Render now, or after *FRAME-INTERVAL-MS* since the previous frame."
+  (let* ((now (get-internal-real-time))
+         (wait-ms (- *frame-interval-ms*
+                     (round (* 1000 (- now (terminal-emulator-last-render-time emulator)))
+                            internal-time-units-per-second))))
+    (flet ((render ()
+             (bt:with-lock-held ((terminal-emulator-ui-lock emulator))
+               (setf (terminal-emulator-render-requested emulator) nil))
+             (setf (terminal-emulator-last-render-time emulator) (get-internal-real-time))
+             (unless (terminal-emulator-closed-p emulator)
+               (render-emulator emulator))))
+      (if (plusp wait-ms)
+          (backend-schedule (terminal-emulator-backend emulator)
+                            (terminal-emulator-view emulator)
+                            wait-ms #'render)
+          (render)))))
 
 (defun fit-grid-to-size (width height cell-width cell-height)
   (values (max 1 (floor width (max 1 cell-width)))
           (max 1 (floor height (max 1 cell-height)))))
 
 (defun render-emulator (emulator &key force)
+  "Copy the engine's changes into the grid and draw them.  UI thread only;
+the engine lock is held only for the copy."
   (let ((grid (terminal-emulator-grid emulator)))
-    (engine-update-grid (terminal-emulator-engine emulator) grid :force force)
+    (with-engine (engine emulator)
+      (engine-update-grid engine grid :force force))
     (when (find 1 (grid-dirty grid))
       (backend-render-grid (terminal-emulator-backend emulator)
                            (terminal-emulator-view emulator)
@@ -67,7 +136,8 @@
     ((terminal-emulator-fd emulator)
      (send-to-process emulator string))
     (t
-     (engine-feed-string (terminal-emulator-engine emulator) string)
+     (with-engine (engine emulator)
+       (engine-feed-string engine string))
      (render-emulator emulator)))
   emulator)
 
@@ -99,7 +169,8 @@
 (defun resize-emulator (emulator rows columns)
   (setf (terminal-emulator-rows emulator) rows
         (terminal-emulator-columns emulator) columns)
-  (engine-resize (terminal-emulator-engine emulator) rows columns)
+  (with-engine (engine emulator)
+    (engine-resize engine rows columns))
   (backend-resize-view (terminal-emulator-backend emulator)
                        (terminal-emulator-view emulator)
                        rows
@@ -137,69 +208,121 @@ current when it runs."
                               (unless (terminal-emulator-closed-p emulator)
                                 (apply-resize emulator)))))))
 
+(defun scroll-viewport (emulator how)
+  "Scroll EMULATOR's viewport: HOW is :TOP, :BOTTOM, :PAGE-UP, :PAGE-DOWN or
+a number of rows (negative scrolls back).  Return true if the engine has
+scrollback."
+  (let ((how (case how
+               (:page-up (- (max 1 (1- (terminal-emulator-rows emulator)))))
+               (:page-down (max 1 (1- (terminal-emulator-rows emulator))))
+               (t how))))
+    (when (with-engine (engine emulator)
+            (engine-scroll engine how))
+      (request-render emulator)
+      t)))
+
+(defun handle-scroll (emulator rows)
+  "Mouse wheel: scroll history, or on the alternate screen (vim, less) send
+arrow keys so the program scrolls."
+  (cond
+    ((zerop rows))
+    ((with-engine (engine emulator) (engine-mode engine :alternate-screen))
+     (let ((sequence (with-engine (engine emulator)
+                       (engine-encode-key engine (if (minusp rows) :up :down) '()))))
+       (loop repeat (abs rows) do (write-input emulator sequence))))
+    (t (scroll-viewport emulator rows))))
+
+(defun scrollback-key-handler (emulator key modifiers)
+  "The default scrollback bindings: Shift+PageUp/PageDown by page and
+Shift+Home/End to the top or bottom.  On *KEY-HOOK*; remove it to rebind."
+  (when (equal modifiers '(:shift))
+    (case key
+      (:page-up (scroll-viewport emulator :page-up))
+      (:page-down (scroll-viewport emulator :page-down))
+      (:home (scroll-viewport emulator :top))
+      (:end (scroll-viewport emulator :bottom)))))
+
+(add-hook '*key-hook* 'scrollback-key-handler)
+
 (defun handle-keypress (emulator char keysym state)
   (let ((key (event-key char keysym))
         (modifiers (decode-modifier-state state)))
     (when (and key
                (not (run-hook-until-success '*key-hook* emulator key modifiers)))
+      ;; Typing returns the view to the live screen.
+      (scroll-viewport emulator :bottom)
       (write-input emulator
-                   (engine-encode-key (terminal-emulator-engine emulator)
-                                      key
-                                      modifiers)))))
+                   (with-engine (engine emulator)
+                     (engine-encode-key engine key modifiers))))))
 
 (defun paste-text (emulator text)
   "Send TEXT to the child as a paste, bracketed when the child asked for it."
-  (let ((engine (terminal-emulator-engine emulator))
+  (let ((bracketed (with-engine (engine emulator)
+                     (engine-mode engine :bracketed-paste)))
         (esc (code-char 27)))
     (write-input emulator
-                 (if (engine-mode engine :bracketed-paste)
+                 (if bracketed
                      (format nil "~c[200~~~a~c[201~~" esc text esc)
                      text))))
 
-(defun pump-process-output (emulator)
-  "Feed pending child output to the engine.  Return :EOF once the child's
-side of the PTY has closed, otherwise the number of octets processed."
+(defun reader-loop (emulator)
+  "Body of the reader thread: wait for child output, feed it to the engine
+in chunks and request renders, until the child's side closes."
   (let ((fd (terminal-emulator-fd emulator))
-        (buffer (terminal-emulator-read-buffer emulator))
-        (engine (terminal-emulator-engine emulator))
-        (total 0))
-    (declare (type fixnum total))
+        (buffer (terminal-emulator-read-buffer emulator)))
     (loop
-      (let ((count (read-available-octets fd buffer)))
-        (cond
-          ((eq count :eof) (return :eof))
-          ((zerop count) (return total))
-          (t
-           (engine-feed engine buffer :end count)
-           (incf total count)
-           (when (>= total *read-budget-octets*)
-             (return total))))))))
+      (when (terminal-emulator-closed-p emulator)
+        (return))
+      ;; Wake periodically so a destroyed emulator's thread exits.
+      (when (sb-unix:unix-simple-poll fd :input 100)
+        (let ((fed nil))
+          (loop
+            (let ((count (read-available-octets fd buffer)))
+              (cond
+                ((eq count :eof)
+                 (when fed (request-render emulator))
+                 (invoke-on-ui emulator (lambda () (finish-emulator emulator)))
+                 (return-from reader-loop))
+                ((zerop count) (return))
+                (t
+                 (with-engine (engine emulator)
+                   (engine-feed engine buffer :end count))
+                 (setf fed t)
+                 (request-render emulator))))))))))
+
+(defun start-reader-thread (emulator)
+  (setf (terminal-emulator-reader-thread emulator)
+        (bt:make-thread (lambda ()
+                          (handler-case (reader-loop emulator)
+                            (error (condition)
+                              (format *error-output* "~&slt: reader stopped: ~a~%" condition))))
+                        :name "slt pty reader")))
 
 (defun finish-emulator (emulator)
-  (setf (terminal-emulator-process emulator) nil)
-  (destroy-emulator emulator)
-  (backend-request-exit (terminal-emulator-backend emulator)
-                        (terminal-emulator-view emulator)))
+  (unless (terminal-emulator-closed-p emulator)
+    (render-emulator emulator)
+    (setf (terminal-emulator-process emulator) nil)
+    (destroy-emulator emulator)
+    (backend-request-exit (terminal-emulator-backend emulator)
+                          (terminal-emulator-view emulator))))
 
 (defun schedule-poll (emulator)
+  "Periodic UI-thread work: run queued work for backends without a wakeup,
+and notice a child that exited without closing the PTY."
   (labels ((poll ()
              (unless (terminal-emulator-closed-p emulator)
-               (let ((result (if (terminal-emulator-fd emulator)
-                                 (pump-process-output emulator)
-                                 0)))
-                 (unless (eql result 0)
-                   (render-emulator emulator))
-                 (when (or (eq result :eof)
-                           (and (terminal-emulator-process emulator)
-                                (not (process-alive-p (terminal-emulator-process emulator)))
-                                (eql (pump-process-output emulator) :eof)))
-                   (render-emulator emulator)
-                   (finish-emulator emulator)))
-               (unless (terminal-emulator-closed-p emulator)
-                 (backend-schedule (terminal-emulator-backend emulator)
-                                   (terminal-emulator-view emulator)
-                                   (terminal-emulator-poll-interval emulator)
-                                   #'poll)))))
+               (drain-ui-queue emulator)
+               (let ((process (terminal-emulator-process emulator)))
+                 (when (and process (not (process-alive-p process))
+                            (not (and (terminal-emulator-reader-thread emulator)
+                                      (bt:thread-alive-p
+                                       (terminal-emulator-reader-thread emulator)))))
+                   (finish-emulator emulator))))
+             (unless (terminal-emulator-closed-p emulator)
+               (backend-schedule (terminal-emulator-backend emulator)
+                                 (terminal-emulator-view emulator)
+                                 (terminal-emulator-poll-interval emulator)
+                                 #'poll))))
     (backend-schedule (terminal-emulator-backend emulator)
                       (terminal-emulator-view emulator)
                       (terminal-emulator-poll-interval emulator)
@@ -213,25 +336,32 @@ side of the PTY has closed, otherwise the number of octets processed."
                :output-function (lambda (string)
                                   (when (car emulator-cell)
                                     (send-to-process (car emulator-cell) string)))
+               ;; Engines call these from the reader thread.
                :title-function (lambda (title)
                                  (let ((emulator (car emulator-cell)))
                                    (when emulator
-                                     (backend-set-title
-                                      (terminal-emulator-backend emulator)
-                                      (terminal-emulator-view emulator)
-                                      (format nil "~a - ~a"
-                                              (terminal-emulator-title emulator)
-                                              title))
-                                     (run-hook '*title-change-hook* emulator title))))
+                                     (invoke-on-ui
+                                      emulator
+                                      (lambda ()
+                                        (backend-set-title
+                                         (terminal-emulator-backend emulator)
+                                         (terminal-emulator-view emulator)
+                                         (format nil "~a - ~a"
+                                                 (terminal-emulator-title emulator)
+                                                 title))
+                                        (run-hook '*title-change-hook* emulator title))))))
                :bell-function (lambda ()
-                                (when (car emulator-cell)
-                                  (run-hook '*bell-hook* (car emulator-cell))))))
+                                (let ((emulator (car emulator-cell)))
+                                  (when emulator
+                                    (invoke-on-ui
+                                     emulator
+                                     (lambda () (run-hook '*bell-hook* emulator))))))))
 
 (defun launch-terminal (&key
                           (backend (or (uiop:getenv "SLT_BACKEND")
                                        (default-backend)))
                           (engine (or (uiop:getenv "SLT_ENGINE")
-                                      *default-engine*))
+                                      (default-engine)))
                           (rows 24)
                           (columns 80)
                           cell-width
@@ -301,8 +431,16 @@ side of the PTY has closed, otherwise the number of octets processed."
          (render-emulator emulator :force t)
          (backend-bind-resize backend-instance
                               view
-                              (lambda ()
-                                (schedule-resize emulator)))
+                              ;; Backends pass IMMEDIATE while the user drags
+                              ;; a window edge, when timers may not run.
+                              (lambda (&optional immediate)
+                                (if immediate
+                                    (apply-resize emulator)
+                                    (schedule-resize emulator))))
+         (backend-bind-scroll backend-instance
+                              view
+                              (lambda (rows)
+                                (handle-scroll emulator rows)))
          (backend-bind-keypress backend-instance
                                 view
                                 (lambda (char keysym state)
@@ -318,4 +456,6 @@ side of the PTY has closed, otherwise the number of octets processed."
                              (backend-request-exit backend-instance view)))
          (backend-focus backend-instance view)
          (run-hook '*after-init-hook* emulator)
+         (when (terminal-emulator-fd emulator)
+           (start-reader-thread emulator))
          (schedule-poll emulator))))))

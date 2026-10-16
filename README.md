@@ -19,13 +19,25 @@ resolved from `ocicl.csv`, `ocicl/` and `lib/`.
 
 | engine | what it is | setup |
 |---|---|---|
-| `3bst` (default) | pure Lisp; a fork of 3b's port of st (`lib/3bst`) | none |
+| `ghostty` | Ghostty's libghostty-vt, via cl-ghostty-vt; fastest, with scrollback | `make ghostty` |
 | `libvterm` | libvterm 0.3.3, the library Neovim uses (`lib/cl-libvterm`) | `make libvterm` |
-| `ghostty` | Ghostty's libghostty-vt, via cl-ghostty-vt | `make ghostty` |
+| `3bst` | pure Lisp; a fork of 3b's port of st (`lib/3bst`) | none |
+
+By default slt uses the first engine in this order that is available.
 
 Choose one with `--engine NAME`, `SLT_ENGINE=NAME`, `(launch-terminal :engine
 :NAME)` or `(setf slt:*default-engine* :NAME)` in your init file. Engines with
 native libraries live in their own `slt/NAME` systems, which load on first use.
+
+Output is parsed on a reader thread, and the UI draws at most once per frame,
+so heavy output never waits on rendering. Ghostty copies only changed rows
+into the grid through a small C helper (`src/native/slt-ghostty.c`), which is
+compiled on first use. On a 23 MB `cat`, ghostty manages about 140 MB/s,
+libvterm about 12 MB/s and 3bst about 2.6 MB/s.
+
+Scrollback (ghostty): use the mouse wheel or trackpad, Shift+PageUp/PageDown,
+and Shift+Home/End. Typing returns to the live screen. On the alternate
+screen (vim, less), the wheel sends arrow keys instead.
 
 `make conformance` runs the same byte streams through every available engine
 and compares the resulting screens. `slt/bench` measures throughput.
@@ -37,10 +49,14 @@ and compares the resulting screens. `slt/bench` measures throughput.
 | `cocoa` | macOS default: AppKit window, Metal renderer, CoreText glyphs |
 | `ltk` | Tk; portable fallback (needs `wish`), the default elsewhere |
 | `sdl2` | SDL2 renderer (`slt/sdl2`; needs SDL2, SDL2_ttf and SDL2_image) |
+
 | `web` | serves a browser terminal; see [web/README.md](web/README.md) |
 | `headless` | no UI; for tests, scripting and remote frontends |
 
 Choose one with `--backend NAME` or `SLT_BACKEND=NAME`.
+Native OpenGL and Vulkan backends for Linux and the BSDs, which would
+work on both X11 and Wayland, are sketched in
+[doc/gpu-backends.md](doc/gpu-backends.md).
 
 ## Configuration
 
@@ -49,6 +65,7 @@ It runs in the `slt` package:
 
 ```lisp
 (setf *default-engine* :ghostty)
+;; The default is a soft dark theme; :ansi :xterm restores classic colors.
 (setf *palette* (make-palette :foreground #xcdd6f4 :background #x1e1e2e))
 (add-hook '*title-change-hook* (lambda (emulator title) (declare (ignore emulator)) (print title)))
 (add-hook '*key-hook* (lambda (emulator key modifiers)   ; return true to consume the key

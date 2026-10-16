@@ -223,18 +223,34 @@
      (let ((level (+ 8 (* 10 (- index 232)))))
        (make-rgb level level level)))))
 
+(defparameter *ansi-colors*
+  '(:slt #(#x2B2F37 #xD77A7A #x9FBF7F #xE0C285 #x7AA6DA #xC397D8 #x70C0B1 #xC8CCD4
+           #x5C6370 #xE88F8F #xB5D495 #xECD39B #x93B8E3 #xD2AEE3 #x8FD3C8 #xE6E9EF)
+    :xterm #(#x000000 #xCD0000 #x00CD00 #xCDCD00 #x0000EE #xCD00CD #x00CDCD #xE5E5E5
+             #x7F7F7F #xFF0000 #x00FF00 #xFFFF00 #x5C5CFF #xFF00FF #x00FFFF #xFFFFFF))
+  "Named sets of the 16 ANSI colors.  :SLT is a soft, low-glare default.")
+
 (defstruct (palette (:constructor %make-palette))
-  (foreground #xE5E5E5 :type rgb)
-  (background #x000000 :type rgb)
-  (cursor #xE5E5E5 :type rgb)
+  (foreground #xC8CCD4 :type rgb)
+  (background #x1C1F24 :type rgb)
+  (cursor #xD8DEE9 :type rgb)
   (colors (make-array 256 :element-type 'rgb) :type (simple-array rgb (256))))
 
-(defun make-palette (&key (foreground #xE5E5E5) (background #x000000)
-                       (cursor foreground) overrides)
-  "OVERRIDES is an alist of (INDEX . RGB) applied over the xterm defaults."
-  (let ((colors (make-array 256 :element-type 'rgb)))
+(defun make-palette (&key (ansi :slt)
+                       (foreground (if (eq ansi :xterm) #xE5E5E5 #xC8CCD4))
+                       (background (if (eq ansi :xterm) #x000000 #x1C1F24))
+                       (cursor (if (eq ansi :xterm) foreground #xD8DEE9))
+                       overrides)
+  "A palette.  ANSI names a set of the 16 base colors in *ANSI-COLORS* (or
+is a vector of 16 RGB values); colors 16-255 are the xterm cube and gray
+ramp.  OVERRIDES is an alist of (INDEX . RGB) applied last."
+  (let ((colors (make-array 256 :element-type 'rgb))
+        (base (if (vectorp ansi) ansi (getf *ansi-colors* ansi))))
+    (unless (and base (= (length base) 16))
+      (error "Unknown ANSI color set ~s." ansi))
     (dotimes (index 256)
-      (setf (aref colors index) (xterm-palette-entry index)))
+      (setf (aref colors index)
+            (if (< index 16) (aref base index) (xterm-palette-entry index))))
     (loop for (index . rgb) in overrides
           do (setf (aref colors index) rgb))
     (%make-palette :foreground foreground :background background

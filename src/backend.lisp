@@ -55,6 +55,21 @@
 (defgeneric backend-bind-resize (backend view callback))
 (defgeneric backend-bind-keypress (backend view callback))
 (defgeneric backend-on-close (backend view callback))
+(defgeneric backend-wakeup (backend view thunk)
+  (:documentation "Called from a non-UI thread: arrange for THUNK to run
+soon on the UI thread and return true.  Backends that cannot be woken from
+another thread return NIL; the frontend's poll timer then runs the work.")
+  (:method (backend view thunk)
+    (declare (ignore backend view thunk))
+    nil))
+
+(defgeneric backend-bind-scroll (backend view callback)
+  (:documentation "Arrange for CALLBACK to be called with a number of rows
+to scroll (negative is back through history) when the user scrolls.")
+  (:method (backend view callback)
+    (declare (ignore backend view callback))
+    nil))
+
 (defgeneric backend-bind-paste (backend view callback)
   (:documentation "Arrange for CALLBACK to be called with pasted text.")
   (:method (backend view callback)

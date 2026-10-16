@@ -49,6 +49,14 @@ character or a key keyword) with MODIFIERS (a list of :shift, :control,
     (xterm-encode-key key modifiers
                       :application-cursor (engine-mode engine :application-cursor))))
 
+(defgeneric engine-scroll (engine how)
+  (:documentation "Scroll the viewport through scrollback: HOW is :TOP,
+:BOTTOM or a number of rows (negative scrolls back).  Return true when the
+engine supports scrollback.")
+  (:method ((engine engine) how)
+    (declare (ignore how))
+    nil))
+
 (defgeneric engine-close (engine)
   (:method ((engine engine))
     nil))
@@ -76,8 +84,12 @@ character or a key keyword) with MODIFIERS (a list of :shift, :control,
 
 (defvar *engine-constructors* (make-hash-table :test #'eq))
 
-(defvar *default-engine* :3bst
-  "The engine used when none is requested.")
+(defvar *default-engine* nil
+  "The engine used when none is requested; NIL picks the first entry of
+*ENGINE-PREFERENCE* that is available.")
+
+(defvar *engine-preference* '(:ghostty :libvterm :3bst)
+  "Engines tried, fastest first, when *DEFAULT-ENGINE* is NIL.")
 
 (defun register-engine (name constructor)
   "CONSTRUCTOR is called with ROWS, COLUMNS and engine initargs."
@@ -100,11 +112,23 @@ systems so that slt itself does not require them."
       (asdf:load-system system)
       t)))
 
+(defun engine-available-p (name)
+  "True when engine NAME is registered or its system loads (which fails,
+for example, when a native library has not been built)."
+  (or (gethash name *engine-constructors*)
+      (and (ignore-errors (load-engine-system name))
+           (gethash name *engine-constructors*))))
+
+(defun default-engine ()
+  (or *default-engine*
+      (find-if #'engine-available-p *engine-preference*)
+      :3bst))
+
 (defun make-engine (designator &rest arguments &key rows columns &allow-other-keys)
   (declare (ignore rows columns))
   (if (typep designator 'engine)
       designator
-      (let* ((name (normalize-backend-name (or designator *default-engine*)))
+      (let* ((name (normalize-backend-name (or designator (default-engine))))
              (constructor (or (gethash name *engine-constructors*)
                               (and (load-engine-system name)
                                    (gethash name *engine-constructors*)))))

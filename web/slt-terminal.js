@@ -21,15 +21,16 @@
 // No dependencies; the protocol is documented in src/web/web-backend.lisp.
 
 export const DEFAULT_THEME = Object.freeze({
-  foreground: "#e5e5e5",
-  background: "#000000",
-  cursor: "#e5e5e5",
+  // A soft, low-glare dark theme (the same as slt's native default).
+  foreground: "#c8ccd4",
+  background: "#1c1f24",
+  cursor: "#d8dee9",
   cursorText: null, // defaults to the background color
-  selection: "rgba(128, 160, 255, 0.35)",
+  selection: "rgba(143, 188, 187, 0.28)",
   // ANSI colors 0-15; 16-255 follow the xterm cube and grayscale ramp.
   palette: [
-    "#000000", "#cd0000", "#00cd00", "#cdcd00", "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
-    "#7f7f7f", "#ff0000", "#00ff00", "#ffff00", "#5c5cff", "#ff00ff", "#00ffff", "#ffffff",
+    "#2b2f37", "#d77a7a", "#9fbf7f", "#e0c285", "#7aa6da", "#c397d8", "#70c0b1", "#c8ccd4",
+    "#5c6370", "#e88f8f", "#b5d495", "#ecd39b", "#93b8e3", "#d2aee3", "#8fd3c8", "#e6e9ef",
   ],
   boldIsBright: true,
   fontFamily: null, // falls back to --slt-font-family, then a monospace stack
@@ -190,6 +191,11 @@ export class SltTerminal extends EventTarget {
     if (this._send({ t: "resize", rows, cols })) this._requestedSize = [rows, cols];
   }
 
+  /** Scroll ROWS lines (negative is back through history). */
+  scroll(rows) {
+    if (rows) this._send({ t: "scroll", rows });
+  }
+
   /** Send TEXT as if pasted (bracketed when the program asked for it). */
   paste(text) {
     this._send({ t: "paste", text });
@@ -252,6 +258,17 @@ export class SltTerminal extends EventTarget {
       if (input.value) this.paste(input.value);
       input.value = "";
     });
+    let wheelRemainder = 0;
+    root.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const lines = e.deltaMode === 1 ? e.deltaY
+        : e.deltaMode === 2 ? e.deltaY * this.rows
+        : e.deltaY / this._cell.h;
+      wheelRemainder += lines;
+      const whole = Math.trunc(wheelRemainder);
+      wheelRemainder -= whole;
+      this.scroll(whole);
+    }, { passive: false });
     input.addEventListener("paste", (e) => {
       e.preventDefault();
       const text = e.clipboardData?.getData("text/plain");

@@ -6,7 +6,7 @@
 <title>slt</title>
 <style>
   :root { color-scheme: dark; }
-  html, body { margin: 0; height: 100%; background: #111; color: #ddd;
+  html, body { margin: 0; height: 100%; background: #16181d; color: #c8ccd4;
     font: 13px system-ui, sans-serif; }
   body { display: flex; flex-direction: column; }
   header { display: flex; gap: 12px; align-items: center; padding: 6px 12px; }
@@ -26,7 +26,12 @@
 
   // Example themes: any subset of DEFAULT_THEME's keys can be given.
   const themes = {
-    "xterm": {},
+    "slt": {},
+    "xterm": {
+      background: "#000000", foreground: "#e5e5e5", cursor: "#e5e5e5",
+      palette: ["#000000", "#cd0000", "#00cd00", "#cdcd00", "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
+                "#7f7f7f", "#ff0000", "#00ff00", "#ffff00", "#5c5cff", "#ff00ff", "#00ffff", "#ffffff"],
+    },
     "Solarized Dark": {
       background: "#002b36", foreground: "#839496", cursor: "#93a1a1",
       palette: ["#073642", "#dc322f", "#859900", "#b58900", "#268bd2", "#d33682", "#2aa198", "#eee8d5",

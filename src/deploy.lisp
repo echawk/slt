@@ -27,7 +27,7 @@
 ;;; order, which puts each shim first; defer the shims to a later hook.
 ;;; They are anonymous (loaded by path), so they are matched by file name.
 
-(defparameter *late-libraries* '("libvterm-cl-shim" "libghostty-vt-cl"))
+(defparameter *late-libraries* '("libvterm-cl-shim" "libghostty-vt-cl" "libslt-ghostty"))
 
 (defun late-library-p (library)
   (let ((path (ignore-errors (cffi:foreign-library-pathname library))))

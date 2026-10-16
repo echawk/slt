@@ -54,6 +54,8 @@
    ;; Engines
    #:engine
    #:*default-engine*
+   #:*engine-preference*
+   #:default-engine
    #:register-engine
    #:available-engines
    #:make-engine
@@ -66,6 +68,7 @@
    #:engine-mode
    #:engine-encode-key
    #:engine-close
+   #:engine-scroll
    #:engine-emit-output
    #:engine-emit-title
    #:engine-emit-bell
@@ -81,6 +84,9 @@
    #:backend-render-grid
    #:default-backend
    #:backend-bind-paste
+   #:backend-bind-scroll
+   #:scroll-viewport
+   #:scrollback-key-handler
    #:paste-text
    ;; Headless backend
    #:headless-backend
@@ -94,6 +100,7 @@
    #:headless-call
    #:headless-key
    #:headless-paste
+   #:headless-scroll
    #:headless-resize-window
    #:headless-resize-cells
    #:headless-close

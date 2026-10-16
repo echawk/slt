@@ -12,7 +12,10 @@
   ((view :initform nil :accessor cocoa-backend-view)
    (timers :initform '() :accessor cocoa-backend-timers)
    (timer-seq :initform 0 :accessor cocoa-backend-timer-seq)
-   (quit-p :initform nil :accessor cocoa-backend-quit-p)))
+   (quit-p :initform nil :accessor cocoa-backend-quit-p)
+   ;; Work posted from other threads (see BACKEND-WAKEUP).
+   (wake-lock :initform (bt:make-lock "slt cocoa wakeup") :reader cocoa-backend-wake-lock)
+   (wake-thunks :initform '() :accessor cocoa-backend-wake-thunks)))
 
 (defstruct (cocoa-view (:constructor %make-cocoa-view))
   backend
@@ -29,8 +32,12 @@
   (cell-height 1 :type fixnum)
   resize-callback
   keypress-callback
+  scroll-callback
   close-callback
-  (closed-p nil))
+  (closed-p nil)
+  ;; Fractional rows from trackpad scrolling, carried between events.
+  (scroll-remainder 0d0 :type double-float)
+  (live-resize-p nil))
 
 ;;; Objective-C objects call back into Lisp through these addresses.
 (defvar *cocoa-views* (make-hash-table))
@@ -94,6 +101,41 @@ expects, or NIL for keys the terminal should not see."
             (error (condition)
               (format *error-output* "~&slt: key handler error: ~a~%" condition))))))))
 
+(cffi:defcallback slt-view-scroll-wheel :void ((self :pointer) (command :pointer) (event :pointer))
+  (declare (ignore command))
+  (let ((view (cocoa-view-for self)))
+    (when (and view (cocoa-view-scroll-callback view))
+      (let* ((delta (msg event "scrollingDeltaY" :double))
+             (precise (msg event "hasPreciseScrollingDeltas" :bool))
+             ;; Trackpads report points, wheels report lines.
+             (rows (+ (cocoa-view-scroll-remainder view)
+                      (if precise
+                          (/ delta (/ (cocoa-view-cell-height view) (cocoa-view-scale view)))
+                          (* 3 delta))))
+             (whole (truncate rows)))
+        (setf (cocoa-view-scroll-remainder view) (- rows whole))
+        (unless (zerop whole)
+          ;; Scrolling content down (positive delta) moves back in history.
+          (funcall (cocoa-view-scroll-callback view) (- whole)))))))
+
+(cffi:defcallback slt-window-will-start-live-resize :void
+    ((self :pointer) (command :pointer) (notification :pointer))
+  (declare (ignore command notification))
+  (let ((view (cocoa-view-for self)))
+    (when view
+      (setf (cocoa-view-live-resize-p view) t)
+      (msg (metal-renderer-layer (cocoa-view-renderer view)) "setPresentsWithTransaction:"
+           :bool t :void))))
+
+(cffi:defcallback slt-window-did-end-live-resize :void
+    ((self :pointer) (command :pointer) (notification :pointer))
+  (declare (ignore command notification))
+  (let ((view (cocoa-view-for self)))
+    (when view
+      (setf (cocoa-view-live-resize-p view) nil)
+      (msg (metal-renderer-layer (cocoa-view-renderer view)) "setPresentsWithTransaction:"
+           :bool nil :void))))
+
 (cffi:defcallback slt-window-will-close :void ((self :pointer) (command :pointer) (notification :pointer))
   (declare (ignore command notification))
   (let ((view (cocoa-view-for self)))
@@ -108,17 +150,24 @@ expects, or NIL for keys the terminal should not see."
   (let ((view (cocoa-view-for self)))
     (when view
       (update-cocoa-drawable-size view)
-      (redraw-cocoa-view view)
       (when (cocoa-view-resize-callback view)
-        (funcall (cocoa-view-resize-callback view))))))
+        ;; AppKit runs its own loop during a drag, so resize now rather
+        ;; than through a timer, and run work the reader thread posted so
+        ;; the program's redraw appears while dragging.
+        (funcall (cocoa-view-resize-callback view) (cocoa-view-live-resize-p view))
+        (run-cocoa-wake-thunks (cocoa-view-backend view)))
+      (redraw-cocoa-view view))))
 
 (defun register-cocoa-classes ()
   (define-objc-subclass "SLTTerminalView" "NSView"
                         '(("acceptsFirstResponder" slt-view-accepts-first-responder "B@:")
-                          ("keyDown:" slt-view-key-down "v@:@")))
+                          ("keyDown:" slt-view-key-down "v@:@")
+                          ("scrollWheel:" slt-view-scroll-wheel "v@:@")))
   (define-objc-subclass "SLTWindowDelegate" "NSObject"
                         '(("windowWillClose:" slt-window-will-close "v@:@")
-                          ("windowDidResize:" slt-window-did-resize "v@:@"))))
+                          ("windowDidResize:" slt-window-did-resize "v@:@")
+                          ("windowWillStartLiveResize:" slt-window-will-start-live-resize "v@:@")
+                          ("windowDidEndLiveResize:" slt-window-did-end-live-resize "v@:@"))))
 
 ;;; Application setup and event loop
 
@@ -147,6 +196,34 @@ expects, or NIL for keys the terminal should not see."
             do (msg app "sendEvent:" :pointer event :void)
                (setf date (msg "NSDate" "distantPast")))
       (msg app "updateWindows" :void))))
+
+(defconstant +ns-event-type-application-defined+ 15)
+
+(defun post-wakeup-event ()
+  "Unblock the main thread's event wait.  Safe from any thread."
+  (float-features:with-float-traps-masked t
+    (with-autorelease-pool ()
+      (let ((event (msg "NSEvent"
+                        "otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"
+                        :unsigned-long +ns-event-type-application-defined+
+                        :double 0d0 :double 0d0
+                        :unsigned-long 0 :double 0d0 :long 0 :pointer (cffi:null-pointer)
+                        :short 0 :long 0 :long 0)))
+        (msg (msg "NSApplication" "sharedApplication") "postEvent:atStart:"
+             :pointer event :bool nil :void)))))
+
+(defmethod backend-wakeup ((backend cocoa-backend) view thunk)
+  (declare (ignore view))
+  (bt:with-lock-held ((cocoa-backend-wake-lock backend))
+    (push thunk (cocoa-backend-wake-thunks backend)))
+  (post-wakeup-event)
+  t)
+
+(defun run-cocoa-wake-thunks (backend)
+  (let ((thunks (bt:with-lock-held ((cocoa-backend-wake-lock backend))
+                  (shiftf (cocoa-backend-wake-thunks backend) '()))))
+    (dolist (thunk (nreverse thunks))
+      (funcall thunk))))
 
 (defun run-cocoa-timers (backend)
   (let ((now (get-internal-real-time))
@@ -181,6 +258,7 @@ expects, or NIL for keys the terminal should not see."
              (msg app "activateIgnoringOtherApps:" :bool t :void)
              (loop until (cocoa-backend-quit-p backend)
                    do (cocoa-pump-events app (min 0.25 (next-timer-timeout backend)))
+                      (run-cocoa-wake-thunks backend)
                       (run-cocoa-timers backend)))
         (let ((view (cocoa-backend-view backend)))
           (when view
@@ -276,6 +354,11 @@ expects, or NIL for keys the terminal should not see."
     (msg window "setContentView:" :pointer ns-view :void)
     (msg window "setDelegate:" :pointer delegate :void)
     (msg window "setReleasedWhenClosed:" :bool nil :void)
+    ;; A dark title bar to match the terminal.
+    (msg window "setAppearance:"
+         :pointer (msg "NSAppearance" "appearanceNamed:"
+                       :pointer (foreign-global "NSAppearanceNameDarkAqua"))
+         :void)
     (msg window "setTitle:" :pointer (ns-string title) :void)
     (msg window "center" :void)
     (msg window "makeKeyAndOrderFront:" :pointer (cffi:null-pointer) :void)
@@ -323,6 +406,9 @@ expects, or NIL for keys the terminal should not see."
 
 (defmethod backend-bind-keypress ((backend cocoa-backend) (view cocoa-view) callback)
   (setf (cocoa-view-keypress-callback view) callback))
+
+(defmethod backend-bind-scroll ((backend cocoa-backend) (view cocoa-view) callback)
+  (setf (cocoa-view-scroll-callback view) callback))
 
 (defmethod backend-on-close ((backend cocoa-backend) (view cocoa-view) callback)
   (setf (cocoa-view-close-callback view) callback))

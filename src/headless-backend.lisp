@@ -33,6 +33,7 @@
   (render-count 0 :type fixnum)
   resize-callback
   keypress-callback
+  scroll-callback
   paste-callback
   close-callback
   (closed-p nil))
@@ -97,6 +98,13 @@ bits are still set during the call.")
                  (lambda ()
                    (when (headless-view-keypress-callback view)
                      (funcall (headless-view-keypress-callback view) char keysym state)))))
+
+(defun headless-scroll (view rows)
+  "Scroll by ROWS (negative is back through history), as a mouse wheel would."
+  (headless-call (headless-view-backend view)
+                 (lambda ()
+                   (when (headless-view-scroll-callback view)
+                     (funcall (headless-view-scroll-callback view) rows)))))
 
 (defun headless-paste (view text)
   (headless-call (headless-view-backend view)
@@ -185,11 +193,19 @@ bits are still set during the call.")
 (defmethod backend-bind-keypress ((backend headless-backend) (view headless-view) callback)
   (setf (headless-view-keypress-callback view) callback))
 
+(defmethod backend-bind-scroll ((backend headless-backend) (view headless-view) callback)
+  (setf (headless-view-scroll-callback view) callback))
+
 (defmethod backend-bind-paste ((backend headless-backend) (view headless-view) callback)
   (setf (headless-view-paste-callback view) callback))
 
 (defmethod backend-on-close ((backend headless-backend) (view headless-view) callback)
   (setf (headless-view-close-callback view) callback))
+
+(defmethod backend-wakeup ((backend headless-backend) view thunk)
+  (declare (ignore view))
+  (headless-call backend thunk)
+  t)
 
 (defmethod backend-focus ((backend headless-backend) (view headless-view))
   nil)

@@ -70,6 +70,7 @@ Give the container a size.
 | `setTheme(partialTheme)` | merges into the current theme and redraws; no server round trip |
 | `fit()` / `resize(rows, cols)` | size to the container, or to an explicit size |
 | `paste(text)` | bracketed when the program requested it |
+| `scroll(rows)` | scroll back (negative) or forward through history; the mouse wheel does this |
 | `sendKey(char, keysym, state)` | raw key input (X11 keysym names and modifier bits) |
 | `focus()`, `text()`, `rows`, `cols`, `title`, `theme` | |
 | events `open`, `close`, `title` (detail: string), `bell`, `exit`, `frame` | |
@@ -104,7 +105,7 @@ The server and browser exchange JSON text frames over `/ws?token=...`.
 `src/web/web-backend.lisp` documents the messages. In short, the server sends
 `hello`, `frame` (changed rows as runs of `[text, fg, bg, attrs]` plus the
 cursor), `resize`, `title`, `bell` and `exit`. The client sends `key`,
-`paste` and `resize`. Any client that speaks this protocol can drive slt.
+`paste`, `scroll` and `resize`. Any client that speaks this protocol can drive slt.
 
 ## Testing
 

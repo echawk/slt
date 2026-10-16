@@ -527,13 +527,19 @@
     (is-equal "hello" title)))
 
 (deftest cell-rgb-resolves-palette-inverse-and-cursor ()
-  (let* ((palette (make-palette :foreground #xAAAAAA :background #x111111
+  (let* ((palette (make-palette :ansi :xterm :foreground #xAAAAAA :background #x111111
                                 :cursor #x00FF00))
          (grid (engine-grid (feed (make-test-engine :rows 1 :columns 4)
                                   :esc "[31mR" :esc "[0;7mI" :esc "[0m"))))
     (is-equal (list #xCD0000 #x111111) (multiple-value-list (cell-rgb grid 0 palette)))
     (is-equal (list #x111111 #xAAAAAA) (multiple-value-list (cell-rgb grid 1 palette)))
     (is-equal #x00FF00 (nth-value 1 (cell-rgb grid 2 palette)))))
+
+(deftest default-palette-is-the-soft-theme ()
+  (is-equal #x1C1F24 (palette-background (make-palette)))
+  (is-equal #xD77A7A (aref (palette-colors (make-palette)) 1))
+  (is-equal #xCD0000 (aref (palette-colors (make-palette :ansi :xterm)) 1))
+  (is-equal #x123456 (aref (palette-colors (make-palette :overrides '((1 . #x123456)))) 1)))
 
 (deftest cell-rgb-dims-faint-text-toward-the-background ()
   (let ((palette (make-palette :foreground #xFFFFFF :background #x000000))
@@ -769,7 +775,7 @@
   (let* ((grid (engine-grid (feed (make-test-engine :rows 1 :columns 4)
                                   :esc "[31;4mA" :esc "[0mA" (string (code-char #x4E2D)))))
          (atlas (slt::make-glyph-atlas 2 2 #'fake-rasterizer :width 16 :height 16))
-         (instances (slt::pack-grid grid atlas (make-palette) nil)))
+         (instances (slt::pack-grid grid atlas (make-palette :ansi :xterm) nil)))
     ;; A (red, underlined), A again (same glyph, same slot), then a wide glyph.
     (is-equal (list #xCD0000 1 slt::+gpu-flag-underline+)
               (list (aref instances 0) (aref instances 2) (aref instances 3)))
@@ -831,6 +837,35 @@
       (when (bt:thread-alive-p thread)
         (setf (slt::headless-backend-quit-p backend) t)
         (bt:join-thread thread)))))
+
+(deftest headless-scrollback-with-ghostty ()
+  (when (slt::engine-available-p :ghostty)
+    (let* ((backend (make-instance 'headless-backend))
+           (thread (bt:make-thread
+                    (lambda ()
+                      (launch-terminal :backend backend :engine :ghostty :shell "/bin/sh"
+                                       :rows 6 :columns 30 :load-config nil))
+                    :name "slt scrollback test")))
+      (unwind-protect
+           (progn
+             (is (wait-until (lambda () (slt::headless-backend-view backend))))
+             (let ((view (slt::headless-backend-view backend)))
+               (is (wait-until (lambda () (search "$" (headless-screen-text view)))))
+               (headless-paste view (format nil "for i in $(seq 1 60); do echo line$i; done~%"))
+               (is (wait-until (lambda () (search "line60" (headless-screen-text view))))
+                   "output reaches the screen")
+               (headless-scroll view -20)
+               (is (wait-until (lambda () (and (search "line4" (headless-screen-text view))
+                                               (not (search "line60" (headless-screen-text view))))))
+                   "scrolling back shows earlier lines")
+               (headless-key view "" "End" slt::+shift-mask+)
+               (is (wait-until (lambda () (search "line60" (headless-screen-text view))))
+                   "Shift+End returns to the live screen")
+               (headless-close view)
+               (is (wait-until (lambda () (not (bt:thread-alive-p thread)))))))
+        (when (bt:thread-alive-p thread)
+          (setf (slt::headless-backend-quit-p backend) t)
+          (bt:join-thread thread))))))
 
 (defun run-tests ()
   (let ((failures '()))

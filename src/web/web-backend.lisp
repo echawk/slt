@@ -18,6 +18,7 @@
 ;;;;   client -> server
 ;;;;     {"t":"key","char":S,"keysym":S,"state":N}   (X11 keysyms/modifier bits)
 ;;;;     {"t":"paste","text":S}
+;;;;     {"t":"scroll","rows":N}                     (negative scrolls back)
 ;;;;     {"t":"resize","rows":R,"cols":C}
 ;;;;
 ;;;; Anyone who can open the socket can run commands as you, so the server
@@ -202,6 +203,10 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
                          (json-integer data "state")))
           ((equal type "paste")
            (headless-paste view (json-string data "text")))
+          ((equal type "scroll")
+           (let ((rows (json-integer data "rows" 0)))
+             (when (< -10000 rows 10000)
+               (headless-scroll view rows))))
           ((equal type "resize")
            (let ((rows (json-integer data "rows" 0))
                  (columns (json-integer data "cols" 0)))
