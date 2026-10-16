@@ -171,6 +171,9 @@
     (uiop:split-string value :separator +cli-argument-separator+)))
 
 (defun main (&optional arguments)
+  "Entry point.  ARGUMENTS default to $SLT_CLI_ARGS (set by run-slt) or, in
+a dumped executable, the process's command line."
   (clingon:run (make-cli-command)
                (or arguments
-                   (environment-cli-arguments))))
+                   (environment-cli-arguments)
+                   (uiop:command-line-arguments))))

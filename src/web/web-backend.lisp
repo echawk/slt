@@ -35,6 +35,22 @@
 (defun web-asset-pathname (name)
   (asdf:system-relative-pathname :slt (concatenate 'string "web/" name)))
 
+(defvar *web-assets* (make-hash-table :test #'equal)
+  "Asset contents captured at load time, so a dumped executable is
+self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
+
+(defvar *web-assets-from-disk* nil)
+
+(defun web-asset (name)
+  (if *web-assets-from-disk*
+      (uiop:read-file-string (web-asset-pathname name))
+      (or (gethash name *web-assets*)
+          (error "Unknown web asset ~s." name))))
+
+(dolist (name '("slt-terminal.js" "index.html"))
+  (setf (gethash name *web-assets*)
+        (uiop:read-file-string (web-asset-pathname name))))
+
 (defun random-token ()
   (with-open-file (in "/dev/urandom" :element-type '(unsigned-byte 8))
     (format nil "~(~{~2,'0x~}~)" (loop repeat 16 collect (read-byte in)))))
@@ -69,7 +85,7 @@
   (when cors
     (setf (hunchentoot:header-out "Access-Control-Allow-Origin") "*"))
   (setf (hunchentoot:header-out "Cache-Control") "no-cache")
-  (uiop:read-file-string (web-asset-pathname name)))
+  (web-asset name))
 
 (defmethod hunchentoot:acceptor-dispatch-request ((acceptor web-acceptor) request)
   (let ((backend (web-acceptor-backend acceptor))

@@ -91,12 +91,23 @@ character or a key keyword) with MODIFIERS (a list of :shift, :control,
         #'string<
         :key #'symbol-name))
 
+(defun load-engine-system (name)
+  "Load the ASDF system slt/NAME (e.g. slt/ghostty) if it exists, which
+registers that engine.  Engines with native libraries live in their own
+systems so that slt itself does not require them."
+  (let ((system (format nil "slt/~(~a~)" name)))
+    (when (asdf:find-system system nil)
+      (asdf:load-system system)
+      t)))
+
 (defun make-engine (designator &rest arguments &key rows columns &allow-other-keys)
   (declare (ignore rows columns))
   (if (typep designator 'engine)
       designator
       (let* ((name (normalize-backend-name (or designator *default-engine*)))
-             (constructor (gethash name *engine-constructors*)))
+             (constructor (or (gethash name *engine-constructors*)
+                              (and (load-engine-system name)
+                                   (gethash name *engine-constructors*)))))
         (unless constructor
           (error "Unknown engine ~S. Available engines: ~{~S~^, ~}."
                  name

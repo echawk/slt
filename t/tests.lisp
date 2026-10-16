@@ -535,6 +535,16 @@
     (is-equal (list #x111111 #xAAAAAA) (multiple-value-list (cell-rgb grid 1 palette)))
     (is-equal #x00FF00 (nth-value 1 (cell-rgb grid 2 palette)))))
 
+(deftest cell-rgb-dims-faint-text-toward-the-background ()
+  (let ((palette (make-palette :foreground #xFFFFFF :background #x000000))
+        (grid (engine-grid (feed (make-test-engine :rows 1 :columns 2) :esc "[2mf"))))
+    (is-equal #x7F7F7F (nth-value 0 (cell-rgb grid 0 palette)))))
+
+(deftest make-engine-loads-engine-systems-on-demand ()
+  (is (null (slt::load-engine-system :no-such-engine)))
+  (handler-case (progn (make-engine :no-such-engine) (is nil "unknown engine accepted"))
+    (error () t)))
+
 (deftest grid-handles-wide-characters ()
   (let ((grid (engine-grid (feed (make-test-engine :rows 1 :columns 4)
                                  (string (code-char #x4E2D)) "x"))))

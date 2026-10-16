@@ -255,9 +255,17 @@
            (palette-foreground palette)
            (palette-background palette)))))
 
+(declaim (inline blend-rgb))
+(defun blend-rgb (a b)
+  "The color halfway between RGB values A and B."
+  (declare (type rgb a b))
+  (flet ((channel (shift)
+           (ash (floor (+ (ldb (byte 8 shift) a) (ldb (byte 8 shift) b)) 2) shift)))
+    (logior (channel 16) (channel 8) (channel 0))))
+
 (defun cell-rgb (grid index palette)
   "Return the resolved foreground and background RGB for the cell at INDEX,
-taking bold-brightening, inverse video and the cursor into account."
+taking bold-brightening, faint, inverse video and the cursor into account."
   (declare (type grid grid)
            (type grid-index index)
            (type palette palette)
@@ -272,6 +280,8 @@ taking bold-brightening, inverse video and the cursor into account."
          (fg (resolve-color fg-color palette t))
          (bg (resolve-color (aref (grid-bg grid) index) palette nil)))
     (declare (type rgb fg bg))
+    (when (logtest attrs +attr-faint+)
+      (setf fg (blend-rgb fg bg)))
     (when (logtest attrs +attr-inverse+)
       (rotatef fg bg))
     (when (and (grid-cursor-visible-p grid)
