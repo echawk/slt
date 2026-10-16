@@ -26,7 +26,12 @@
     (terminal-backend designator)
     ((or symbol string)
      (let* ((name (normalize-backend-name designator))
-            (constructor (gethash name *backend-constructors*)))
+            (constructor (or (gethash name *backend-constructors*)
+                             ;; Optional backends live in their own systems.
+                             (let ((system (format nil "slt/~(~a~)" name)))
+                               (when (asdf:find-system system nil)
+                                 (asdf:load-system system)
+                                 (gethash name *backend-constructors*))))))
        (unless constructor
          (error "Unknown backend ~S. Available backends: ~{~S~^, ~}."
                 name

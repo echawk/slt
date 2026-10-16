@@ -4,3 +4,4 @@
 /.deps/
 /lib/*/build/
 *.fasl
+/bin/

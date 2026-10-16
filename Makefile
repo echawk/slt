@@ -2,7 +2,7 @@ OCICL ?= ocicl
 BUILD_OUTPUT ?= build/slt
 LISP = scripts/lisp
 
-.PHONY: deps test web-test conformance libvterm ghostty run run-sdl2 dump clean
+.PHONY: deps test bundle web-test conformance libvterm ghostty run run-sdl2 dump clean
 
 deps: ocicl/.stamp
 
@@ -45,6 +45,10 @@ $(BUILD_OUTPUT): deps
 		--eval '(slt:dump-executable :output "$(BUILD_OUTPUT)")'
 
 dump: $(BUILD_OUTPUT)
+
+# Self-contained distribution in bin/ (executable + native libraries).
+bundle: deps libvterm ghostty
+	scripts/bundle
 
 clean:
 	rm -rf build

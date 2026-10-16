@@ -1,0 +1,62 @@
+#!/usr/bin/env sh
+# Build the self-contained distribution in bin/: the slt executable plus
+# the native libraries it loads (engines, osicat, zstd), via Deploy.
+#
+# On macOS, Homebrew's SBCL runtime links libzstd by an absolute path, and
+# the dumped executable inherits that reference; it cannot be edited
+# afterwards because the Lisp core is appended to the Mach-O file.  So the
+# runtime is copied into .deps/, repointed at @executable_path, re-signed,
+# and the image is built with it.
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+: "${SBCL:=sbcl}"
+
+eval "$($SBCL --noinform --non-interactive --no-sysinit --no-userinit \
+  --eval '(format t "runtime=~a~%core=~a~%" sb-ext:*runtime-pathname* (namestring sb-ext:*core-pathname*))' |
+  grep -E '^(runtime|core)=' | sed 's/=\(.*\)/="\1"/')"
+
+if [ "$(uname -s)" = Darwin ]; then
+  zstd=$(otool -L "$runtime" | awk '/libzstd/ && $1 !~ /^@/ {print $1}')
+  if [ -n "$zstd" ]; then
+    dir="$root/.deps/sbcl-runtime"
+    mkdir -p "$dir"
+    cp -f "$runtime" "$dir/sbcl"
+    cp -f "$(cd "$(dirname "$zstd")" && pwd -P)/$(basename "$(readlink "$zstd" || echo "$zstd")")" \
+      "$dir/libzstd.1.dylib" 2>/dev/null || cp -fL "$zstd" "$dir/libzstd.1.dylib"
+    chmod u+w "$dir/sbcl" "$dir/libzstd.1.dylib"
+    install_name_tool -change "$zstd" @executable_path/libzstd.1.dylib "$dir/sbcl"
+    codesign -f -s - "$dir/sbcl" 2>/dev/null
+    SBCL="$dir/sbcl"
+    # Contribs (asdf, sb-posix, ...) are found relative to SBCL_HOME,
+    # which otherwise derives from the runtime's new location.
+    SBCL_HOME=$(dirname "$core")
+    export SBCL SBCL_HOME
+  fi
+fi
+
+rm -rf bin
+SBCL_CORE="$core" scripts/lisp --eval '(asdf:make :slt/app)'
+
+# The executable asks for @executable_path/libzstd.1.dylib; Deploy copied
+# zstd under its versioned name.
+if [ ! -e bin/libzstd.1.dylib ]; then
+  versioned=$(cd bin && ls libzstd.*.dylib 2>/dev/null | head -1)
+  if [ -n "$versioned" ]; then
+    ln -s "$versioned" bin/libzstd.1.dylib
+  fi
+fi
+# Apple Silicon kills unsigned or mis-signed executables.  The runtime's
+# signature does not survive the appended core, so sign the result; codesign
+# warns that the appended core fails "strict validation", which is expected.
+# Deploy also rewrites the copied libraries' install names, which
+# invalidates any signature that is not linker-generated (Homebrew's zstd).
+if [ "$(uname -s)" = Darwin ]; then
+  for library in bin/*.dylib; do
+    [ -L "$library" ] || codesign -f -s - "$library" 2>&1 | grep -v "replacing existing" || true
+  done
+  codesign -f -s - bin/slt 2>&1 | grep -v "strict validation\|replacing existing" || true
+fi
+
+echo "built $root/bin:"
+ls -1 bin

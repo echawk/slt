@@ -37,6 +37,10 @@ cocoas, git+https://codeberg.org/shinmera/cocoas@d35ee431cf7fc017bb29242fd0b6d1c
 com.inuoe.jzon, ghcr.io/ocicl/com.inuoe.jzon@sha256:b0cfbc3d8fb3c09526d92575b40b13a68ad93be7edeb48fd69dcea053c5611a5, jzon-20251113-f05afbb/com.inuoe.jzon.asd
 com.inuoe.jzon-tests, ghcr.io/ocicl/com.inuoe.jzon@sha256:b0cfbc3d8fb3c09526d92575b40b13a68ad93be7edeb48fd69dcea053c5611a5, jzon-20251113-f05afbb/com.inuoe.jzon-tests.asd
 defpackage-plus, ghcr.io/ocicl/defpackage-plus@sha256:860cd29dded7b30c418ac022b2af8fa5daf947c0164b82f526662ec76bf3de14, defpackage-plus-20240503-5492e27/defpackage-plus.asd
+deploy, ghcr.io/ocicl/deploy@sha256:796dca9ec2e486ad5424fec4b0876ab29d85a087cfb0f70aa08636a223def9f1, deploy-20261002-89039bc/deploy.asd
+deploy-macos-test, ghcr.io/ocicl/deploy@sha256:796dca9ec2e486ad5424fec4b0876ab29d85a087cfb0f70aa08636a223def9f1, deploy-20261002-89039bc/test/macos/deploy-macos-test.asd
+deploy-test, ghcr.io/ocicl/deploy@sha256:796dca9ec2e486ad5424fec4b0876ab29d85a087cfb0f70aa08636a223def9f1, deploy-20261002-89039bc/test/deploy-test.asd
+deploy-test-app, ghcr.io/ocicl/deploy@sha256:796dca9ec2e486ad5424fec4b0876ab29d85a087cfb0f70aa08636a223def9f1, deploy-20261002-89039bc/test/macos/deploy-test-app.asd
 documentation-utils, ghcr.io/ocicl/documentation-utils@sha256:b2a1b3f3bcd1a738af85ae2b0168d408c177661eab6d6bbebb254e394d983f54, documentation-utils-20230511-98630dd/documentation-utils.asd
 flexi-streams, ghcr.io/ocicl/flexi-streams@sha256:95005b06a8a95c82780c75ead53810bcb273d07fcf5fe76b527f1856df9923f2, flexi-streams-20240503-4951d57/flexi-streams.asd
 flexi-streams-test, ghcr.io/ocicl/flexi-streams@sha256:95005b06a8a95c82780c75ead53810bcb273d07fcf5fe76b527f1856df9923f2, flexi-streams-20240503-4951d57/flexi-streams-test.asd
@@ -54,6 +58,8 @@ mathkit, ghcr.io/ocicl/mathkit@sha256:ea75fc533d17f2b0540c631f0e2cb8929168c4c084
 md5, ghcr.io/ocicl/md5@sha256:7d8a8d7af07a2bcbca05ad839555730a0e021c697bf13cc02279669c7a9b038b, md5-2.0.5/md5.asd
 multilang-documentation-utils, ghcr.io/ocicl/documentation-utils@sha256:b2a1b3f3bcd1a738af85ae2b0168d408c177661eab6d6bbebb254e394d983f54, documentation-utils-20230511-98630dd/multilang-documentation-utils.asd
 osicat, ghcr.io/ocicl/osicat@sha256:48af110420f02e99c37370e48bee10d7c7aada7e563483e1f47e3bc1173545f9, osicat-20251007-68732bd/osicat.asd
+pathname-utils, ghcr.io/ocicl/pathname-utils@sha256:1f6f209c3d5286afdccf42ec7a46a5ae99d8f1dbcdf8b3ee4381a03c79dd44dc, pathname-utils-20260812-397216b/pathname-utils.asd
+pathname-utils-test, ghcr.io/ocicl/pathname-utils@sha256:1f6f209c3d5286afdccf42ec7a46a5ae99d8f1dbcdf8b3ee4381a03c79dd44dc, pathname-utils-20260812-397216b/pathname-utils-test.asd
 rfc2388, ghcr.io/ocicl/rfc2388@sha256:4190f6eb36b3b2f53def6eff56b44e76edf4086ada2feb6d88bb671a40fc9f70, rfc2388-20240503-591bcf7/rfc2388.asd
 sb-cga, ghcr.io/ocicl/sb-cga@sha256:883edf669979b4d02eee168c03c70316dab3ae8dff18854d02dfb6f45c3aa5ae, sb-cga-20250528-304924d/sb-cga.asd
 sdl2, git+https://github.com/lem-project/cl-sdl2.git@24dd7f238f99065b0ae35266b71cce7783e89fa7, cl-sdl2-24dd7f2/sdl2.asd
@@ -61,6 +67,7 @@ sdl2-image, git+https://github.com/lem-project/cl-sdl2-image.git@8734b0e24de9ca3
 sdl2-ttf, git+https://github.com/lem-project/cl-sdl2-ttf.git@f43344efe89cf9ce509e6ce4f7303ebb2ff14434, cl-sdl2-ttf-f43344e/sdl2-ttf.asd
 sdl2-ttf-examples, git+https://github.com/lem-project/cl-sdl2-ttf.git@f43344efe89cf9ce509e6ce4f7303ebb2ff14434, cl-sdl2-ttf-f43344e/sdl2-ttf-examples.asd
 sha1, ghcr.io/ocicl/sha1@sha256:d332af205bf3b5db2bdf8ea6df9f5127627343ce19bc313d00cfa2d80a5fb404, sha1-20240503-be8b1b1/sha1.asd
+sha3, ghcr.io/ocicl/sha3@sha256:556fcc3d3fcba08185de62f7bb090fa233af4f8c68a4d7401992a32e03fb9a70, sha3-20240503-a4baa05/sha3.asd
 split-sequence, ghcr.io/ocicl/split-sequence@sha256:3a37662eedd99c42995587b9d443c4631f25c4c523091bcca31a27b880585b8e, split-sequence-2.0.1/split-sequence.asd
 trivial-backtrace, ghcr.io/ocicl/trivial-backtrace@sha256:89a3138695bb767c50001402fad60dacfc1e867e4e3d3579cc6f636d3e29a51c, trivial-backtrace-20240503-7f90b4a/trivial-backtrace.asd
 trivial-backtrace-test, ghcr.io/ocicl/trivial-backtrace@sha256:89a3138695bb767c50001402fad60dacfc1e867e4e3d3579cc6f636d3e29a51c, trivial-backtrace-20240503-7f90b4a/trivial-backtrace-test.asd

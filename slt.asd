@@ -26,18 +26,23 @@
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.2.0"
-  :depends-on (:slt/core :slt/web :clingon :ltk :sdl2 :sdl2-ttf :sdl2-image
+  :depends-on (:slt/core :slt/web :clingon :ltk
                (:feature :darwin :slt/cocoa))
   :pathname "src/"
   :serial t
   :components ((:file "ltk-backend")
-               (:file "sdl2-backend")
                (:file "cli")
                (:file "build"))
   :in-order-to ((test-op (test-op "slt/tests"))))
 
+(asdf:defsystem #:slt/sdl2
+  :description "SDL2 backend (needs SDL2, SDL2_ttf and SDL2_image installed)."
+  :depends-on (:slt/core :sdl2 :sdl2-ttf :sdl2-image)
+  :pathname "src/"
+  :components ((:file "sdl2-backend")))
+
 (asdf:defsystem #:slt/tests
-  :depends-on (:slt :slt/conformance)
+  :depends-on (:slt :slt/sdl2 :slt/conformance)
   :pathname "t/"
   :serial t
   :components ((:file "tests"))
@@ -86,3 +91,14 @@
   :depends-on (:slt/core :hunchentoot :hunchensocket :com.inuoe.jzon)
   :pathname "src/web/"
   :components ((:file "web-backend")))
+
+(asdf:defsystem #:slt/app
+  :description "Self-contained distribution: the executable plus its native
+libraries in bin/, built with Deploy ('make bundle')."
+  :defsystem-depends-on (:deploy)
+  :build-operation "deploy-console-op"
+  :build-pathname "slt"
+  :entry-point "slt:main"
+  :depends-on (:slt :slt/ghostty :slt/libvterm)
+  :pathname "src/"
+  :components ((:file "deploy")))
