@@ -97,7 +97,11 @@ engine supports scrollback.")
         constructor)
   (normalize-backend-name name))
 
-(defun available-engines ()
+(defun available-engines (&key probe)
+  "The registered engines.  With PROBE, first try loading the engines in
+*ENGINE-PREFERENCE*, so that engines not used yet are listed too."
+  (when probe
+    (mapc #'engine-available-p *engine-preference*))
   (sort (loop for name being the hash-keys of *engine-constructors*
               collect name)
         #'string<

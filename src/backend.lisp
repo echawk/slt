@@ -18,7 +18,27 @@
         constructor)
   (normalize-backend-name name))
 
-(defun available-backends ()
+(defvar *optional-backends* '(:gl :sdl2)
+  "Backends that live in their own slt/NAME systems and load on first use.")
+
+(defun load-backend-system (name)
+  "Load slt/NAME if it exists, which registers that backend."
+  (let ((system (format nil "slt/~(~a~)" name)))
+    (when (asdf:find-system system nil)
+      (asdf:load-system system)
+      t)))
+
+(defun backend-available-p (name)
+  "True when backend NAME is registered or its system loads."
+  (or (gethash name *backend-constructors*)
+      (and (ignore-errors (load-backend-system name))
+           (gethash name *backend-constructors*))))
+
+(defun available-backends (&key probe)
+  "The registered backends.  With PROBE, first try loading the optional
+ones, so that backends not used yet are listed too."
+  (when probe
+    (mapc #'backend-available-p *optional-backends*))
   (sort (loop for name being the hash-keys of *backend-constructors*
               collect name)
         #'string<
@@ -31,10 +51,8 @@
      (let* ((name (normalize-backend-name designator))
             (constructor (or (gethash name *backend-constructors*)
                              ;; Optional backends live in their own systems.
-                             (let ((system (format nil "slt/~(~a~)" name)))
-                               (when (asdf:find-system system nil)
-                                 (asdf:load-system system)
-                                 (gethash name *backend-constructors*))))))
+                             (and (load-backend-system name)
+                                  (gethash name *backend-constructors*)))))
        (unless constructor
          (error "Unknown backend ~S. Available backends: ~{~S~^, ~}."
                 name

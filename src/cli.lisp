@@ -137,11 +137,11 @@
                                       (stream *standard-output*))
   (cond
     ((clingon:getopt command :list-backends nil)
-     (dolist (backend (available-backends))
+     (dolist (backend (available-backends :probe t))
        (format stream "~(~a~)~%" backend))
      t)
     ((clingon:getopt command :list-engines nil)
-     (dolist (engine (available-engines))
+     (dolist (engine (available-engines :probe t))
        (format stream "~(~a~)~%" engine))
      t)
     (t
