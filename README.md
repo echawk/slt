@@ -47,16 +47,20 @@ and compares the resulting screens. `slt/bench` measures throughput.
 | backend | |
 |---|---|
 | `cocoa` | macOS default: AppKit window, Metal renderer, CoreText glyphs |
-| `ltk` | Tk; portable fallback (needs `wish`), the default elsewhere |
+| `gl` | Linux/BSD default: GLFW window (X11 or Wayland), OpenGL 3.3 or OpenGL ES 3.0, FreeType glyphs found through font-discovery; also runs on macOS with CoreText glyphs |
+| `ltk` | Tk; portable fallback (needs `wish`) where `gl` cannot run |
 | `sdl2` | SDL2 renderer (`slt/sdl2`; needs SDL2, SDL2_ttf and SDL2_image) |
 | `web` | serves a browser terminal; see [web/README.md](web/README.md) |
 | `headless` | no UI; for tests, scripting and remote frontends |
 
 Choose one with `--backend NAME` or `SLT_BACKEND=NAME`.
 
-Native OpenGL and Vulkan backends for Linux and the BSDs, which would
-work on both X11 and Wayland, are sketched in
-[doc/gpu-backends.md](doc/gpu-backends.md).
+The `gl` backend uses Shirakumo's [glfw](https://codeberg.org/shirakumo/glfw)
+bindings, which ship GLFW 3.4 for Linux and macOS (the BSDs use the system's
+`libglfw`), and cl-opengl. GLFW chooses X11 or Wayland when it starts.
+`make gl-test` renders styled text in a hidden window and checks the pixels.
+[doc/gpu-backends.md](doc/gpu-backends.md) describes the design and what
+Vulkan would add.
 
 ## Configuration
 

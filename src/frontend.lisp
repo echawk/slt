@@ -43,11 +43,18 @@
        (bt:with-recursive-lock-held ((terminal-emulator-lock ,e))
          ,@body))))
 
+(defun gl-backend-usable-p ()
+  "True when the gl backend loads and finds GLFW and a display."
+  (and (or (uiop:getenv "DISPLAY") (uiop:getenv "WAYLAND_DISPLAY"))
+       (ignore-errors
+        (asdf:load-system "slt/gl")
+        (uiop:symbol-call '#:slt '#:gl-libraries-available-p))))
+
 (defun default-backend ()
-  "The native backend when one is loaded for this platform, else LTK."
-  (if (and (uiop:os-macosx-p) (member :cocoa (available-backends)))
-      :cocoa
-      :ltk))
+  "Cocoa (Metal) on macOS, the gl backend where GLFW is available, else LTK."
+  (cond ((and (uiop:os-macosx-p) (member :cocoa (available-backends))) :cocoa)
+        ((and (not (uiop:os-macosx-p)) (gl-backend-usable-p)) :gl)
+        (t :ltk)))
 
 (defun user-config-pathname ()
   (uiop:xdg-config-home "slt/init.lisp"))
@@ -295,7 +302,11 @@ in chunks and request renders, until the child's side closes."
         (bt:make-thread (lambda ()
                           (handler-case (reader-loop emulator)
                             (error (condition)
-                              (format *error-output* "~&slt: reader stopped: ~a~%" condition))))
+                              ;; Closing the emulator closes the PTY under
+                              ;; the reader; only other failures are news.
+                              (unless (terminal-emulator-closed-p emulator)
+                                (format *error-output* "~&slt: reader stopped: ~a~%"
+                                        condition)))))
                         :name "slt pty reader")))
 
 (defun finish-emulator (emulator)

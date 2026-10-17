@@ -205,3 +205,10 @@ cleared and every row repacked."
                    (glyph-atlas-grow atlas))
                (grid-mark-all-dirty grid)))
     instances))
+
+(defun write-ppm (pathname rgb width height)
+  (with-open-file (out pathname :direction :output :if-exists :supersede
+                                :element-type '(unsigned-byte 8))
+    (write-sequence (babel:string-to-octets (format nil "P6~%~d ~d~%255~%" width height)) out)
+    (write-sequence rgb out))
+  pathname)

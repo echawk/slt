@@ -321,10 +321,3 @@ octets (row-major), for tests and debugging."
                   (aref rgb (+ 2 (* 3 i))) (cffi:mem-aref pixels :uint8 (* 4 i)))))
         (msg texture "release" :void)
         rgb))))
-
-(defun write-ppm (pathname rgb width height)
-  (with-open-file (out pathname :direction :output :if-exists :supersede
-                                :element-type '(unsigned-byte 8))
-    (write-sequence (babel:string-to-octets (format nil "P6~%~d ~d~%255~%" width height)) out)
-    (write-sequence rgb out))
-  pathname)

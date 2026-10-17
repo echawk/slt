@@ -5,9 +5,6 @@
 ;;;; scale, and the grid drawn by the Metal renderer.  All sizes the
 ;;;; frontend sees are device pixels.
 
-(defvar *option-as-meta* t
-  "When true, the Option key acts as Meta instead of composing characters.")
-
 (defclass cocoa-backend (terminal-backend)
   ((view :initform nil :accessor cocoa-backend-view)
    (timers :initform '() :accessor cocoa-backend-timers)

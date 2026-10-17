@@ -112,6 +112,13 @@
    #:*web-token*
    #:*web-allowed-origins*
    #:*option-as-meta*
+   ;; gl backend
+   #:gl-backend
+   #:*gl-api*
+   #:*gl-vsync*
+   #:*gl-scroll-rows*
+   #:*gl-window-visible*
+   #:snapshot-gl-view
    ;; Frontend
    #:launch-terminal
    #:terminal-emulator

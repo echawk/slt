@@ -2,6 +2,9 @@
 
 (defclass terminal-backend () ())
 
+(defvar *option-as-meta* t
+  "When true, macOS's Option key acts as Meta instead of composing characters.")
+
 (defvar *backend-constructors* (make-hash-table :test #'eq))
 
 (defun normalize-backend-name (designator)

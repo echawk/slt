@@ -2,7 +2,7 @@ OCICL ?= ocicl
 BUILD_OUTPUT ?= build/slt
 LISP = scripts/lisp
 
-.PHONY: deps test bundle web-test conformance libvterm ghostty run run-sdl2 dump clean
+.PHONY: deps test bundle web-test gl-test conformance libvterm ghostty run run-sdl2 dump clean
 
 deps: ocicl/.stamp
 
@@ -26,6 +26,10 @@ ghostty: deps
 # scripts/fetch-chrome-headless.
 web-test: deps
 	scripts/web-test
+
+# gl backend smoke test; needs a display (on Linux CI: xvfb-run make gl-test).
+gl-test: deps
+	scripts/gl-test
 
 conformance: deps
 	$(LISP) --eval '(asdf:load-system :slt/conformance)' \

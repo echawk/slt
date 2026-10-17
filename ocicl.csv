@@ -45,7 +45,9 @@ documentation-utils, ghcr.io/ocicl/documentation-utils@sha256:b2a1b3f3bcd1a738af
 flexi-streams, ghcr.io/ocicl/flexi-streams@sha256:95005b06a8a95c82780c75ead53810bcb273d07fcf5fe76b527f1856df9923f2, flexi-streams-20240503-4951d57/flexi-streams.asd
 flexi-streams-test, ghcr.io/ocicl/flexi-streams@sha256:95005b06a8a95c82780c75ead53810bcb273d07fcf5fe76b527f1856df9923f2, flexi-streams-20240503-4951d57/flexi-streams-test.asd
 float-features, ghcr.io/ocicl/float-features@sha256:96d7f31d99c87db8771f3f4e4866df1f09f9f3c0c7bca86b6d221bba403c83b1, float-features-20261011-ee18952/float-features.asd
+font-discovery, git+https://codeberg.org/shinmera/font-discovery@c6e472872b84c8a99e427048c38adaedf7640e29, font-discovery-c6e4728/font-discovery.asd
 ghostty-vt, git+https://github.com/echawk/cl-ghostty-vt@30892ccb54d72c1740d391b3144b7c248b237626#ref=main, cl-ghostty-vt-30892cc/ghostty-vt.asd
+glfw, git+https://codeberg.org/shirakumo/glfw@eb8d12177efee08568e16be5eb69168174854cee, glfw-eb8d121/glfw.asd
 global-vars, ghcr.io/ocicl/global-vars@sha256:d197e871c9c9abc4bf31b1186f5fd28f0ca848ebe2e9dddf2d82ecee01dbdc65, global-vars-20240503-c749f32/global-vars.asd
 global-vars-test, ghcr.io/ocicl/global-vars@sha256:d197e871c9c9abc4bf31b1186f5fd28f0ca848ebe2e9dddf2d82ecee01dbdc65, global-vars-20240503-c749f32/global-vars-test.asd
 hunchensocket, ghcr.io/ocicl/hunchensocket@sha256:bafadb780ac8ea406c35449f323eddcd9cc0b04f9cdd1f9c3ac4f14e674f3326, hunchensocket-20241018-8f90c5b/hunchensocket.asd
@@ -87,3 +89,4 @@ usocket, ghcr.io/ocicl/usocket@sha256:282856b819b22a4319ba30a15605ee934aa23292a4
 usocket-server, ghcr.io/ocicl/usocket@sha256:282856b819b22a4319ba30a15605ee934aa23292a471fd29ea4d3f2074b3f16d, usocket-0.8.8/usocket-server.asd
 usocket-test, ghcr.io/ocicl/usocket@sha256:282856b819b22a4319ba30a15605ee934aa23292a471fd29ea4d3f2074b3f16d, usocket-0.8.8/usocket-test.asd
 with-user-abort, ghcr.io/ocicl/with-user-abort@sha256:c19560034f9909a7afb4110b5efd939a9f1e829d9ef9887797b98679f290c480, with-user-abort-20240503-a3db02e/with-user-abort.asd
+zpb-ttf, ghcr.io/ocicl/zpb-ttf@sha256:262c84be1f43c62900a0eb15502977c7dc724a7d4d7412c4e7ef91a98a2f7606, zpb-ttf-1.0.7/zpb-ttf.asd

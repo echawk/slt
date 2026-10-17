@@ -86,6 +86,19 @@
                (:file "metal")
                (:file "cocoa-backend")))
 
+(asdf:defsystem #:slt/gl
+  :description "GLFW + OpenGL 3.3 / OpenGL ES 3.0 backend: X11 and Wayland on Linux and the BSDs, and macOS."
+  :depends-on (:slt/core :glfw :cl-opengl :float-features
+               ;; Glyphs: CoreText on macOS, font-discovery and FreeType elsewhere.
+               (:feature :darwin :slt/cocoa)
+               (:feature (:not :darwin) :font-discovery))
+  :pathname "src/gl/"
+  :serial t
+  :components ((:file "package")
+               (:file "gl-renderer")
+               (:file "freetype" :if-feature (:not :darwin))
+               (:file "gl-backend")))
+
 (asdf:defsystem #:slt/web
   :description "Web frontend: serves web/slt-terminal.js and streams the grid over a WebSocket."
   :depends-on (:slt/core :hunchentoot :hunchensocket :com.inuoe.jzon)
