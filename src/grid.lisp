@@ -99,7 +99,10 @@
   (cursor-row 0 :type grid-dimension)
   (cursor-column 0 :type grid-dimension)
   (cursor-visible-p t :type boolean)
-  (cursor-shape :block :type (member :block :underline :bar)))
+  (cursor-shape :block :type (member :block :underline :bar))
+  ;; Selected cells as (FIRST . LAST) cell indices in reading order,
+  ;; inclusive, or NIL.  Set with GRID-SET-SELECTION.
+  (selection nil :type (or null (cons grid-index grid-index))))
 
 (defun make-grid (rows columns)
   (let ((grid (%make-grid)))
@@ -124,6 +127,7 @@
           (grid-cursor-column grid) (min (grid-cursor-column grid)
                                          (max 0 (1- columns))))
     (clrhash (grid-combining grid))
+    (setf (grid-selection grid) nil)
     grid))
 
 (declaim (inline grid-index))
@@ -158,6 +162,60 @@
 (defun grid-clear-dirty (grid)
   (fill (grid-dirty grid) 0)
   grid)
+
+(declaim (inline grid-selected-p))
+(defun grid-selected-p (grid index)
+  (let ((selection (grid-selection grid)))
+    (and selection (<= (car selection) index (cdr selection)))))
+
+(defun grid-mark-selection-dirty (grid)
+  (let ((selection (grid-selection grid))
+        (columns (grid-columns grid)))
+    (when selection
+      (fill (grid-dirty grid) 1 :start (floor (car selection) columns)
+                                :end (1+ (floor (cdr selection) columns))))))
+
+(defun grid-set-selection (grid first last)
+  "Select the cells from index FIRST to LAST (in either order), or nothing
+when FIRST is NIL, marking the rows that change dirty."
+  (grid-mark-selection-dirty grid)
+  (setf (grid-selection grid) (and first (cons (min first last) (max first last))))
+  (grid-mark-selection-dirty grid)
+  grid)
+
+(defun grid-selection-intersects-dirty-p (grid)
+  "True when a selected row is dirty, i.e. its text may have changed."
+  (let ((selection (grid-selection grid))
+        (columns (grid-columns grid)))
+    (and selection
+         (find 1 (grid-dirty grid) :start (floor (car selection) columns)
+                                   :end (1+ (floor (cdr selection) columns))))))
+
+(defun grid-range-text (grid first last)
+  "The text of cells FIRST to LAST: rows end in newlines, trailing blanks
+are dropped, and the right halves of wide characters are skipped."
+  (let ((columns (grid-columns grid)))
+    (with-output-to-string (out)
+      (loop for row from (floor first columns) to (floor last columns)
+            for start = (max first (* row columns))
+            for end = (min last (1- (* (1+ row) columns)))
+            do (let ((line (with-output-to-string (line)
+                             (loop for index from start to end
+                                   for code = (aref (grid-codes grid) index)
+                                   unless (logtest (aref (grid-attrs grid) index)
+                                                   +attr-wide-spacer+)
+                                     do (write-char (if (zerop code) #\Space (code-char code))
+                                                    line)
+                                        (let ((extra (gethash index (grid-combining grid))))
+                                          (when extra (write-string extra line)))))))
+                 (when (> row (floor first columns))
+                   (terpri out))
+                 (write-string (string-right-trim " " line) out))))))
+
+(defun grid-selection-text (grid)
+  "The selected text, or NIL when nothing is selected."
+  (let ((selection (grid-selection grid)))
+    (and selection (grid-range-text grid (car selection) (cdr selection)))))
 
 (defun grid-dirty-rows (grid)
   (loop for bit across (grid-dirty grid)
@@ -234,12 +292,15 @@
   (foreground #xC8CCD4 :type rgb)
   (background #x1C1F24 :type rgb)
   (cursor #xD8DEE9 :type rgb)
+  ;; Background of selected cells.
+  (selection #x3B4252 :type rgb)
   (colors (make-array 256 :element-type 'rgb) :type (simple-array rgb (256))))
 
 (defun make-palette (&key (ansi :slt)
                        (foreground (if (eq ansi :xterm) #xE5E5E5 #xC8CCD4))
                        (background (if (eq ansi :xterm) #x000000 #x1C1F24))
                        (cursor (if (eq ansi :xterm) foreground #xD8DEE9))
+                       (selection (if (eq ansi :xterm) #x4A4A4A #x3B4252))
                        overrides)
   "A palette.  ANSI names a set of the 16 base colors in *ANSI-COLORS* (or
 is a vector of 16 RGB values); colors 16-255 are the xterm cube and gray
@@ -254,7 +315,7 @@ ramp.  OVERRIDES is an alist of (INDEX . RGB) applied last."
     (loop for (index . rgb) in overrides
           do (setf (aref colors index) rgb))
     (%make-palette :foreground foreground :background background
-                   :cursor cursor :colors colors)))
+                   :cursor cursor :selection selection :colors colors)))
 
 (defvar *palette* (make-palette)
   "The palette used to resolve grid colors.  Rebind or SETF to theme.")

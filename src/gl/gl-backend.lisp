@@ -60,7 +60,11 @@ steps, so it uses a smaller multiplier.")
    (resize-callback :initform nil :accessor gl-view-resize-callback)
    (keypress-callback :initform nil :accessor gl-view-keypress-callback)
    (scroll-callback :initform nil :accessor gl-view-scroll-callback)
-   (paste-callback :initform nil :accessor gl-view-paste-callback)
+   (mouse-callback :initform nil :accessor gl-view-mouse-callback)
+   ;; Primary button state, and the last press for counting multi-clicks.
+   (button-down-p :initform nil :accessor gl-view-button-down-p)
+   (last-click :initform nil :accessor gl-view-last-click)
+   (click-count :initform 0 :accessor gl-view-click-count)
    (close-callback :initform nil :accessor gl-view-close-callback)
    (closed-p :initform nil :accessor gl-view-closed-p)
    (scroll-remainder :initform 0d0 :accessor gl-view-scroll-remainder)
@@ -124,13 +128,6 @@ GLFW's C frames on error."
           (if (member :alt modifiers) +mod1-mask+ 0)
           (if (member :super modifiers) +mod4-mask+ 0)))
 
-(defun gl-paste-shortcut-p (key modifiers)
-  (and (eq key :v)
-       (if (uiop:os-macosx-p)
-           (equal (remove-if-not (lambda (m) (member m '(:shift :control :alt :super))) modifiers)
-                  '(:super))
-           (and (member :control modifiers) (member :shift modifiers)))))
-
 (defun gl-printable-key-code (key)
   "The code of KEY when it is a printable key (space through grave accent)."
   (let ((code (cffi:foreign-enum-value '%glfw:key key :errorp nil)))
@@ -147,8 +144,8 @@ the keyboard layout where GLFW knows it."
         name)))
 
 (defun gl-key-data (key scan-code modifiers)
-  "The (CHAR KEYSYM STATE) to send for a key press, :IGNORE for one the
-terminal should not see, or NIL to leave it to the character callback."
+  "The (CHAR KEYSYM STATE) to send for a key press, or NIL to leave it to
+the character callback."
   (let ((state (glfw-modifiers->state modifiers))
         (keysym (cdr (assoc key *glfw-key-keysyms*)))
         (code (gl-printable-key-code key))
@@ -158,8 +155,8 @@ terminal should not see, or NIL to leave it to the character callback."
         (meta (and (member :alt modifiers) (uiop:os-macosx-p) *option-as-meta*)))
     (cond
       (keysym (list "" keysym state))
-      ((and (uiop:os-macosx-p) (member :super modifiers)) :ignore)
-      ((and code (or (member :control modifiers) meta))
+      ;; Super combinations go to the frontend for its shortcuts.
+      ((and code (or (member :control modifiers) (member :super modifiers) meta))
        (let ((text (gl-key-text key code scan-code modifiers)))
          ;; Shift is reflected in the character.
          (list text text (logand state (lognot +shift-mask+)))))
@@ -174,16 +171,10 @@ terminal should not see, or NIL to leave it to the character callback."
     (with-live-view (view)
       (setf (gl-view-key-modifiers view) modifiers
             (gl-view-suppress-char view) nil)
-      (if (gl-paste-shortcut-p key modifiers)
-          (let ((text (glfw:clipboard-string view)))
-            (setf (gl-view-suppress-char view) t)
-            (when (and text (gl-view-paste-callback view))
-              (funcall (gl-view-paste-callback view) text)))
-          (let ((data (gl-key-data key scan-code modifiers)))
-            (when data
-              (setf (gl-view-suppress-char view) t)
-              (unless (eq data :ignore)
-                (deliver-gl-key view data))))))))
+      (let ((data (gl-key-data key scan-code modifiers)))
+        (when data
+          (setf (gl-view-suppress-char view) t)
+          (deliver-gl-key view data))))))
 
 (defmethod glfw:char-entered ((view gl-view) code-point)
   (with-live-view (view)
@@ -191,6 +182,54 @@ terminal should not see, or NIL to leave it to the character callback."
       (let ((text (string (code-char code-point)))
             (state (if (member :alt (gl-view-key-modifiers view)) +mod1-mask+ 0)))
         (deliver-gl-key view (list text text state))))))
+
+;;; Mouse
+
+(defvar *multi-click-seconds* 0.4
+  "The longest gap between clicks of a double or triple click.")
+
+(defun gl-pointer-cell (view x y)
+  "The (ROW COLUMN) under window coordinates X, Y."
+  (let ((scale (/ (first (glfw:framebuffer-size view)) (max 1 (glfw:width view)))))
+    (list (floor (* y scale) (gl-view-cell-height view))
+          (floor (* x scale) (gl-view-cell-width view)))))
+
+(defun count-gl-click (view cell)
+  "Count a press at CELL as part of a multi-click when it follows the last
+one quickly at the same cell."
+  (let ((now (get-internal-real-time))
+        (last (gl-view-last-click view)))
+    (setf (gl-view-click-count view)
+          (if (and last
+                   (equal cell (cdr last))
+                   (< (- now (car last))
+                      (* *multi-click-seconds* internal-time-units-per-second)))
+              (1+ (gl-view-click-count view))
+              1)
+          (gl-view-last-click view) (cons now cell))
+    (gl-view-click-count view)))
+
+(defun deliver-gl-mouse (view action cell clicks)
+  (when (gl-view-mouse-callback view)
+    (funcall (gl-view-mouse-callback view) action (first cell) (second cell) clicks)))
+
+(defmethod glfw:mouse-button-changed ((view gl-view) button action modifiers)
+  (declare (ignore modifiers))
+  (when (eq button :left)
+    (with-live-view (view)
+      (let ((cell (apply #'gl-pointer-cell view (glfw:cursor-location view))))
+        (case action
+          (:press
+           (setf (gl-view-button-down-p view) t)
+           (deliver-gl-mouse view :press cell (count-gl-click view cell)))
+          (:release
+           (setf (gl-view-button-down-p view) nil)
+           (deliver-gl-mouse view :release cell (gl-view-click-count view))))))))
+
+(defmethod glfw:mouse-moved ((view gl-view) x y)
+  (when (gl-view-button-down-p view)
+    (with-live-view (view)
+      (deliver-gl-mouse view :drag (gl-pointer-cell view x y) (gl-view-click-count view)))))
 
 ;;; Other window events
 
@@ -452,8 +491,14 @@ height, after writing them to PATHNAME as a PPM when given."
 (defmethod backend-bind-scroll ((backend gl-backend) (view gl-view) callback)
   (setf (gl-view-scroll-callback view) callback))
 
-(defmethod backend-bind-paste ((backend gl-backend) (view gl-view) callback)
-  (setf (gl-view-paste-callback view) callback))
+(defmethod backend-bind-mouse ((backend gl-backend) (view gl-view) callback)
+  (setf (gl-view-mouse-callback view) callback))
+
+(defmethod backend-clipboard-text ((backend gl-backend) (view gl-view))
+  (glfw:clipboard-string view))
+
+(defmethod backend-set-clipboard-text ((backend gl-backend) (view gl-view) text)
+  (setf (glfw:clipboard-string view) text))
 
 (defmethod backend-on-close ((backend gl-backend) (view gl-view) callback)
   (setf (gl-view-close-callback view) callback))

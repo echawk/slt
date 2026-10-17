@@ -30,6 +30,7 @@
   resize-callback
   keypress-callback
   scroll-callback
+  mouse-callback
   close-callback
   (closed-p nil)
   ;; Fractional rows from trackpad scrolling, carried between events.
@@ -72,13 +73,13 @@ expects, or NIL for keys the terminal should not see."
          (state (ns-modifiers->state flags))
          (keysym (cdr (assoc keycode *mac-keycode-keysyms*)))
          (text (ns-string->string
-                (if (or (logtest flags +ns-control-key-mask+)
+                (if (or (logtest flags (logior +ns-control-key-mask+ +ns-command-key-mask+))
                         (and *option-as-meta* (logtest flags +ns-option-key-mask+)))
                     (msg event "charactersIgnoringModifiers")
                     (msg event "characters")))))
     (cond
-      ((logtest flags +ns-command-key-mask+) nil)
       (keysym (list "" keysym state))
+      ;; Command combinations arrive too, for the frontend's shortcuts.
       ((and text (plusp (length text)))
        ;; Shift is already reflected in the character.
        (list text text (logand state (lognot +shift-mask+))))
@@ -114,6 +115,32 @@ expects, or NIL for keys the terminal should not see."
         (unless (zerop whole)
           ;; Scrolling content down (positive delta) moves back in history.
           (funcall (cocoa-view-scroll-callback view) (- whole)))))))
+
+(defun deliver-cocoa-mouse (self event action)
+  (let ((view (cocoa-view-for self)))
+    (when (and view (cocoa-view-mouse-callback view))
+      (multiple-value-bind (x y) (objc-point event "locationInWindow")
+        (multiple-value-bind (left bottom width height) (objc-rect self "frame")
+          (declare (ignore left bottom width))
+          (let ((scale (cocoa-view-scale view)))
+            ;; Window coordinates start at the bottom left.
+            (funcall (cocoa-view-mouse-callback view)
+                     action
+                     (floor (* (- height y) scale) (cocoa-view-cell-height view))
+                     (floor (* x scale) (cocoa-view-cell-width view))
+                     (msg event "clickCount" :long))))))))
+
+(cffi:defcallback slt-view-mouse-down :void ((self :pointer) (command :pointer) (event :pointer))
+  (declare (ignore command))
+  (deliver-cocoa-mouse self event :press))
+
+(cffi:defcallback slt-view-mouse-dragged :void ((self :pointer) (command :pointer) (event :pointer))
+  (declare (ignore command))
+  (deliver-cocoa-mouse self event :drag))
+
+(cffi:defcallback slt-view-mouse-up :void ((self :pointer) (command :pointer) (event :pointer))
+  (declare (ignore command))
+  (deliver-cocoa-mouse self event :release))
 
 (cffi:defcallback slt-window-will-start-live-resize :void
     ((self :pointer) (command :pointer) (notification :pointer))
@@ -159,7 +186,10 @@ expects, or NIL for keys the terminal should not see."
   (define-objc-subclass "SLTTerminalView" "NSView"
                         '(("acceptsFirstResponder" slt-view-accepts-first-responder "B@:")
                           ("keyDown:" slt-view-key-down "v@:@")
-                          ("scrollWheel:" slt-view-scroll-wheel "v@:@")))
+                          ("scrollWheel:" slt-view-scroll-wheel "v@:@")
+                          ("mouseDown:" slt-view-mouse-down "v@:@")
+                          ("mouseDragged:" slt-view-mouse-dragged "v@:@")
+                          ("mouseUp:" slt-view-mouse-up "v@:@")))
   (define-objc-subclass "SLTWindowDelegate" "NSObject"
                         '(("windowWillClose:" slt-window-will-close "v@:@")
                           ("windowDidResize:" slt-window-did-resize "v@:@")
@@ -406,6 +436,23 @@ expects, or NIL for keys the terminal should not see."
 
 (defmethod backend-bind-scroll ((backend cocoa-backend) (view cocoa-view) callback)
   (setf (cocoa-view-scroll-callback view) callback))
+
+(defmethod backend-bind-mouse ((backend cocoa-backend) (view cocoa-view) callback)
+  (setf (cocoa-view-mouse-callback view) callback))
+
+(defmethod backend-clipboard-text ((backend cocoa-backend) (view cocoa-view))
+  (with-autorelease-pool ()
+    (ns-string->string (msg (msg "NSPasteboard" "generalPasteboard") "stringForType:"
+                            :pointer (foreign-global "NSPasteboardTypeString")))))
+
+(defmethod backend-set-clipboard-text ((backend cocoa-backend) (view cocoa-view) text)
+  (with-autorelease-pool ()
+    (let ((pasteboard (msg "NSPasteboard" "generalPasteboard")))
+      (msg pasteboard "clearContents" :long)
+      (msg pasteboard "setString:forType:"
+           :pointer (ns-string text)
+           :pointer (foreign-global "NSPasteboardTypeString")
+           :bool))))
 
 (defmethod backend-on-close ((backend cocoa-backend) (view cocoa-view) callback)
   (setf (cocoa-view-close-callback view) callback))

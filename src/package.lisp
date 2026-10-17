@@ -32,6 +32,10 @@
    #:grid-cell-string
    #:grid-row-text
    #:grid-text
+   #:grid-range-text
+   #:grid-selection
+   #:grid-selection-text
+   #:grid-set-selection
    #:grid-dirty-rows
    #:grid-clear-dirty
    #:grid-mark-all-dirty
@@ -47,6 +51,7 @@
    #:palette-foreground
    #:palette-background
    #:palette-cursor
+   #:palette-selection
    #:palette-colors
    #:cell-rgb
    #:rgb->hex
@@ -84,10 +89,19 @@
    #:backend-render-grid
    #:default-backend
    #:backend-bind-paste
+   #:backend-bind-mouse
+   #:backend-clipboard-text
+   #:backend-set-clipboard-text
    #:backend-bind-scroll
    #:scroll-viewport
    #:scrollback-key-handler
    #:paste-text
+   #:copy-selection
+   #:paste-clipboard
+   #:clear-selection
+   #:clipboard-key-handler
+   #:*copy-on-select*
+   #:*selection-word-characters*
    ;; Headless backend
    #:headless-backend
    #:headless-view
@@ -100,6 +114,8 @@
    #:headless-call
    #:headless-key
    #:headless-paste
+   #:headless-mouse
+   #:headless-view-clipboard
    #:headless-scroll
    #:headless-resize-window
    #:headless-resize-cells

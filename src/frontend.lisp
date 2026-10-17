@@ -33,7 +33,11 @@
   (ui-lock (bt:make-lock "slt ui queue"))
   (ui-queue '() :type list)
   (render-requested nil)
-  (last-render-time 0 :type integer))
+  (last-render-time 0 :type integer)
+  ;; Mouse selection: the cell index where it started, and whether it
+  ;; extends by characters, words or lines.
+  (selection-anchor nil :type (or null fixnum))
+  (selection-unit :char :type (member :char :word :line)))
 
 (defmacro with-engine ((engine emulator) &body body)
   "Run BODY holding EMULATOR's engine lock, with ENGINE bound to the engine."
@@ -129,6 +133,10 @@ the engine lock is held only for the copy."
   (let ((grid (terminal-emulator-grid emulator)))
     (with-engine (engine emulator)
       (engine-update-grid engine grid :force force))
+    ;; Dirty rows here are the engine's changes, since every render clears
+    ;; them; a selection whose text changed no longer means anything.
+    (when (grid-selection-intersects-dirty-p grid)
+      (clear-selection emulator))
     (when (find 1 (grid-dirty grid))
       (backend-render-grid (terminal-emulator-backend emulator)
                            (terminal-emulator-view emulator)
@@ -174,6 +182,7 @@ the engine lock is held only for the copy."
             (backend-view-cell-height backend view))))
 
 (defun resize-emulator (emulator rows columns)
+  (clear-selection emulator)
   (setf (terminal-emulator-rows emulator) rows
         (terminal-emulator-columns emulator) columns)
   (with-engine (engine emulator)
@@ -255,12 +264,127 @@ Shift+Home/End to the top or bottom.  On *KEY-HOOK*; remove it to rebind."
   (let ((key (event-key char keysym))
         (modifiers (decode-modifier-state state)))
     (when (and key
-               (not (run-hook-until-success '*key-hook* emulator key modifiers)))
-      ;; Typing returns the view to the live screen.
+               (not (run-hook-until-success '*key-hook* emulator key modifiers))
+               ;; Super (Command) combinations are shortcuts, not input.
+               (not (member :super modifiers)))
+      ;; Typing returns the view to the live screen and ends a selection.
       (scroll-viewport emulator :bottom)
+      (clear-selection emulator)
       (write-input emulator
                    (with-engine (engine emulator)
                      (engine-encode-key engine key modifiers))))))
+
+;;; Selection and the clipboard
+
+(defvar *selection-word-characters* "-_.,/~:@%+#?&="
+  "Characters other than letters and digits that a double click selects as
+part of a word, so that paths and URLs are selected whole.")
+
+(defvar *copy-on-select* nil
+  "When true, finishing a mouse selection copies it to the clipboard.")
+
+(defun render-selection (emulator)
+  "Redraw the rows whose selection changed, without consulting the engine."
+  (let ((grid (terminal-emulator-grid emulator)))
+    (when (find 1 (grid-dirty grid))
+      (backend-render-grid (terminal-emulator-backend emulator)
+                           (terminal-emulator-view emulator)
+                           grid)
+      (grid-clear-dirty grid))))
+
+(defun clear-selection (emulator)
+  (let ((grid (terminal-emulator-grid emulator)))
+    (setf (terminal-emulator-selection-anchor emulator) nil)
+    (when (grid-selection grid)
+      (grid-set-selection grid nil nil))))
+
+(defun word-cell-p (grid index)
+  (let ((code (aref (grid-codes grid) index)))
+    (and (plusp code)
+         (let ((char (code-char code)))
+           (or (alphanumericp char) (find char *selection-word-characters*))))))
+
+(defun selection-extent (grid anchor point unit)
+  "The first and last cell indices selected from ANCHOR to POINT by UNIT."
+  (let* ((columns (grid-columns grid))
+         (first (min anchor point))
+         (last (max anchor point)))
+    (ecase unit
+      (:char (values first last))
+      (:line (values (* columns (floor first columns))
+                     (1- (* columns (1+ (floor last columns))))))
+      (:word
+       (let ((row-start (* columns (floor first columns)))
+             (row-end (1- (* columns (1+ (floor last columns))))))
+         (when (word-cell-p grid first)
+           (loop while (and (> first row-start) (word-cell-p grid (1- first)))
+                 do (decf first)))
+         (when (word-cell-p grid last)
+           (loop while (and (< last row-end) (word-cell-p grid (1+ last)))
+                 do (incf last)))
+         (values first last))))))
+
+(defun handle-mouse (emulator action row column clicks)
+  "Select with the primary button: drag for characters, double-click for
+words and triple-click for lines."
+  (let* ((grid (terminal-emulator-grid emulator))
+         (rows (grid-rows grid))
+         (columns (grid-columns grid))
+         (index (+ (* columns (max 0 (min row (1- rows))))
+                   ;; Past the right edge selects to the end of the row.
+                   (max 0 (min column (1- columns))))))
+    (when (plusp (* rows columns))
+      (ecase action
+        (:press
+         (setf (terminal-emulator-selection-unit emulator)
+               (case clicks (1 :char) (2 :word) (t :line))
+               (terminal-emulator-selection-anchor emulator) index)
+         (if (= clicks 1)
+             (grid-set-selection grid nil nil)
+             (multiple-value-call #'grid-set-selection grid
+               (selection-extent grid index index (terminal-emulator-selection-unit emulator)))))
+        (:drag
+         (let ((anchor (terminal-emulator-selection-anchor emulator)))
+           (when anchor
+             (multiple-value-call #'grid-set-selection grid
+               (selection-extent grid anchor index
+                                 (terminal-emulator-selection-unit emulator))))))
+        (:release
+         (setf (terminal-emulator-selection-anchor emulator) nil)
+         (when *copy-on-select*
+           (copy-selection emulator))))
+      (render-selection emulator))))
+
+(defun copy-selection (emulator)
+  "Put the selected text on the clipboard; return it, or NIL when nothing
+is selected."
+  (let ((text (grid-selection-text (terminal-emulator-grid emulator))))
+    (when text
+      (backend-set-clipboard-text (terminal-emulator-backend emulator)
+                                  (terminal-emulator-view emulator)
+                                  text)
+      text)))
+
+(defun paste-clipboard (emulator)
+  (let ((text (backend-clipboard-text (terminal-emulator-backend emulator)
+                                      (terminal-emulator-view emulator))))
+    (when (and text (plusp (length text)))
+      (scroll-viewport emulator :bottom)
+      (paste-text emulator text))))
+
+(defun clipboard-key-handler (emulator key modifiers)
+  "The default clipboard bindings: Super+C / Super+V (Command on macOS)
+and Control+Shift+C / Control+Shift+V.  On *KEY-HOOK*; remove it to rebind."
+  (when (characterp key)
+    (let ((shortcut (cond ((member :super modifiers) (char-downcase key))
+                          ;; Shift is folded into the character.
+                          ((and (member :control modifiers) (upper-case-p key))
+                           (char-downcase key)))))
+      (case shortcut
+        (#\c (copy-selection emulator) t)
+        (#\v (paste-clipboard emulator) t)))))
+
+(add-hook '*key-hook* 'clipboard-key-handler)
 
 (defun paste-text (emulator text)
   "Send TEXT to the child as a paste, bracketed when the child asked for it."
@@ -456,6 +580,10 @@ and notice a child that exited without closing the PTY."
                                 view
                                 (lambda (char keysym state)
                                   (handle-keypress emulator char keysym state)))
+         (backend-bind-mouse backend-instance
+                             view
+                             (lambda (action row column clicks)
+                               (handle-mouse emulator action row column clicks)))
          (backend-bind-paste backend-instance
                              view
                              (lambda (text)

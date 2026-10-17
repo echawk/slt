@@ -61,6 +61,15 @@ Scrollback (ghostty): use the mouse wheel or trackpad, Shift+PageUp/PageDown,
 and Shift+Home/End. Typing returns to the live screen. On the alternate
 screen (vim, less), the wheel sends arrow keys instead.
 
+Selection and the clipboard (cocoa, gl and web backends): drag to select,
+double-click for a word (paths and URLs count as one) and triple-click for a
+line. Copy with Command+C on macOS (Super+C elsewhere) or Control+Shift+C,
+and paste with Command+V / Super+V or Control+Shift+V. Typing, scrolling or
+output that changes the selected text clears the selection. Set
+`*copy-on-select*` to copy whenever a selection is made. The bindings are
+`clipboard-key-handler` on `*key-hook*`, and the selection color is the
+palette's `:selection`.
+
 `make conformance` (part of `make check`) runs the same byte streams through every available engine
 and compares the resulting screens. `slt/bench` measures throughput.
 

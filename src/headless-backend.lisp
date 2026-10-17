@@ -35,7 +35,10 @@
   keypress-callback
   scroll-callback
   paste-callback
+  mouse-callback
   close-callback
+  ;; Stands in for the system clipboard.
+  (clipboard nil)
   (closed-p nil))
 
 (defun headless-call (backend function)
@@ -105,6 +108,13 @@ bits are still set during the call.")
                  (lambda ()
                    (when (headless-view-scroll-callback view)
                      (funcall (headless-view-scroll-callback view) rows)))))
+
+(defun headless-mouse (view action row column &optional (clicks 1))
+  "Deliver a primary-button ACTION (:PRESS, :DRAG or :RELEASE) at a cell."
+  (headless-call (headless-view-backend view)
+                 (lambda ()
+                   (when (headless-view-mouse-callback view)
+                     (funcall (headless-view-mouse-callback view) action row column clicks)))))
 
 (defun headless-paste (view text)
   (headless-call (headless-view-backend view)
@@ -198,6 +208,15 @@ bits are still set during the call.")
 
 (defmethod backend-bind-paste ((backend headless-backend) (view headless-view) callback)
   (setf (headless-view-paste-callback view) callback))
+
+(defmethod backend-bind-mouse ((backend headless-backend) (view headless-view) callback)
+  (setf (headless-view-mouse-callback view) callback))
+
+(defmethod backend-clipboard-text ((backend headless-backend) (view headless-view))
+  (headless-view-clipboard view))
+
+(defmethod backend-set-clipboard-text ((backend headless-backend) (view headless-view) text)
+  (setf (headless-view-clipboard view) text))
 
 (defmethod backend-on-close ((backend headless-backend) (view headless-view) callback)
   (setf (headless-view-close-callback view) callback))

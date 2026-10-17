@@ -164,6 +164,8 @@ it on first use.  Return NIL when the atlas is full."
                                   (t 0))
                                 0))))
         (multiple-value-bind (fg bg) (cell-rgb grid index palette)
+          (when (grid-selected-p grid index)
+            (setf bg (palette-selection palette)))
           (let ((slot
                   (cond
                     ((logtest attrs +attr-wide-spacer+)

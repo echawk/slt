@@ -96,6 +96,27 @@ to scroll (negative is back through history) when the user scrolls.")
   (:method (backend view callback)
     (declare (ignore backend view callback))
     nil))
+(defgeneric backend-bind-mouse (backend view callback)
+  (:documentation "Arrange for CALLBACK to be called with ACTION (:PRESS,
+:DRAG or :RELEASE), ROW, COLUMN and CLICKS (1 for a single click, 2 for a
+double click, ...) for the primary mouse button.  ROW and COLUMN are the
+cell under the pointer and may lie outside the grid.")
+  (:method (backend view callback)
+    (declare (ignore backend view callback))
+    nil))
+
+(defgeneric backend-clipboard-text (backend view)
+  (:documentation "The text on the system clipboard, or NIL.")
+  (:method (backend view)
+    (declare (ignore backend view))
+    nil))
+
+(defgeneric backend-set-clipboard-text (backend view text)
+  (:documentation "Put TEXT on the system clipboard.")
+  (:method (backend view text)
+    (declare (ignore backend view text))
+    nil))
+
 (defgeneric backend-focus (backend view))
 (defgeneric backend-request-exit (backend view))
 

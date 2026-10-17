@@ -66,13 +66,21 @@ defaults to :POINTER."
        (unwind-protect (progn ,@body)
          (autorelease-pool-pop ,pool)))))
 
+(defun objc-doubles (object key count)
+  "Read the property KEY of OBJECT, a struct of COUNT doubles (NSPoint,
+NSRect, ...), as a list."
+  (let ((value (msg object "valueForKey:" :pointer (ns-string key))))
+    (cffi:with-foreign-object (struct :double count)
+      (msg value "getValue:size:" :pointer struct :unsigned-long (* 8 count) :void)
+      (loop for i below count collect (cffi:mem-aref struct :double i)))))
+
 (defun objc-rect (object key)
   "Read the NSRect-valued property KEY of OBJECT as (values X Y WIDTH HEIGHT)."
-  (let ((value (msg object "valueForKey:" :pointer (ns-string key))))
-    (cffi:with-foreign-object (rect :double 4)
-      (msg value "getValue:size:" :pointer rect :unsigned-long 32 :void)
-      (values (cffi:mem-aref rect :double 0) (cffi:mem-aref rect :double 1)
-              (cffi:mem-aref rect :double 2) (cffi:mem-aref rect :double 3)))))
+  (values-list (objc-doubles object key 4)))
+
+(defun objc-point (object key)
+  "Read the NSPoint-valued property KEY of OBJECT as (values X Y)."
+  (values-list (objc-doubles object key 2)))
 
 (cffi:defcfun ("objc_allocateClassPair" %objc-allocate-class-pair) :pointer
   (superclass :pointer) (name :string) (extra-bytes :size))
