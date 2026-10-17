@@ -1,12 +1,19 @@
 (in-package #:slt)
 
-;;;; Distribution build (system slt/app, built with Deploy).  Deploy dumps
-;;;; the executable into bin/ and copies the foreign libraries it loaded
-;;;; next to it, opening them from there at startup.  Libraries every Mac
-;;;; (or Linux system) already has are excluded here.
+;;;; Distribution build (system slt/app, built with Deploy by `make`).
+;;;; Deploy dumps the executable into bin/ and copies the foreign libraries
+;;;; it loaded next to it, opening them from there at startup.  Libraries
+;;;; every Mac (or Linux system) already has are excluded here.
 
-(deploy:define-library cffi::libffi :dont-deploy t)
-(deploy:define-library osicat-posix::librt :dont-deploy t)
+(defun define-optional-library (package name &rest initargs)
+  "Configure a library that only exists when the build loaded the system
+defining it (see scripts/build)."
+  (let ((symbol (and (find-package package) (find-symbol name package))))
+    (when (and symbol (ignore-errors (cffi::get-foreign-library symbol)))
+      (eval `(deploy:define-library ,symbol ,@initargs)))))
+
+(define-optional-library "CFFI" "LIBFFI" :dont-deploy t)
+(define-optional-library "OSICAT-POSIX" "LIBRT" :dont-deploy t)
 
 #+darwin
 (progn
@@ -18,9 +25,13 @@
   (deploy:define-library core-text-framework :dont-deploy t)
   (deploy:define-library core-graphics-framework :dont-deploy t))
 
-;;; ghostty-vt loads its dylib by explicit path, which CFFI registers as an
-;;; anonymous library (deployed above); its named definition has no path.
-(deploy:define-library ghostty-vt.ffi:libghostty-vt :dont-deploy t :dont-open t)
+;;; ghostty-vt loads its library by explicit path, which CFFI registers as
+;;; an anonymous library (deployed as usual); its named definition has no
+;;; path.
+(define-optional-library "GHOSTTY-VT.FFI" "LIBGHOSTTY-VT" :dont-deploy t :dont-open t)
+
+;;; The gl backend: fontconfig belongs to the system.  GLFW is deployed.
+(define-optional-library "ORG.SHIRAKUMO.FONT-DISCOVERY" "FONTCONFIG" :dont-deploy t)
 
 ;;; The engines' C shims resolve their library's symbols at load time, so
 ;;; they must be opened after it.  Deploy reopens libraries in registration

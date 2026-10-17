@@ -721,43 +721,12 @@
     (is-equal '(:backend "ltk")
               arguments)))
 
-(deftest environment-cli-arguments-splits-wrapper-encoded-arguments ()
-  (is-equal '("--backend" "sdl2" "--title" "scratch pad")
-            (slt::environment-cli-arguments
-             (format nil "--backend~Csdl2~C--title~Cscratch pad"
-                     (code-char 31)
-                     (code-char 31)
-                     (code-char 31)))))
-
 (deftest handle-cli-command-can-list-backends-without-launching-the-gui ()
   (let* ((command (parse-cli-arguments '("--list-backends")))
          (output (with-output-to-string (stream)
                   (slt::handle-cli-command command :stream stream))))
     (is (search "ltk" output))
     (is (search "sdl2" output))))
-
-(deftest default-executable-name-matches-platform-conventions ()
-  (is-equal "slt" (default-executable-name :darwin))
-  (is-equal "slt.exe" (default-executable-name :windows)))
-
-(deftest normalize-executable-output-uses-build-directory-by-default-and-respects-directories ()
-  (let* ((root #P"/tmp/slt-root/")
-         (default-output (default-executable-output root :linux))
-         (normalized-default (normalize-executable-output nil
-                                                          :root root
-                                                          :operating-system :linux))
-         (directory-output (normalize-executable-output #P"artifacts/"
-                                                        :root root
-                                                        :operating-system :linux))
-         (relative-output (normalize-executable-output "dist/custom-slt"
-                                                       :root root
-                                                       :operating-system :linux)))
-    (is-equal (namestring default-output)
-              (namestring normalized-default))
-    (is-equal "/tmp/slt-root/artifacts/slt"
-              (namestring directory-output))
-    (is-equal "/tmp/slt-root/dist/custom-slt"
-              (namestring relative-output))))
 
 (deftest conformance-suite-passes-on-3bst ()
   (let ((results (slt/conformance:run-conformance :engines '(:3bst))))

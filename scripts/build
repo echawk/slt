@@ -1,6 +1,8 @@
 #!/usr/bin/env sh
-# Build the self-contained distribution in bin/: the slt executable plus
-# the native libraries it loads (engines, osicat, zstd), via Deploy.
+# Build bin/: the slt executable plus the native libraries it loads, via
+# Deploy (system slt/app).  Run by `make`; SLT_SYSTEMS lists the optional
+# slt/NAME systems (engines, backends) to build in, e.g.
+# "slt/ghostty slt/libvterm".  Their native libraries must already be built.
 #
 # On macOS, Homebrew's SBCL runtime links libzstd by an absolute path, and
 # the dumped executable inherits that reference; it cannot be edited
@@ -36,7 +38,10 @@ if [ "$(uname -s)" = Darwin ]; then
 fi
 
 rm -rf bin
-SBCL_CORE="$core" scripts/lisp --eval '(asdf:make :slt/app)'
+SBCL_CORE="$core" scripts/lisp \
+  --eval '(dolist (system (uiop:split-string (or (uiop:getenv "SLT_SYSTEMS") "") :separator " "))
+             (when (plusp (length system)) (asdf:load-system system)))' \
+  --eval '(asdf:make :slt/app)'
 
 # The executable asks for @executable_path/libzstd.1.dylib; Deploy copied
 # zstd under its versioned name.

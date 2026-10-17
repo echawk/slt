@@ -116,8 +116,8 @@ as a string.
    in CI.
 2. HarfBuzz shaping for combining marks, a color atlas for emoji, subpixel
    positioning, and ligatures if wanted.
-3. Include `slt/gl` in the Linux `make bundle` (Deploy would carry
-   `libglfw`; FreeType and fontconfig stay system libraries).
+3. Check the Linux build (`make` includes `slt/gl` there): Deploy carries
+   `libglfw`, while FreeType and fontconfig stay system libraries.
 4. Vulkan, if profiling or MoltenVK parity justifies it. It adds a lot of
    setup (instance, device, swapchain, recreation on resize) for little gain
    on a workload this small. The same GLSL compiles to SPIR-V, and the

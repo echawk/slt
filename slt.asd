@@ -31,8 +31,7 @@
   :pathname "src/"
   :serial t
   :components ((:file "ltk-backend")
-               (:file "cli")
-               (:file "build"))
+               (:file "cli"))
   :in-order-to ((test-op (test-op "slt/tests"))))
 
 (asdf:defsystem #:slt/sdl2
@@ -106,12 +105,13 @@
   :components ((:file "web-backend")))
 
 (asdf:defsystem #:slt/app
-  :description "Self-contained distribution: the executable plus its native
-libraries in bin/, built with Deploy ('make bundle')."
+  :description "The distributed executable: bin/slt plus its native
+libraries, built with Deploy by 'make' (scripts/build).  Optional engines
+and backends are loaded by the build before this system is made."
   :defsystem-depends-on (:deploy)
   :build-operation "deploy-console-op"
   :build-pathname "slt"
   :entry-point "slt:main"
-  :depends-on (:slt :slt/ghostty :slt/libvterm)
+  :depends-on (:slt)
   :pathname "src/"
   :components ((:file "deploy")))

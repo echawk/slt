@@ -148,8 +148,4 @@
    #:main
    #:make-cli-command
    #:parse-cli-arguments
-   #:command-launch-arguments
-   #:dump-executable
-   #:default-executable-name
-   #:default-executable-output
-   #:normalize-executable-output))
+   #:command-launch-arguments))

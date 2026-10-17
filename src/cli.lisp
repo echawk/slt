@@ -1,7 +1,5 @@
 (in-package #:slt)
 
-(defparameter +cli-argument-separator+ (string (code-char 31)))
-
 (defun system-version ()
   (or (ignore-errors
         (asdf:component-version (asdf:find-system :slt nil)))
@@ -166,14 +164,6 @@
 (defun parse-cli-arguments (arguments)
   (clingon:parse-command-line (make-cli-command) arguments))
 
-(defun environment-cli-arguments (&optional (value (uiop:getenv "SLT_CLI_ARGS")))
-  (unless (or (null value) (string= value ""))
-    (uiop:split-string value :separator +cli-argument-separator+)))
-
-(defun main (&optional arguments)
-  "Entry point.  ARGUMENTS default to $SLT_CLI_ARGS (set by run-slt) or, in
-a dumped executable, the process's command line."
-  (clingon:run (make-cli-command)
-               (or arguments
-                   (environment-cli-arguments)
-                   (uiop:command-line-arguments))))
+(defun main (&optional (arguments (uiop:command-line-arguments)))
+  "Entry point of bin/slt.  ARGUMENTS default to the process's command line."
+  (clingon:run (make-cli-command) arguments))
