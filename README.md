@@ -93,6 +93,34 @@ bindings, which ship GLFW 3.4 for Linux and macOS (the BSDs use the system's
 [doc/gpu-backends.md](doc/gpu-backends.md) describes the design and what
 Vulkan would add.
 
+## Connecting from SLIME or SLY
+
+slt can start a Swank server (for SLIME and other clients of its protocol)
+or a Slynk server (for SLY) inside itself. You can then inspect, redefine and
+hook into the running terminal from your editor. To toggle the server:
+
+- choose **Lisp ▸ Start Swank Server** in the macOS menu bar (cocoa backend);
+- press Command+Shift+L on macOS (Super+Shift+L elsewhere) or Control+Shift+L;
+- or start it at launch with `--repl-server swank` or `--repl-server slynk`.
+
+The server listens on `localhost:4005`, so `M-x slime-connect` or
+`M-x sly-connect` works with the default answers. Change the port with
+`--repl-port` or `*repl-server-port*`, and the default server with `(setf
+*repl-server* :slynk)`. You can also call `(start-repl-server)` from your
+init file. Stopping the server only stops new connections; editors already
+connected stay connected.
+
+The key binding is `repl-server-key-handler` on `*key-hook*`. If a program
+you run needs Control+Shift+L, remove the handler and use the menu instead.
+Other menu entries can be added to `*menu-items*`.
+
+Both servers, and the contribs their clients ask for, are built into
+`bin/slt`, because the executable cannot load systems while it runs. SLIME
+and SLY warn when their version differs from the server's (SLIME 2.32 and
+the SLY of 2026-10-13 here). You can usually continue.
+`sly-retro` cannot be loaded, since it would rename Slynk's packages
+over Swank's. Your code runs on the server's threads, not the UI thread.
+
 ## Configuration
 
 `~/.config/slt/init.lisp` is loaded at startup (skip it with `--no-config`).

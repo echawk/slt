@@ -590,6 +590,58 @@
       (slt::handle-keypress emulator "w" "w" 0)
       (is-equal "w" (grid-row-text (engine-grid engine) 0)))))
 
+(defun wait-for-repl-server-thread ()
+  ;; Swank registers a new server from the thread it spawns, so stopping
+  ;; one immediately after starting it would find nothing to stop.
+  (sleep 0.2))
+
+(deftest repl-servers-start-and-stop ()
+  (dolist (kind '(:swank :slynk))
+    (let ((slt:*repl-server* kind))
+      (is (not (repl-server-running-p)))
+      (let ((port (start-repl-server :port 0)))
+        (unwind-protect
+             (progn
+               (is (plusp port))
+               (is-equal (list kind port)
+                         (multiple-value-list (repl-server-running-p)))
+               (is (search (format nil "port ~d" port) (slt::repl-server-menu-label)))
+               (is (null (ignore-errors (start-repl-server :port 0)))
+                   "only one server runs at a time"))
+          (wait-for-repl-server-thread)
+          (stop-repl-server)))
+      (is (not (repl-server-running-p)))
+      (is (search "Start" (slt::repl-server-menu-label))))))
+
+(deftest repl-server-key-handler-toggles-the-server ()
+  (multiple-value-bind (emulator engine) (make-mock-emulator :rows 1 :columns 8)
+    (let ((slt:*repl-server-port* 0)
+          (*error-output* (make-broadcast-stream)))
+      (unwind-protect
+           (progn
+             (slt::handle-keypress emulator "L" "L" slt::+control-mask+)
+             (is (repl-server-running-p) "Control+Shift+L starts the server")
+             (wait-for-repl-server-thread)
+             (slt::handle-keypress emulator "L" "L" slt::+mod4-mask+)
+             (is (not (repl-server-running-p)) "Super+Shift+L stops it")
+             (slt::handle-keypress emulator "l" "l" slt::+mod4-mask+)
+             (is (not (repl-server-running-p)) "Super+L is not the binding")
+             (slt::handle-keypress emulator "L" "L" 0)
+             (is (not (repl-server-running-p)))
+             (is-equal "L" (grid-row-text (engine-grid engine) 0)
+                       "only the binding is consumed"))
+        (stop-repl-server)))))
+
+(deftest menu-items-call-their-function-with-the-emulator ()
+  (let* ((chosen nil)
+         (slt:*menu-items* (list (list "Plain" (lambda (emulator) (setf chosen emulator)))
+                                 '(slt::repl-server-menu-label slt:toggle-repl-server)))
+         (items (slt::emulator-menu-items :the-emulator)))
+    (is-equal "Plain" (first (first items)))
+    (funcall (second (first items)))
+    (is-equal :the-emulator chosen)
+    (is (stringp (funcall (first (second items)))))))
+
 (deftest octet-transport-round-trips-through-a-pty ()
   (multiple-value-bind (process) (launch-shell-process "/bin/sh" :rows 24 :columns 80)
     (unwind-protect
@@ -714,6 +766,13 @@
                 :title "scratch"
                 :load-config nil)
               arguments)))
+
+(deftest parse-cli-arguments-reads-repl-server-options ()
+  (let ((command (parse-cli-arguments '("--repl-server" "slynk" "--repl-port" "4123"))))
+    (is-equal "slynk" (clingon:getopt command :repl-server))
+    (is-equal 4123 (clingon:getopt command :repl-port))
+    (is (null (ignore-errors (parse-cli-arguments '("--repl-server" "nrepl"))))
+        "only swank and slynk are accepted")))
 
 (deftest parse-cli-arguments-keeps-bare-backend-compatibility ()
   (let* ((command (parse-cli-arguments '("ltk")))

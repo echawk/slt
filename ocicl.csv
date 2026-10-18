@@ -70,7 +70,9 @@ sdl2-ttf, git+https://github.com/lem-project/cl-sdl2-ttf.git@f43344efe89cf9ce509
 sdl2-ttf-examples, git+https://github.com/lem-project/cl-sdl2-ttf.git@f43344efe89cf9ce509e6ce4f7303ebb2ff14434, cl-sdl2-ttf-f43344e/sdl2-ttf-examples.asd
 sha1, ghcr.io/ocicl/sha1@sha256:d332af205bf3b5db2bdf8ea6df9f5127627343ce19bc313d00cfa2d80a5fb404, sha1-20240503-be8b1b1/sha1.asd
 sha3, ghcr.io/ocicl/sha3@sha256:556fcc3d3fcba08185de62f7bb090fa233af4f8c68a4d7401992a32e03fb9a70, sha3-20240503-a4baa05/sha3.asd
+slynk, ghcr.io/ocicl/slynk@sha256:062a9d7363823d7ccd8318a2f0d19a91f4e076ba3a280ce5eecb3ba1cd1ae1c5, sly-20261013-9b3477a/slynk/slynk.asd
 split-sequence, ghcr.io/ocicl/split-sequence@sha256:3a37662eedd99c42995587b9d443c4631f25c4c523091bcca31a27b880585b8e, split-sequence-2.0.1/split-sequence.asd
+swank, ghcr.io/ocicl/swank@sha256:07487b3404a149ac39619bd340f49cd8b953f76f6d8fa6198cfc1e91d8a3076b, slime-2.32/swank.asd
 trivial-backtrace, ghcr.io/ocicl/trivial-backtrace@sha256:89a3138695bb767c50001402fad60dacfc1e867e4e3d3579cc6f636d3e29a51c, trivial-backtrace-20240503-7f90b4a/trivial-backtrace.asd
 trivial-backtrace-test, ghcr.io/ocicl/trivial-backtrace@sha256:89a3138695bb767c50001402fad60dacfc1e867e4e3d3579cc6f636d3e29a51c, trivial-backtrace-20240503-7f90b4a/trivial-backtrace-test.asd
 trivial-channels, ghcr.io/ocicl/trivial-channels@sha256:9b190fcc1853729090ff0b27d24c916dcb166bbb5bad6456340f9b05f3689b3d, trivial-channels-20240503-e237011/trivial-channels.asd

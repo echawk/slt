@@ -32,6 +32,9 @@
   scroll-callback
   mouse-callback
   close-callback
+  ;; The Lisp menu's target object and its items, indexed by tag.
+  menu-target
+  (menu-items #() :type simple-vector)
   (closed-p nil)
   ;; Fractional rows from trackpad scrolling, carried between events.
   (scroll-remainder 0d0 :type double-float)
@@ -182,6 +185,31 @@ expects, or NIL for keys the terminal should not see."
         (run-cocoa-wake-thunks (cocoa-view-backend view)))
       (redraw-cocoa-view view))))
 
+(defun cocoa-menu-item-entry (self item)
+  "The (LABEL FUNCTION) entry of the Lisp menu's ITEM, sent to target SELF."
+  (let ((view (cocoa-view-for self))
+        (tag (msg item "tag" :long)))
+    (when (and view (< -1 tag (length (cocoa-view-menu-items view))))
+      (svref (cocoa-view-menu-items view) tag))))
+
+(cffi:defcallback slt-menu-item-chosen :void ((self :pointer) (command :pointer) (item :pointer))
+  (declare (ignore command))
+  (let ((entry (cocoa-menu-item-entry self item)))
+    (when entry
+      (handler-case (funcall (second entry))
+        (error (condition)
+          (format *error-output* "~&slt: menu item error: ~a~%" condition))))))
+
+(cffi:defcallback slt-validate-menu-item :bool ((self :pointer) (command :pointer) (item :pointer))
+  (declare (ignore command))
+  ;; Called as the menu opens: refresh labels computed by functions.
+  (let ((label (first (cocoa-menu-item-entry self item))))
+    (when (and label (not (stringp label)))
+      (let ((title (ignore-errors (funcall label))))
+        (when (stringp title)
+          (msg item "setTitle:" :pointer (ns-string title) :void)))))
+  t)
+
 (defun register-cocoa-classes ()
   (define-objc-subclass "SLTTerminalView" "NSView"
                         '(("acceptsFirstResponder" slt-view-accepts-first-responder "B@:")
@@ -194,7 +222,10 @@ expects, or NIL for keys the terminal should not see."
                         '(("windowWillClose:" slt-window-will-close "v@:@")
                           ("windowDidResize:" slt-window-did-resize "v@:@")
                           ("windowWillStartLiveResize:" slt-window-will-start-live-resize "v@:@")
-                          ("windowDidEndLiveResize:" slt-window-did-end-live-resize "v@:@"))))
+                          ("windowDidEndLiveResize:" slt-window-did-end-live-resize "v@:@")))
+  (define-objc-subclass "SLTMenuTarget" "NSObject"
+                        '(("sltMenuItemChosen:" slt-menu-item-chosen "v@:@")
+                          ("validateMenuItem:" slt-validate-menu-item "B@:@"))))
 
 ;;; Application setup and event loop
 
@@ -334,6 +365,8 @@ expects, or NIL for keys the terminal should not see."
 
 (defun destroy-cocoa-view (view)
   (remhash (cffi:pointer-address (cocoa-view-ns-view view)) *cocoa-views*)
+  (when (cocoa-view-menu-target view)
+    (remhash (cffi:pointer-address (cocoa-view-menu-target view)) *cocoa-views*))
   (remhash (cffi:pointer-address (cocoa-view-delegate view)) *cocoa-views*)
   (ignore-errors (free-metal-renderer (cocoa-view-renderer view)))
   (ignore-errors (free-coretext-font (cocoa-view-font view)))
@@ -439,6 +472,28 @@ expects, or NIL for keys the terminal should not see."
 
 (defmethod backend-bind-mouse ((backend cocoa-backend) (view cocoa-view) callback)
   (setf (cocoa-view-mouse-callback view) callback))
+
+(defmethod backend-bind-menu ((backend cocoa-backend) (view cocoa-view) items)
+  "Add a Lisp menu holding ITEMS to the menu bar."
+  (when items
+    (let ((target (msg (msg "SLTMenuTarget" "alloc") "init"))
+          (bar-item (msg (msg "NSMenuItem" "alloc") "init"))
+          (menu (msg (msg "NSMenu" "alloc") "initWithTitle:" :pointer (ns-string "Lisp"))))
+      (setf (cocoa-view-menu-target view) target
+            (cocoa-view-menu-items view) (coerce items 'simple-vector)
+            (gethash (cffi:pointer-address target) *cocoa-views*) view)
+      (loop for (label) in items
+            for tag from 0
+            do (let ((item (msg (msg "NSMenuItem" "alloc") "initWithTitle:action:keyEquivalent:"
+                                :pointer (ns-string (if (stringp label) label (funcall label)))
+                                :pointer (selector "sltMenuItemChosen:")
+                                :pointer (ns-string ""))))
+                 (msg item "setTarget:" :pointer target :void)
+                 (msg item "setTag:" :long tag :void)
+                 (msg menu "addItem:" :pointer item :void)))
+      (msg bar-item "setSubmenu:" :pointer menu :void)
+      (msg (msg (msg "NSApplication" "sharedApplication") "mainMenu") "addItem:"
+           :pointer bar-item :void))))
 
 (defmethod backend-clipboard-text ((backend cocoa-backend) (view cocoa-view))
   (with-autorelease-pool ()

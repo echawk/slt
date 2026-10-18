@@ -27,10 +27,15 @@
   :license "MIT"
   :version "0.2.0"
   :depends-on (:slt/core :slt/web :clingon :ltk
+               ;; REPL servers, with the contribs their clients ask for.
+               :swank/exts :slynk/arglists :slynk/fancy-inspector
+               :slynk/package-fu :slynk/mrepl :slynk/trace-dialog
+               :slynk/profiler :slynk/stickers :slynk/indentation
                (:feature :darwin :slt/cocoa))
   :pathname "src/"
   :serial t
   :components ((:file "ltk-backend")
+               (:file "repl-server")
                (:file "cli"))
   :in-order-to ((test-op (test-op "slt/tests"))))
 

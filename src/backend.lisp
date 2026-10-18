@@ -105,6 +105,15 @@ cell under the pointer and may lie outside the grid.")
     (declare (ignore backend view callback))
     nil))
 
+(defgeneric backend-bind-menu (backend view items)
+  (:documentation "Offer ITEMS in a menu: a list of (LABEL FUNCTION), where
+LABEL is a string or a function returning one, called each time the menu
+is shown, and FUNCTION is called with no arguments when the item is
+chosen.  Backends without menus ignore it.")
+  (:method (backend view items)
+    (declare (ignore backend view items))
+    nil))
+
 (defgeneric backend-clipboard-text (backend view)
   (:documentation "The text on the system clipboard, or NIL.")
   (:method (backend view)

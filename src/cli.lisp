@@ -65,6 +65,15 @@
                         :key :web-port
                         :long-name "web-port"
                         :description "Port the web backend listens on (default 8080).")
+   (clingon:make-option :choice
+                        :key :repl-server
+                        :long-name "repl-server"
+                        :items '("swank" "slynk")
+                        :description "Start a Swank (SLIME) or Slynk (SLY) server.")
+   (clingon:make-option :integer
+                        :key :repl-port
+                        :long-name "repl-port"
+                        :description "Port for the Swank or Slynk server (default 4005).")
    (clingon:make-option :flag
                         :key :no-config
                         :long-name "no-config"
@@ -144,7 +153,13 @@
      t)
     (t
      (let ((*web-host* (or (clingon:getopt command :web-host nil) *web-host*))
-           (*web-port* (or (clingon:getopt command :web-port nil) *web-port*)))
+           (*web-port* (or (clingon:getopt command :web-port nil) *web-port*))
+           (repl-server (clingon:getopt command :repl-server nil)))
+       ;; Set globally so the menu and key binding use them too.
+       (setf *repl-server-port* (clingon:getopt command :repl-port *repl-server-port*))
+       (when repl-server
+         (setf *repl-server* (intern (string-upcase repl-server) :keyword))
+         (toggle-repl-server))
        (apply launcher (command-launch-arguments command))))))
 
 (defun cli-command-handler (command)

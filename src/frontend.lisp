@@ -386,6 +386,21 @@ and Control+Shift+C / Control+Shift+V.  On *KEY-HOOK*; remove it to rebind."
 
 (add-hook '*key-hook* 'clipboard-key-handler)
 
+;;; The menu
+
+(defvar *menu-items* '()
+  "Items of the Lisp menu, on backends that have one (cocoa): a list of
+(LABEL FUNCTION).  LABEL is a string or a function of no arguments
+returning one, consulted each time the menu opens; FUNCTION is called with
+the emulator when the item is chosen.  Read when the window is created.")
+
+(defun emulator-menu-items (emulator)
+  "*MENU-ITEMS* in the form BACKEND-BIND-MENU takes."
+  (loop for (label function) in *menu-items*
+        collect (list label
+                      (let ((function function))
+                        (lambda () (funcall function emulator))))))
+
 (defun paste-text (emulator text)
   "Send TEXT to the child as a paste, bracketed when the child asked for it."
   (let ((bracketed (with-engine (engine emulator)
@@ -588,6 +603,7 @@ and notice a child that exited without closing the PTY."
                              view
                              (lambda (text)
                                (paste-text emulator text)))
+         (backend-bind-menu backend-instance view (emulator-menu-items emulator))
          (backend-on-close backend-instance
                            view
                            (lambda ()

@@ -93,6 +93,8 @@
    #:backend-clipboard-text
    #:backend-set-clipboard-text
    #:backend-bind-scroll
+   #:backend-bind-menu
+   #:*menu-items*
    #:scroll-viewport
    #:scrollback-key-handler
    #:paste-text
@@ -102,6 +104,14 @@
    #:clipboard-key-handler
    #:*copy-on-select*
    #:*selection-word-characters*
+   ;; Swank and Slynk servers
+   #:*repl-server*
+   #:*repl-server-port*
+   #:start-repl-server
+   #:stop-repl-server
+   #:toggle-repl-server
+   #:repl-server-running-p
+   #:repl-server-key-handler
    ;; Headless backend
    #:headless-backend
    #:headless-view
