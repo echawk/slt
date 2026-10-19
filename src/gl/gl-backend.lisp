@@ -7,8 +7,10 @@
 ;;;; sizes the frontend sees are framebuffer pixels.
 
 (defvar *gl-api* :auto
-  "Which API to ask GLFW for: :GL (OpenGL 3.3 core), :GLES (OpenGL ES 3.0
-through EGL), or :AUTO for OpenGL with a fallback to OpenGL ES.")
+  "Which API to ask GLFW for: :GL (OpenGL 3.3 core), :GLES (OpenGL ES 3.0),
+or :AUTO for OpenGL with a fallback to OpenGL ES.  Contexts are created
+through EGL except on macOS, also on X11: GLX does not start on some
+systems (musl Linux under Xorg), and Mesa ships EGL wherever it ships GLX.")
 
 (defvar *gl-vsync* t
   "When true, buffer swaps wait for the display's refresh.")
@@ -375,11 +377,14 @@ height, after writing them to PATHNAME as a PPM when given."
         (values rgb width height)))))
 
 (defun gl-api-hints (api)
-  (ecase api
-    (:gl '(:client-api :opengl-api :context-version-major 3 :context-version-minor 3
-           :opengl-profile :opengl-core-profile :opengl-forward-compat t))
-    (:gles '(:client-api :opengl-es-api :context-creation-api :egl-context-api
-             :context-version-major 3 :context-version-minor 0))))
+  (append
+   (ecase api
+     (:gl '(:client-api :opengl-api :context-version-major 3 :context-version-minor 3
+            :opengl-profile :opengl-core-profile :opengl-forward-compat t))
+     (:gles '(:client-api :opengl-es-api :context-version-major 3 :context-version-minor 0)))
+   ;; macOS has only NSGL; everywhere else, EGL rather than GLX.
+   (unless (uiop:os-macosx-p)
+     '(:context-creation-api :egl-context-api))))
 
 (defun make-gl-view (backend width height title font-options scale)
   "Create the window with the first API in *GL-API* that works."

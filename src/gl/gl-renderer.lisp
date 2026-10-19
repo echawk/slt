@@ -6,8 +6,8 @@
 ;;;; PACK-GRID, and glyphs come from an R8 atlas texture.
 ;;;;
 ;;;; GL calls go through cl-opengl.  Its entry points are resolved with
-;;;; glfwGetProcAddress (see GL-BACKEND), which works for GLX, EGL (X11 and
-;;;; Wayland) and CGL alike.
+;;;; glfwGetProcAddress (see GL-BACKEND), which works for EGL (used on X11
+;;;; and Wayland) and NSGL alike.
 
 (defparameter *gl-vertex-shader-source* "
 layout(location = 0) in uvec4 cell;
