@@ -5,7 +5,7 @@
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.2.0"
-  :depends-on (:3bst :babel :bordeaux-threads :cffi :osicat (:feature :sbcl :sb-posix))
+  :depends-on (:3bst :lispvt :babel :bordeaux-threads :cffi :osicat (:feature :sbcl :sb-posix))
   :pathname "src/"
   :serial t
   :components ((:file "package")
@@ -16,6 +16,7 @@
                (:file "backend")
                (:file "engine")
                (:file "engine-3bst")
+               (:file "engine-lispvt")
                (:file "transport")
                (:file "gpu")
                (:file "frontend")

@@ -1,0 +1,1135 @@
+(in-package #:lispvt)
+
+;;;; The terminal: an xterm-compatible VT state machine (after Paul
+;;;; Williams' DEC parser) driving a primary screen with scrollback and an
+;;;; alternate screen.  Parser state lives in the terminal, so input may be
+;;;; split anywhere, including inside UTF-8 sequences.  In the ground state
+;;;; printable ASCII is consumed in whole runs (see scan.lisp).
+
+(defconstant +ground+ 0)
+(defconstant +escape+ 1)
+(defconstant +escape-intermediate+ 2)
+(defconstant +csi+ 3)
+(defconstant +csi-intermediate+ 4)
+(defconstant +csi-ignore+ 5)
+(defconstant +osc+ 6)
+(defconstant +control-string+ 7)          ; DCS, SOS, PM, APC: ignored
+
+(defconstant +max-parameters+ 32)
+(defconstant +max-osc-length+ 4096)
+
+(defstruct (terminal (:constructor %make-terminal))
+  (rows 24 :type dimension)
+  (columns 80 :type dimension)
+  (primary nil :type screen)
+  (alternate nil :type screen)
+  (screen nil :type screen)
+  (alternate-p nil :type boolean)
+  (scrollback 10000 :type fixnum)
+  ;; Cursor and pen.
+  (cursor-row 0 :type fixnum)
+  (cursor-column 0 :type fixnum)
+  (pending-wrap nil :type boolean)
+  (fg 0 :type (unsigned-byte 32))
+  (bg 0 :type (unsigned-byte 32))
+  (attrs 0 :type (unsigned-byte 16))
+  (cursor-shape :block :type (member :block :underline :bar))
+  ;; Modes with behavior of their own; the rest live in MODES.
+  (autowrap t :type boolean)
+  (origin nil :type boolean)
+  (insert nil :type boolean)
+  (newline nil :type boolean)
+  (cursor-shown t :type boolean)
+  (modes (make-hash-table) :type hash-table)
+  (scroll-top 0 :type fixnum)
+  (scroll-bottom 23 :type fixnum)
+  (tabs (make-array 0 :element-type 'bit) :type simple-bit-vector)
+  ;; Character sets: G0, G1 (:ascii or :graphics) and which one is GL.
+  (g0 :ascii :type keyword)
+  (g1 :ascii :type keyword)
+  (gl 0 :type bit)
+  (last-char 32 :type (unsigned-byte 32))
+  ;; One bit per displayed row whose contents changed.
+  (dirty (make-array 0 :element-type 'bit) :type simple-bit-vector)
+  ;; Rows of scrollback shown above the screen.
+  (viewport-offset 0 :type fixnum)
+  ;; Parser.
+  (state +ground+ :type fixnum)
+  (params (make-array +max-parameters+ :element-type 'fixnum)
+   :type (simple-array fixnum (#.+max-parameters+)))
+  (colons (make-array +max-parameters+ :element-type 'bit)
+   :type (simple-bit-vector #.+max-parameters+))
+  (param-count 0 :type fixnum)
+  (param-value 0 :type fixnum)
+  (param-digits nil :type boolean)
+  (colon-next nil :type boolean)
+  (private 0 :type (unsigned-byte 8))
+  (intermediate 0 :type (unsigned-byte 8))
+  (intermediate-count 0 :type fixnum)
+  (osc (make-array 64 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
+  (utf8-code 0 :type (unsigned-byte 32))
+  (utf8-remaining 0 :type fixnum)
+  ;; Callbacks and reported state.
+  (output-function nil)
+  (title-function nil)
+  (bell-function nil)
+  (title "" :type string))
+
+(defun default-tabs (columns)
+  (let ((tabs (make-array columns :element-type 'bit :initial-element 0)))
+    (loop for column from 8 below columns by 8
+          do (setf (sbit tabs column) 1))
+    tabs))
+
+(defun make-terminal (&key (rows 24) (columns 80) (scrollback 10000)
+                        output-function title-function bell-function)
+  "A terminal of ROWS x COLUMNS keeping up to SCROLLBACK lines of history.
+OUTPUT-FUNCTION is called with strings to send back to the application
+(replies to queries), TITLE-FUNCTION with a new window title, and
+BELL-FUNCTION with no arguments."
+  (let* ((primary (make-screen rows columns scrollback))
+         (term (%make-terminal :rows rows :columns columns :scrollback scrollback
+                               :primary primary
+                               :alternate (make-screen rows columns 0)
+                               :screen primary
+                               :output-function output-function
+                               :title-function title-function
+                               :bell-function bell-function)))
+    (reset-state term)
+    term))
+
+(defun reset-state (term)
+  (let ((rows (terminal-rows term))
+        (columns (terminal-columns term)))
+    (setf (terminal-primary term) (make-screen rows columns (terminal-scrollback term))
+          (terminal-alternate term) (make-screen rows columns 0)
+          (terminal-screen term) (terminal-primary term)
+          (terminal-alternate-p term) nil
+          (terminal-cursor-row term) 0
+          (terminal-cursor-column term) 0
+          (terminal-pending-wrap term) nil
+          (terminal-fg term) 0
+          (terminal-bg term) 0
+          (terminal-attrs term) 0
+          (terminal-cursor-shape term) :block
+          (terminal-autowrap term) t
+          (terminal-origin term) nil
+          (terminal-insert term) nil
+          (terminal-newline term) nil
+          (terminal-cursor-shown term) t
+          (terminal-scroll-top term) 0
+          (terminal-scroll-bottom term) (1- rows)
+          (terminal-tabs term) (default-tabs columns)
+          (terminal-g0 term) :ascii
+          (terminal-g1 term) :ascii
+          (terminal-gl term) 0
+          (terminal-last-char term) 32
+          (terminal-dirty term) (make-array rows :element-type 'bit :initial-element 1)
+          (terminal-viewport-offset term) 0
+          (terminal-state term) +ground+
+          (terminal-utf8-remaining term) 0)
+    (clrhash (terminal-modes term))
+    term))
+
+(defun terminal-reset (term)
+  "Full reset (RIS)."
+  (reset-state term))
+
+;;; Callbacks
+
+(defun emit-output (term string)
+  (let ((function (terminal-output-function term)))
+    (when function
+      (funcall function string))))
+
+;;; Dirty tracking.  Rows are dirtied in screen coordinates and shifted by
+;;; the viewport offset when scrollback is shown.
+
+(declaim (inline mark-row-dirty))
+(defun mark-row-dirty (term row)
+  (declare (type terminal term) (type fixnum row))
+  (let ((shown (+ row (terminal-viewport-offset term))))
+    (when (< shown (terminal-rows term))
+      (setf (sbit (terminal-dirty term) shown) 1))))
+
+(defun mark-rows-dirty (term top bottom)
+  (declare (type terminal term) (type fixnum top bottom))
+  (if (plusp (terminal-viewport-offset term))
+      (fill (terminal-dirty term) 1)
+      (fill (terminal-dirty term) 1 :start top :end (1+ bottom))))
+
+(defun terminal-row-dirty-p (term row)
+  (= 1 (sbit (terminal-dirty term) row)))
+
+(defun terminal-clear-dirty (term)
+  (fill (terminal-dirty term) 0)
+  term)
+
+;;; Lines
+
+(declaim (inline current-line screen-line))
+(defun screen-line (term row)
+  (svref (screen-lines (terminal-screen term)) row))
+
+(defun current-line (term)
+  (screen-line term (terminal-cursor-row term)))
+
+(defun terminal-line (term row)
+  "The line displayed at ROW, taking the scrollback viewport into account."
+  (let* ((screen (terminal-screen term))
+         (offset (terminal-viewport-offset term)))
+    (if (< row offset)
+        (let* ((index (+ (- (screen-history-count screen) offset) row))
+               (line (history-line screen index))
+               (columns (terminal-columns term)))
+          ;; History keeps the width it was written at; adjust on demand.
+          (if (= (line-length line) columns)
+              line
+              (setf (svref (screen-history screen)
+                           (mod (+ (screen-history-start screen) index)
+                                (length (screen-history screen))))
+                    (resize-line line columns))))
+        (screen-line term (- row offset)))))
+
+(defun terminal-history-count (term)
+  (screen-history-count (terminal-screen term)))
+
+;;; Scrolling
+
+(defun scroll-up (term top bottom count &optional history)
+  "Scroll rows TOP..BOTTOM up by COUNT.  With HISTORY, lines leaving the top
+of the primary screen go to scrollback."
+  (declare (type terminal term) (type fixnum top bottom count)
+           (optimize speed))
+  (let* ((screen (terminal-screen term))
+         (lines (screen-lines screen))
+         (columns (terminal-columns term))
+         (bg (terminal-bg term))
+         (keep (and history (zerop top) (not (terminal-alternate-p term))))
+         (count (min count (1+ (- bottom top)))))
+    (declare (type fixnum count))
+    (dotimes (i count)
+      (let ((line (svref lines top)))
+        (replace lines lines :start1 top :start2 (1+ top) :end2 (1+ bottom))
+        (let ((fresh (if keep
+                         (let ((old (history-push screen line)))
+                           (if (and old (= (line-length old) columns))
+                               old
+                               (make-line columns)))
+                         line)))
+          (setf (svref lines bottom) (clear-line fresh bg)))))
+    (when (and keep (plusp (terminal-viewport-offset term)))
+      (setf (terminal-viewport-offset term)
+            (min (+ (terminal-viewport-offset term) count)
+                 (screen-history-count screen))))
+    (mark-rows-dirty term top bottom)))
+
+(defun scroll-down (term top bottom count)
+  (declare (type terminal term) (type fixnum top bottom count))
+  (let ((lines (screen-lines (terminal-screen term)))
+        (bg (terminal-bg term))
+        (count (min count (1+ (- bottom top)))))
+    (dotimes (i count)
+      (let ((line (svref lines bottom)))
+        (replace lines lines :start1 (1+ top) :start2 top :end2 bottom)
+        (setf (svref lines top) (clear-line line bg))))
+    (mark-rows-dirty term top bottom)))
+
+(defun index (term)
+  "Move down a line, scrolling at the bottom margin (IND, LF)."
+  (declare (type terminal term))
+  (let ((row (terminal-cursor-row term)))
+    (setf (terminal-pending-wrap term) nil)
+    (cond ((= row (terminal-scroll-bottom term))
+           (scroll-up term (terminal-scroll-top term) row 1 t))
+          ((< row (1- (terminal-rows term)))
+           (setf (terminal-cursor-row term) (1+ row))))))
+
+(defun reverse-index (term)
+  (let ((row (terminal-cursor-row term)))
+    (setf (terminal-pending-wrap term) nil)
+    (cond ((= row (terminal-scroll-top term))
+           (scroll-down term row (terminal-scroll-bottom term) 1))
+          ((plusp row)
+           (setf (terminal-cursor-row term) (1- row))))))
+
+(defun wrap (term)
+  (setf (line-wrapped (current-line term)) t
+        (terminal-cursor-column term) 0)
+  (index term))
+
+;;; Cursor motion
+
+(defun set-cursor (term row column)
+  (setf (terminal-cursor-row term) (max 0 (min row (1- (terminal-rows term))))
+        (terminal-cursor-column term) (max 0 (min column (1- (terminal-columns term))))
+        (terminal-pending-wrap term) nil))
+
+(defun set-column (term column)
+  (set-cursor term (terminal-cursor-row term) column))
+
+(defun cursor-to (term row column)
+  "CUP: ROW and COLUMN are 0-based, relative to the scroll region in
+origin mode."
+  (if (terminal-origin term)
+      (set-cursor term
+                  (min (+ row (terminal-scroll-top term)) (terminal-scroll-bottom term))
+                  column)
+      (set-cursor term row column)))
+
+(defun cursor-up (term count)
+  (let* ((row (terminal-cursor-row term))
+         (top (if (>= row (terminal-scroll-top term)) (terminal-scroll-top term) 0)))
+    (set-cursor term (max top (- row count)) (terminal-cursor-column term))))
+
+(defun cursor-down (term count)
+  (let* ((row (terminal-cursor-row term))
+         (bottom (if (<= row (terminal-scroll-bottom term))
+                     (terminal-scroll-bottom term)
+                     (1- (terminal-rows term)))))
+    (set-cursor term (min bottom (+ row count)) (terminal-cursor-column term))))
+
+(defun tab-forward (term count)
+  (let ((tabs (terminal-tabs term))
+        (last (1- (terminal-columns term)))
+        (column (terminal-cursor-column term)))
+    (dotimes (i count)
+      (setf column (or (position 1 tabs :start (min (1+ column) last)) last)))
+    (setf (terminal-cursor-column term) column
+          (terminal-pending-wrap term) nil)))
+
+(defun tab-backward (term count)
+  (let ((tabs (terminal-tabs term))
+        (column (terminal-cursor-column term)))
+    (dotimes (i count)
+      (setf column (if (plusp column)
+                       (or (position 1 tabs :end column :from-end t) 0)
+                       0)))
+    (set-column term column)))
+
+;;; Writing cells
+
+(declaim (inline clear-cut-wide-characters))
+(defun clear-cut-wide-characters (line start end)
+  "Before cells [START, END) of LINE are overwritten, blank the other half
+of any wide character the range cuts."
+  (declare (type line line) (type fixnum start end))
+  (let ((attrs (line-attrs line))
+        (codes (line-codes line)))
+    (when (and (plusp start) (logtest (aref attrs start) +attr-wide-spacer+))
+      (setf (aref codes (1- start)) 0
+            (aref attrs (1- start)) 0))
+    (when (and (< end (length attrs)) (logtest (aref attrs (1- end)) +attr-wide+))
+      (setf (aref codes end) 0
+            (aref attrs end) 0))))
+
+(defun erase (term line start end)
+  "Erase cells [START, END) of LINE with the current background, widened
+to whole wide characters."
+  (let* ((attrs (line-attrs line))
+         (length (length attrs))
+         (start (max 0 start))
+         (end (min end length)))
+    (when (< start end)
+      (when (and (plusp start) (logtest (aref attrs start) +attr-wide-spacer+))
+        (decf start))
+      (when (and (< end length) (logtest (aref attrs end) +attr-wide-spacer+))
+        (incf end))
+      (erase-cells line start end (terminal-bg term)))))
+
+(defun print-ascii (term octets start end)
+  "Print the printable ASCII run OCTETS[START, END)."
+  (declare (type terminal term)
+           (type octets octets)
+           (type index start end)
+           (optimize speed (safety 0)))
+  (when (or (terminal-insert term)
+            (eq :graphics (if (zerop (terminal-gl term)) (terminal-g0 term) (terminal-g1 term))))
+    (loop for i of-type index from start below end
+          do (print-char term (aref octets i)))
+    (return-from print-ascii))
+  (let ((i start)
+        (columns (terminal-columns term))
+        (fg (terminal-fg term))
+        (bg (terminal-bg term))
+        (attrs (terminal-attrs term)))
+    (declare (type index i) (type fixnum columns))
+    (loop while (< i end)
+          do (when (terminal-pending-wrap term)
+               (wrap term))
+             (let* ((column (terminal-cursor-column term))
+                    (row (terminal-cursor-row term))
+                    (line (screen-line term row))
+                    (count (min (- columns column) (- end i)))
+                    (stop (+ column count))
+                    (codes (line-codes line)))
+               (declare (type fixnum column row count stop))
+               (clear-cut-wide-characters line column stop)
+               (when (line-combining line)
+                 (line-remove-combining line column stop))
+               (loop for k of-type fixnum from column below stop
+                     for j of-type index from i
+                     do (setf (aref codes k) (aref octets j)))
+               (fill (line-fg line) fg :start column :end stop)
+               (fill (line-bg line) bg :start column :end stop)
+               (fill (line-attrs line) attrs :start column :end stop)
+               (mark-row-dirty term row)
+               (incf i count)
+               (if (>= stop columns)
+                   (setf (terminal-cursor-column term) (1- columns)
+                         (terminal-pending-wrap term) (terminal-autowrap term))
+                   (setf (terminal-cursor-column term) stop))))
+    (setf (terminal-last-char term) (aref octets (1- end)))))
+
+(defparameter *dec-special-graphics*
+  #(#x00A0 #x25C6 #x2592 #x2409 #x240C #x240D #x240A #x00B0 #x00B1 #x2424
+    #x240B #x2518 #x2510 #x250C #x2514 #x253C #x23BA #x23BB #x2500 #x23BC
+    #x23BD #x251C #x2524 #x2534 #x252C #x2502 #x2264 #x2265 #x03C0 #x2260
+    #x00A3 #x00B7)
+  "Codepoints for #x5F through #x7E in the DEC special graphics set.")
+
+(defun attach-combining (term code)
+  (let* ((line (current-line term))
+         (column (if (terminal-pending-wrap term)
+                     (terminal-cursor-column term)
+                     (1- (terminal-cursor-column term)))))
+    (when (and (plusp column) (logtest (aref (line-attrs line) column) +attr-wide-spacer+))
+      (decf column))
+    (when (>= column 0)
+      (let ((entry (assoc column (line-combining line)))
+            (string (string (code-char code))))
+        (if entry
+            (setf (cdr entry) (concatenate 'string (cdr entry) string))
+            (push (cons column string) (line-combining line))))
+      (mark-row-dirty term (terminal-cursor-row term)))))
+
+(defun print-char (term code)
+  (declare (type terminal term) (type (unsigned-byte 32) code))
+  (let ((width (char-width code))
+        (columns (terminal-columns term)))
+    (when (zerop width)
+      (attach-combining term code)
+      (return-from print-char))
+    (when (and (<= #x5F code #x7E)
+               (eq :graphics (if (zerop (terminal-gl term)) (terminal-g0 term) (terminal-g1 term))))
+      (setf code (svref *dec-special-graphics* (- code #x5F))))
+    (when (< columns 2)
+      (setf width 1))
+    (when (terminal-pending-wrap term)
+      (wrap term))
+    (when (and (= width 2) (= (terminal-cursor-column term) (1- columns)))
+      (if (terminal-autowrap term)
+          (progn (erase term (current-line term) (1- columns) columns)
+                 (wrap term))
+          (setf (terminal-cursor-column term) (- columns 2))))
+    (let* ((column (terminal-cursor-column term))
+           (line (current-line term)))
+      (when (terminal-insert term)
+        (insert-blanks term line column width))
+      (clear-cut-wide-characters line column (+ column width))
+      (line-remove-combining line column (+ column width))
+      (let ((fg (terminal-fg term))
+            (bg (terminal-bg term))
+            (attrs (terminal-attrs term)))
+        (setf (aref (line-codes line) column) code
+              (aref (line-fg line) column) fg
+              (aref (line-bg line) column) bg
+              (aref (line-attrs line) column) (if (= width 2) (logior attrs +attr-wide+) attrs))
+        (when (= width 2)
+          (setf (aref (line-codes line) (1+ column)) 0
+                (aref (line-fg line) (1+ column)) fg
+                (aref (line-bg line) (1+ column)) bg
+                (aref (line-attrs line) (1+ column)) (logior attrs +attr-wide-spacer+))))
+      (mark-row-dirty term (terminal-cursor-row term))
+      (setf (terminal-last-char term) code)
+      (let ((next (+ column width)))
+        (if (>= next columns)
+            (setf (terminal-cursor-column term) (1- columns)
+                  (terminal-pending-wrap term) (terminal-autowrap term))
+            (setf (terminal-cursor-column term) next))))))
+
+(defun shift-combining (line start delta limit)
+  "Move combining marks at columns >= START by DELTA, dropping those that
+end up outside [START, LIMIT)."
+  (when (line-combining line)
+    (setf (line-combining line)
+          (loop for (column . string) in (line-combining line)
+                for moved = (if (>= column start) (+ column delta) column)
+                when (or (< column start) (and (>= moved start) (< moved limit)))
+                  collect (cons moved string)))))
+
+(defun insert-blanks (term line column count)
+  "ICH: shift cells from COLUMN right by COUNT, blanking the gap."
+  (let* ((columns (length (line-codes line)))
+         (count (min count (- columns column))))
+    (when (and (plusp column) (logtest (aref (line-attrs line) column) +attr-wide-spacer+))
+      (erase-cells line (1- column) (1+ column) (terminal-bg term)))
+    (shift-combining line column count columns)
+    (dolist (vector (list (line-codes line) (line-fg line) (line-bg line) (line-attrs line)))
+      (replace vector vector :start1 (+ column count) :start2 column :end2 (- columns count)))
+    (when (logtest (aref (line-attrs line) (1- columns)) +attr-wide+)
+      (erase-cells line (1- columns) columns (terminal-bg term)))
+    (erase-cells line column (+ column count) (terminal-bg term))))
+
+(defun delete-chars (term line column count)
+  "DCH: delete COUNT cells at COLUMN, shifting the rest left."
+  (let* ((columns (length (line-codes line)))
+         (count (min count (- columns column))))
+    (when (and (plusp column) (logtest (aref (line-attrs line) column) +attr-wide-spacer+))
+      (erase-cells line (1- column) (1+ column) (terminal-bg term)))
+    (line-remove-combining line column (+ column count))
+    (shift-combining line (+ column count) (- count) columns)
+    (dolist (vector (list (line-codes line) (line-fg line) (line-bg line) (line-attrs line)))
+      (replace vector vector :start1 column :start2 (+ column count)))
+    (when (logtest (aref (line-attrs line) column) +attr-wide-spacer+)
+      (erase-cells line column (1+ column) (terminal-bg term)))
+    (erase-cells line (- columns count) columns (terminal-bg term))))
+
+;;; Control characters
+
+(defun execute-control (term byte)
+  (declare (type terminal term) (type (unsigned-byte 8) byte))
+  (case byte
+    (7 (let ((function (terminal-bell-function term)))
+         (when function (funcall function))))
+    (8 (setf (terminal-pending-wrap term) nil)
+       (when (plusp (terminal-cursor-column term))
+         (decf (terminal-cursor-column term))))
+    (9 (tab-forward term 1))
+    ((10 11 12)
+     (index term)
+     (when (terminal-newline term)
+       (setf (terminal-cursor-column term) 0)))
+    (13 (setf (terminal-cursor-column term) 0
+              (terminal-pending-wrap term) nil))
+    (14 (setf (terminal-gl term) 1))
+    (15 (setf (terminal-gl term) 0))))
+
+;;; Saving the cursor
+
+(defun save-cursor (term)
+  (setf (screen-saved-cursor (terminal-screen term))
+        (vector (terminal-cursor-row term) (terminal-cursor-column term)
+                (terminal-pending-wrap term)
+                (terminal-fg term) (terminal-bg term) (terminal-attrs term)
+                (terminal-origin term)
+                (terminal-g0 term) (terminal-g1 term) (terminal-gl term))))
+
+(defun restore-cursor (term)
+  (let ((saved (screen-saved-cursor (terminal-screen term))))
+    (if saved
+        (progn
+          (set-cursor term (svref saved 0) (svref saved 1))
+          (setf (terminal-pending-wrap term) (and (svref saved 2)
+                                                  (= (terminal-cursor-column term)
+                                                     (svref saved 1)))
+                (terminal-fg term) (svref saved 3)
+                (terminal-bg term) (svref saved 4)
+                (terminal-attrs term) (svref saved 5)
+                (terminal-origin term) (svref saved 6)
+                (terminal-g0 term) (svref saved 7)
+                (terminal-g1 term) (svref saved 8)
+                (terminal-gl term) (svref saved 9)))
+        (progn
+          (set-cursor term 0 0)
+          (setf (terminal-fg term) 0 (terminal-bg term) 0 (terminal-attrs term) 0
+                (terminal-origin term) nil)))))
+
+;;; Escape sequences
+
+(defun esc-dispatch (term byte)
+  (declare (type terminal term) (type (unsigned-byte 8) byte))
+  (setf (terminal-state term) +ground+)
+  (if (zerop (terminal-intermediate-count term))
+      (case (code-char byte)
+        (#\[ (setf (terminal-state term) +csi+
+                   (terminal-param-count term) 0
+                   (terminal-param-value term) 0
+                   (terminal-param-digits term) nil
+                   (terminal-colon-next term) nil
+                   (terminal-private term) 0
+                   (terminal-intermediate term) 0
+                   (terminal-intermediate-count term) 0))
+        (#\] (setf (terminal-state term) +osc+
+                   (fill-pointer (terminal-osc term)) 0))
+        ((#\P #\X #\^ #\_) (setf (terminal-state term) +control-string+))
+        (#\7 (save-cursor term))
+        (#\8 (restore-cursor term))
+        (#\D (index term))
+        (#\E (index term)
+         (setf (terminal-cursor-column term) 0))
+        (#\H (setf (sbit (terminal-tabs term) (terminal-cursor-column term)) 1))
+        (#\M (reverse-index term))
+        (#\c (reset-state term))
+        (#\= (setf (gethash 66 (terminal-modes term)) t))
+        (#\> (remhash 66 (terminal-modes term))))
+      (let ((intermediate (code-char (terminal-intermediate term)))
+            (final (code-char byte)))
+        (case intermediate
+          (#\# (when (char= final #\8) (screen-alignment term)))
+          (#\( (setf (terminal-g0 term) (if (char= final #\0) :graphics :ascii)))
+          (#\) (setf (terminal-g1 term) (if (char= final #\0) :graphics :ascii)))))))
+
+(defun screen-alignment (term)
+  "DECALN: fill the screen with E."
+  (loop for line across (screen-lines (terminal-screen term))
+        do (clear-line line 0)
+           (fill (line-codes line) (char-code #\E)))
+  (setf (terminal-scroll-top term) 0
+        (terminal-scroll-bottom term) (1- (terminal-rows term)))
+  (set-cursor term 0 0)
+  (mark-rows-dirty term 0 (1- (terminal-rows term))))
+
+;;; CSI
+
+(declaim (inline param))
+(defun param (term index default)
+  (declare (type terminal term) (type fixnum index default))
+  (if (< index (terminal-param-count term))
+      (let ((value (aref (terminal-params term) index)))
+        (if (zerop value) default value))
+      default))
+
+(defun push-param (term)
+  (declare (type terminal term))
+  (let ((count (terminal-param-count term)))
+    (when (< count +max-parameters+)
+      (setf (aref (terminal-params term) count) (terminal-param-value term)
+            (sbit (terminal-colons term) count) (if (terminal-colon-next term) 1 0)
+            (terminal-param-count term) (1+ count))))
+  (setf (terminal-param-value term) 0
+        (terminal-param-digits term) nil
+        (terminal-colon-next term) nil))
+
+(defun erase-display (term how)
+  (let* ((row (terminal-cursor-row term))
+         (column (terminal-cursor-column term))
+         (rows (terminal-rows term))
+         (bg (terminal-bg term)))
+    (setf (terminal-pending-wrap term) nil)
+    (flet ((clear-rows (start end)
+             (loop for r from start below end
+                   do (clear-line (screen-line term r) bg))))
+      (case how
+        (0 (erase term (current-line term) column (terminal-columns term))
+         (setf (line-wrapped (current-line term)) nil)
+         (clear-rows (1+ row) rows)
+         (mark-rows-dirty term row (1- rows)))
+        (1 (erase term (current-line term) 0 (1+ column))
+         (clear-rows 0 row)
+         (mark-rows-dirty term 0 row))
+        (2 (clear-rows 0 rows)
+         (mark-rows-dirty term 0 (1- rows)))
+        (3 (unless (terminal-alternate-p term)
+             (clear-history (terminal-primary term))
+             (when (plusp (terminal-viewport-offset term))
+               (setf (terminal-viewport-offset term) 0)
+               (mark-rows-dirty term 0 (1- rows)))))))))
+
+(defun erase-line (term how)
+  (let ((line (current-line term))
+        (column (terminal-cursor-column term)))
+    (setf (terminal-pending-wrap term) nil)
+    (case how
+      (0 (erase term line column (terminal-columns term))
+       (setf (line-wrapped line) nil))
+      (1 (erase term line 0 (1+ column)))
+      (2 (erase term line 0 (terminal-columns term))
+       (setf (line-wrapped line) nil)))
+    (mark-row-dirty term (terminal-cursor-row term))))
+
+(defun extended-color (term index)
+  "Parse the color starting at parameter INDEX (the 38, 48 or 58).
+Return the color or NIL, and the number of parameters consumed."
+  (let* ((params (terminal-params term))
+         (colons (terminal-colons term))
+         (count (terminal-param-count term))
+         (next (1+ index)))
+    (flet ((byte-at (i) (if (< i count) (min 255 (aref params i)) 0)))
+      (cond
+        ((>= next count) (values nil 1))
+        ((= 1 (sbit colons next))
+         ;; Colon form: 38:5:N or 38:2:[colorspace:]R:G:B
+         (let ((end next))
+           (loop while (and (< end count) (= 1 (sbit colons end)))
+                 do (incf end))
+           (let ((kind (aref params next))
+                 (subparams (- end next)))
+             (values (case kind
+                       (5 (palette-color (byte-at (+ next 1))))
+                       (2 (let ((base (if (>= subparams 5) (+ next 2) (+ next 1))))
+                            (rgb-color (byte-at base) (byte-at (+ base 1)) (byte-at (+ base 2))))))
+                     (- end index)))))
+        ((= (aref params next) 5)
+         (values (palette-color (byte-at (+ next 1))) 3))
+        ((= (aref params next) 2)
+         (values (rgb-color (byte-at (+ next 1)) (byte-at (+ next 2)) (byte-at (+ next 3)))
+                 5))
+        (t (values nil 2))))))
+
+(defun select-graphic-rendition (term)
+  (declare (type terminal term))
+  (let ((params (terminal-params term))
+        (count (terminal-param-count term))
+        (i 0))
+    (declare (type fixnum count i))
+    (when (zerop count)
+      (setf (terminal-fg term) 0 (terminal-bg term) 0 (terminal-attrs term) 0))
+    (macrolet ((set-attr (mask) `(setf (terminal-attrs term) (logior (terminal-attrs term) ,mask)))
+               (clear-attr (mask) `(setf (terminal-attrs term)
+                                         (logandc2 (terminal-attrs term) ,mask))))
+      (loop while (< i count)
+            do (let ((p (aref params i)))
+                 (incf i)
+                 (case p
+                   (0 (setf (terminal-fg term) 0 (terminal-bg term) 0 (terminal-attrs term) 0))
+                   (1 (set-attr +attr-bold+))
+                   (2 (set-attr +attr-faint+))
+                   (3 (set-attr +attr-italic+))
+                   (4 (if (and (< i count) (= 1 (sbit (terminal-colons term) i)))
+                          (let ((style (aref params i)))
+                            (incf i)
+                            (clear-attr (logior +attr-underline+ +attr-double-underline+))
+                            (case style
+                              (0)
+                              (2 (set-attr +attr-double-underline+))
+                              (t (set-attr +attr-underline+))))
+                          (progn (clear-attr +attr-double-underline+)
+                                 (set-attr +attr-underline+))))
+                   ((5 6) (set-attr +attr-blink+))
+                   (7 (set-attr +attr-inverse+))
+                   (8 (set-attr +attr-invisible+))
+                   (9 (set-attr +attr-strike+))
+                   (21 (clear-attr +attr-underline+)
+                    (set-attr +attr-double-underline+))
+                   (22 (clear-attr (logior +attr-bold+ +attr-faint+)))
+                   (23 (clear-attr +attr-italic+))
+                   (24 (clear-attr (logior +attr-underline+ +attr-double-underline+)))
+                   (25 (clear-attr +attr-blink+))
+                   (27 (clear-attr +attr-inverse+))
+                   (28 (clear-attr +attr-invisible+))
+                   (29 (clear-attr +attr-strike+))
+                   ((30 31 32 33 34 35 36 37) (setf (terminal-fg term) (palette-color (- p 30))))
+                   ((40 41 42 43 44 45 46 47) (setf (terminal-bg term) (palette-color (- p 40))))
+                   ((90 91 92 93 94 95 96 97) (setf (terminal-fg term) (palette-color (- p 82))))
+                   ((100 101 102 103 104 105 106 107)
+                    (setf (terminal-bg term) (palette-color (- p 92))))
+                   (39 (setf (terminal-fg term) 0))
+                   (49 (setf (terminal-bg term) 0))
+                   ((38 48 58)
+                    (multiple-value-bind (color consumed) (extended-color term (1- i))
+                      (incf i (1- consumed))
+                      (when color
+                        (case p
+                          (38 (setf (terminal-fg term) color))
+                          (48 (setf (terminal-bg term) color)))))))))))
+  (values))
+
+(defun set-alternate-screen (term on &key clear)
+  (unless (eq on (terminal-alternate-p term))
+    (setf (terminal-alternate-p term) on
+          (terminal-screen term) (if on (terminal-alternate term) (terminal-primary term))
+          (terminal-viewport-offset term) 0)
+    (when (and on clear)
+      (loop for line across (screen-lines (terminal-alternate term))
+            do (clear-line line (terminal-bg term))))
+    (mark-rows-dirty term 0 (1- (terminal-rows term)))))
+
+(defun set-dec-mode (term mode on)
+  (case mode
+    (6 (setf (terminal-origin term) on)
+     (cursor-to term 0 0))
+    (7 (setf (terminal-autowrap term) on))
+    (25 (setf (terminal-cursor-shown term) on))
+    ((47 1047) (set-alternate-screen term on :clear t))
+    (1048 (if on (save-cursor term) (restore-cursor term)))
+    (1049 (if on
+              (progn (save-cursor term)
+                     (set-alternate-screen term t :clear t))
+              (progn (set-alternate-screen term nil)
+                     (restore-cursor term)))))
+  (if on
+      (setf (gethash mode (terminal-modes term)) t)
+      (remhash mode (terminal-modes term))))
+
+(defun dec-mode-set-p (term mode)
+  (case mode
+    (6 (terminal-origin term))
+    (7 (terminal-autowrap term))
+    (25 (terminal-cursor-shown term))
+    ((47 1047 1049) (terminal-alternate-p term))
+    (t (values (gethash mode (terminal-modes term))))))
+
+(defun soft-reset (term)
+  "DECSTR."
+  (setf (terminal-cursor-shown term) t
+        (terminal-origin term) nil
+        (terminal-autowrap term) t
+        (terminal-insert term) nil
+        (terminal-scroll-top term) 0
+        (terminal-scroll-bottom term) (1- (terminal-rows term))
+        (terminal-fg term) 0 (terminal-bg term) 0 (terminal-attrs term) 0
+        (terminal-g0 term) :ascii (terminal-g1 term) :ascii (terminal-gl term) 0
+        (screen-saved-cursor (terminal-screen term)) nil
+        (terminal-pending-wrap term) nil)
+  (remhash 1 (terminal-modes term))
+  (remhash 66 (terminal-modes term)))
+
+(defun report-cursor (term prefix)
+  (emit-output term (format nil "~c[~a~d;~dR" #\Esc prefix
+                            (1+ (- (terminal-cursor-row term)
+                                   (if (terminal-origin term) (terminal-scroll-top term) 0)))
+                            (1+ (terminal-cursor-column term)))))
+
+(defun csi-dispatch (term byte)
+  (declare (type terminal term) (type (unsigned-byte 8) byte))
+  (when (or (terminal-param-digits term) (plusp (terminal-param-count term)))
+    (push-param term))
+  (let ((final (code-char byte))
+        (private (code-char (terminal-private term)))
+        (intermediate (if (zerop (terminal-intermediate-count term))
+                          nil
+                          (code-char (terminal-intermediate term))))
+        (row (terminal-cursor-row term))
+        (column (terminal-cursor-column term)))
+    (cond
+      ((> (terminal-intermediate-count term) 1))
+      ((and intermediate (char/= private #\Nul))
+       (when (and (char= private #\?) (char= intermediate #\$) (char= final #\p))
+         (let ((mode (param term 0 0)))
+           (emit-output term (format nil "~c[?~d;~d$y" #\Esc mode
+                                     (if (dec-mode-set-p term mode) 1 2))))))
+      (intermediate
+       (case intermediate
+         (#\Space (when (char= final #\q)
+                    (setf (terminal-cursor-shape term)
+                          (case (param term 0 0)
+                            ((3 4) :underline)
+                            ((5 6) :bar)
+                            (t :block)))))
+         (#\! (when (char= final #\p) (soft-reset term)))))
+      ((char= private #\?)
+       (case final
+         ((#\h #\l)
+          (dotimes (i (terminal-param-count term))
+            (set-dec-mode term (aref (terminal-params term) i) (char= final #\h))))
+         (#\n (when (= (param term 0 0) 6) (report-cursor term "?")))
+         (#\J (erase-display term (param term 0 0)))
+         (#\K (erase-line term (param term 0 0)))))
+      ((char= private #\>)
+       (when (char= final #\c)
+         (emit-output term (format nil "~c[>1;10;0c" #\Esc))))
+      ((char/= private #\Nul))
+      (t
+       (case final
+         (#\@ (insert-blanks term (current-line term) column (param term 0 1))
+          (setf (terminal-pending-wrap term) nil)
+          (mark-row-dirty term row))
+         (#\A (cursor-up term (param term 0 1)))
+         ((#\B #\e) (cursor-down term (param term 0 1)))
+         ((#\C #\a) (set-column term (+ column (param term 0 1))))
+         (#\D (set-column term (- column (param term 0 1))))
+         (#\E (cursor-down term (param term 0 1)) (set-column term 0))
+         (#\F (cursor-up term (param term 0 1)) (set-column term 0))
+         ((#\G #\`) (set-column term (1- (param term 0 1))))
+         ((#\H #\f) (cursor-to term (1- (param term 0 1)) (1- (param term 1 1))))
+         (#\I (tab-forward term (param term 0 1)))
+         (#\J (erase-display term (param term 0 0)))
+         (#\K (erase-line term (param term 0 0)))
+         (#\L (when (<= (terminal-scroll-top term) row (terminal-scroll-bottom term))
+                (scroll-down term row (terminal-scroll-bottom term) (param term 0 1))
+                (set-column term 0)))
+         (#\M (when (<= (terminal-scroll-top term) row (terminal-scroll-bottom term))
+                (scroll-up term row (terminal-scroll-bottom term) (param term 0 1))
+                (set-column term 0)))
+         (#\P (delete-chars term (current-line term) column (param term 0 1))
+          (setf (terminal-pending-wrap term) nil)
+          (mark-row-dirty term row))
+         (#\S (scroll-up term (terminal-scroll-top term) (terminal-scroll-bottom term)
+                         (param term 0 1)))
+         (#\T (scroll-down term (terminal-scroll-top term) (terminal-scroll-bottom term)
+                           (param term 0 1)))
+         (#\X (erase term (current-line term) column (+ column (param term 0 1)))
+          (setf (terminal-pending-wrap term) nil)
+          (mark-row-dirty term row))
+         (#\Z (tab-backward term (param term 0 1)))
+         (#\b (let ((char (terminal-last-char term)))
+                (dotimes (i (min (param term 0 1) 65535))
+                  (print-char term char))))
+         (#\c (when (zerop (param term 0 0))
+                (emit-output term (format nil "~c[?62;22c" #\Esc))))
+         (#\d (cursor-to term (1- (param term 0 1)) column))
+         (#\g (case (param term 0 0)
+                (0 (setf (sbit (terminal-tabs term) column) 0))
+                (3 (fill (terminal-tabs term) 0))))
+         ((#\h #\l)
+          (let ((on (char= final #\h)))
+            (dotimes (i (terminal-param-count term))
+              (case (aref (terminal-params term) i)
+                (4 (setf (terminal-insert term) on))
+                (20 (setf (terminal-newline term) on))))))
+         (#\m (select-graphic-rendition term))
+         (#\n (case (param term 0 0)
+                (5 (emit-output term (format nil "~c[0n" #\Esc)))
+                (6 (report-cursor term ""))))
+         (#\r (let ((top (1- (param term 0 1)))
+                    (bottom (1- (min (param term 1 (terminal-rows term)) (terminal-rows term)))))
+                (when (< top bottom)
+                  (setf (terminal-scroll-top term) top
+                        (terminal-scroll-bottom term) bottom)
+                  (cursor-to term 0 0))))
+         (#\s (save-cursor term))
+         (#\u (restore-cursor term)))))))
+
+;;; OSC
+
+(defun osc-dispatch (term)
+  (let* ((data (terminal-osc term))
+         (separator (position (char-code #\;) data)))
+    (when separator
+      (let ((command (parse-integer (map 'string #'code-char (subseq data 0 separator))
+                                    :junk-allowed t)))
+        (when (member command '(0 2))
+          (let ((title (sb-ext:octets-to-string
+                        (coerce (subseq data (1+ separator)) 'octets)
+                        :external-format '(:utf-8 :replacement #\?))))
+            (setf (terminal-title term) title)
+            (let ((function (terminal-title-function term)))
+              (when function (funcall function title)))))))))
+
+;;; The state machine
+
+(defun process-byte (term byte)
+  (declare (type terminal term)
+           (type (unsigned-byte 8) byte)
+           (optimize speed))
+  ;; Finish or abandon a UTF-8 sequence.
+  (let ((remaining (terminal-utf8-remaining term)))
+    (when (plusp remaining)
+      (if (= (logand byte #xC0) #x80)
+          (let ((code (logior (ash (terminal-utf8-code term) 6) (logand byte #x3F))))
+            (setf (terminal-utf8-code term) code
+                  (terminal-utf8-remaining term) (1- remaining))
+            (when (= remaining 1)
+              (print-char term (if (or (<= #xD800 code #xDFFF) (> code #x10FFFF))
+                                   #xFFFD
+                                   code)))
+            (return-from process-byte))
+          (progn (setf (terminal-utf8-remaining term) 0)
+                 (print-char term #xFFFD)))))
+  (let ((state (terminal-state term)))
+    (declare (type fixnum state))
+    ;; Controls valid in every state.
+    (when (< byte #x20)
+      (case byte
+        ((#x18 #x1A) (setf (terminal-state term) +ground+))
+        (#x1B (when (= state +osc+) (osc-dispatch term))
+         (setf (terminal-state term) +escape+
+               (terminal-intermediate-count term) 0))
+        (#x07 (if (= state +osc+)
+                  (progn (osc-dispatch term)
+                         (setf (terminal-state term) +ground+))
+                  (unless (= state +control-string+)
+                    (execute-control term byte))))
+        (t (unless (or (= state +osc+) (= state +control-string+))
+             (execute-control term byte))))
+      (return-from process-byte))
+    (cond
+      ((= state +ground+)
+       (cond ((< byte #x7F) (print-char term byte))
+             ((= byte #x7F))
+             ((<= #xC2 byte #xDF)
+              (setf (terminal-utf8-code term) (logand byte #x1F)
+                    (terminal-utf8-remaining term) 1))
+             ((<= #xE0 byte #xEF)
+              (setf (terminal-utf8-code term) (logand byte #x0F)
+                    (terminal-utf8-remaining term) 2))
+             ((<= #xF0 byte #xF4)
+              (setf (terminal-utf8-code term) (logand byte #x07)
+                    (terminal-utf8-remaining term) 3))
+             (t (print-char term #xFFFD))))
+      ((or (= state +escape+) (= state +escape-intermediate+))
+       (cond ((<= #x20 byte #x2F)
+              (when (zerop (terminal-intermediate-count term))
+                (setf (terminal-intermediate term) byte))
+              (incf (terminal-intermediate-count term))
+              (setf (terminal-state term) +escape-intermediate+))
+             ((<= #x30 byte #x7E) (esc-dispatch term byte))
+             ((> byte #x7F) (setf (terminal-state term) +ground+))))
+      ((= state +csi+)
+       (cond ((<= #x30 byte #x39)
+              (setf (terminal-param-value term)
+                    (min 65535 (+ (* 10 (terminal-param-value term)) (- byte #x30)))
+                    (terminal-param-digits term) t))
+             ((= byte #x3B) (push-param term))
+             ((= byte #x3A) (push-param term)
+              (setf (terminal-colon-next term) t))
+             ((<= #x3C byte #x3F)
+              (if (and (zerop (terminal-param-count term))
+                       (not (terminal-param-digits term))
+                       (zerop (terminal-private term)))
+                  (setf (terminal-private term) byte)
+                  (setf (terminal-state term) +csi-ignore+)))
+             ((<= #x20 byte #x2F)
+              (setf (terminal-intermediate term) byte
+                    (terminal-intermediate-count term) 1
+                    (terminal-state term) +csi-intermediate+))
+             ((<= #x40 byte #x7E)
+              (setf (terminal-state term) +ground+)
+              (csi-dispatch term byte))))
+      ((= state +csi-intermediate+)
+       (cond ((<= #x20 byte #x2F) (incf (terminal-intermediate-count term)))
+             ((<= #x30 byte #x3F) (setf (terminal-state term) +csi-ignore+))
+             ((<= #x40 byte #x7E)
+              (setf (terminal-state term) +ground+)
+              (csi-dispatch term byte))))
+      ((= state +csi-ignore+)
+       (when (<= #x40 byte #x7E)
+         (setf (terminal-state term) +ground+)))
+      ((= state +osc+)
+       (let ((data (terminal-osc term)))
+         (when (< (fill-pointer data) +max-osc-length+)
+           (vector-push-extend byte data))))))
+  (values))
+
+(defun terminal-feed (term octets &key (start 0) (end (length octets)))
+  "Process OCTETS[START, END), output from the application."
+  (declare (type terminal term))
+  (unless (typep octets 'octets)
+    (setf octets (coerce (subseq octets start end) 'octets)
+          end (- end start)
+          start 0))
+  (let ((i start))
+    (declare (type index i end)
+             (type octets octets)
+             (optimize speed (safety 0)))
+    (loop while (< i end)
+          do (if (and (= (terminal-state term) +ground+)
+                      (zerop (terminal-utf8-remaining term)))
+                 (let ((run (scan-printable octets i end)))
+                   (declare (type index run))
+                   (if (< i run)
+                       (progn (print-ascii term octets i run)
+                              (setf i run))
+                       (progn (process-byte term (aref octets i))
+                              (incf i))))
+                 (progn (process-byte term (aref octets i))
+                        (incf i)))))
+  term)
+
+(defun terminal-feed-string (term string)
+  (terminal-feed term (sb-ext:string-to-octets string :external-format :utf-8)))
+
+;;; Resizing
+
+(defun resize-screen (screen rows columns shift keep-history)
+  "Resize SCREEN to ROWS x COLUMNS, first scrolling SHIFT lines off the top
+(into scrollback with KEEP-HISTORY)."
+  (let* ((old (screen-lines screen))
+         (new (make-array rows)))
+    (dotimes (i shift)
+      (when keep-history
+        (history-push screen (svref old i))))
+    (dotimes (row rows)
+      (let ((source (+ row shift)))
+        (setf (svref new row)
+              (if (< source (length old))
+                  (resize-line (svref old source) columns)
+                  (make-line columns)))))
+    (setf (screen-lines screen) new)))
+
+(defun terminal-resize (term rows columns)
+  "Resize to ROWS x COLUMNS.  Text is not reflowed: lines are truncated or
+extended, and when the screen gets shorter, lines above the cursor move to
+scrollback so that the cursor stays on screen."
+  (let ((rows (max 1 rows))
+        (columns (max 1 columns)))
+    (unless (and (= rows (terminal-rows term)) (= columns (terminal-columns term)))
+      (let ((shift (max 0 (- (terminal-cursor-row term) (1- rows))))
+            (old-tabs (terminal-tabs term)))
+        (resize-screen (terminal-primary term) rows columns shift t)
+        (resize-screen (terminal-alternate term) rows columns shift nil)
+        (setf (terminal-rows term) rows
+              (terminal-columns term) columns
+              (terminal-scroll-top term) 0
+              (terminal-scroll-bottom term) (1- rows)
+              (terminal-tabs term) (let ((tabs (default-tabs columns)))
+                                     (replace tabs old-tabs)
+                                     tabs)
+              (terminal-dirty term) (make-array rows :element-type 'bit :initial-element 1)
+              (terminal-viewport-offset term) (min (terminal-viewport-offset term)
+                                                   (terminal-history-count term)))
+        (set-cursor term (- (terminal-cursor-row term) shift) (terminal-cursor-column term)))))
+  term)
+
+;;; Queries
+
+(defun terminal-cursor-visible-p (term)
+  "True when the cursor should be drawn: it is enabled (DECTCEM) and the
+viewport is not scrolled back."
+  (and (terminal-cursor-shown term)
+       (zerop (terminal-viewport-offset term))))
+
+(defun terminal-mode (term mode)
+  "Whether MODE is set.  MODE is a DEC private mode number or one of
+:APPLICATION-CURSOR, :APPLICATION-KEYPAD, :BRACKETED-PASTE,
+:ALTERNATE-SCREEN, :AUTOWRAP, :ORIGIN, :INSERT, :CURSOR-VISIBLE,
+:FOCUS-EVENTS, :MOUSE-X10, :MOUSE-NORMAL, :MOUSE-BUTTON, :MOUSE-ANY,
+:MOUSE-SGR or :SYNCHRONIZED-OUTPUT."
+  (if (integerp mode)
+      (dec-mode-set-p term mode)
+      (case mode
+        (:application-cursor (dec-mode-set-p term 1))
+        (:application-keypad (dec-mode-set-p term 66))
+        (:bracketed-paste (dec-mode-set-p term 2004))
+        (:alternate-screen (terminal-alternate-p term))
+        (:autowrap (terminal-autowrap term))
+        (:origin (terminal-origin term))
+        (:insert (terminal-insert term))
+        (:cursor-visible (terminal-cursor-shown term))
+        (:focus-events (dec-mode-set-p term 1004))
+        (:mouse-x10 (dec-mode-set-p term 9))
+        (:mouse-normal (dec-mode-set-p term 1000))
+        (:mouse-button (dec-mode-set-p term 1002))
+        (:mouse-any (dec-mode-set-p term 1003))
+        (:mouse-sgr (dec-mode-set-p term 1006))
+        (:synchronized-output (dec-mode-set-p term 2026))
+        (t nil))))
+
+(defun terminal-scroll-viewport (term how)
+  "Scroll the view through scrollback: HOW is :TOP, :BOTTOM or a number of
+rows (negative scrolls back).  Return the new offset."
+  (let* ((limit (terminal-history-count term))
+         (old (terminal-viewport-offset term))
+         (new (if (terminal-alternate-p term)
+                  0
+                  (case how
+                    (:top limit)
+                    (:bottom 0)
+                    (t (max 0 (min limit (- old how))))))))
+    (unless (= old new)
+      (setf (terminal-viewport-offset term) new)
+      (fill (terminal-dirty term) 1))
+    new))
+
+(defun line-text (line)
+  (with-output-to-string (out)
+    (let ((codes (line-codes line))
+          (attrs (line-attrs line)))
+      (dotimes (column (length codes))
+        (unless (logtest (aref attrs column) +attr-wide-spacer+)
+          (let ((code (aref codes column)))
+            (write-char (if (zerop code) #\Space (code-char code)) out)
+            (let ((extra (cdr (assoc column (line-combining line)))))
+              (when extra (write-string extra out)))))))))
+
+(defun terminal-row-text (term row &key (trim t))
+  "The text displayed at ROW."
+  (let ((text (line-text (terminal-line term row))))
+    (if trim (string-right-trim " " text) text)))
+
+(defun terminal-text (term &key (trim t))
+  "The displayed text, rows separated by newlines."
+  (format nil "~{~a~^~%~}"
+          (loop for row below (terminal-rows term)
+                collect (terminal-row-text term row :trim trim))))

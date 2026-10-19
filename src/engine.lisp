@@ -88,7 +88,7 @@ engine supports scrollback.")
   "The engine used when none is requested; NIL picks the first entry of
 *ENGINE-PREFERENCE* that is available.")
 
-(defvar *engine-preference* '(:ghostty :libvterm :3bst)
+(defvar *engine-preference* '(:ghostty :lispvt :libvterm :3bst)
   "Engines tried, fastest first, when *DEFAULT-ENGINE* is NIL.")
 
 (defun register-engine (name constructor)

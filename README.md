@@ -42,6 +42,7 @@ REPL: everything is resolved from `ocicl.csv`, `ocicl/` and `lib/`.
 | engine | what it is | setup |
 |---|---|---|
 | `ghostty` | Ghostty's libghostty-vt, via cl-ghostty-vt; fastest, with scrollback | built by `make` (downloads Zig) |
+| `lispvt` | pure Lisp, with scrollback; NEON-scanned on arm64 (`lib/lispvt`, standalone) | none |
 | `libvterm` | libvterm 0.3.3, the library Neovim uses (`lib/cl-libvterm`) | built by `make` |
 | `3bst` | pure Lisp; a fork of 3b's port of st (`lib/3bst`) | none |
 
@@ -55,9 +56,11 @@ Output is parsed on a reader thread, and the UI draws at most once per frame,
 so heavy output never waits on rendering. Ghostty copies only changed rows
 into the grid through a small C helper (`src/native/slt-ghostty.c`), which is
 compiled on first use. On a 23 MB `cat`, ghostty manages about 140 MB/s,
-libvterm about 12 MB/s and 3bst about 2.6 MB/s.
+libvterm about 12 MB/s and 3bst about 2.6 MB/s. In the `slt/bench` throughput
+benchmark lispvt keeps pace with ghostty: faster on full-screen redraws,
+somewhat slower on plain scrolling text.
 
-Scrollback (ghostty): use the mouse wheel or trackpad, Shift+PageUp/PageDown,
+Scrollback (ghostty, lispvt): use the mouse wheel or trackpad, Shift+PageUp/PageDown,
 and Shift+Home/End. Typing returns to the live screen. On the alternate
 screen (vim, less), the wheel sends arrow keys instead.
 
