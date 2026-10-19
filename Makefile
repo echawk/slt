@@ -90,7 +90,7 @@ $(shell mkdir -p build/stamp && \
         (echo '$(CONFIG)' | cmp -s - build/stamp/config || \
          { echo '$(CONFIG)' > build/stamp/config; rm -rf bin; }))
 
-.PHONY: all lean tiny deps run check test conformance web-test gl-test install uninstall clean distclean
+.PHONY: all lean tiny deps run check test conformance web-test gl-test gtk-test install uninstall clean distclean
 
 all: bin/slt
 
@@ -141,6 +141,10 @@ web-test: ocicl/.stamp
 # gl backend smoke test; needs a display (on Linux CI: xvfb-run make gl-test).
 gl-test: ocicl/.stamp
 	scripts/gl-test
+
+# gtk backend smoke test; needs a display and GTK 3 (on Linux CI: xvfb-run).
+gtk-test: ocicl/.stamp
+	scripts/gtk-test
 
 install: bin/slt
 	mkdir -p $(DESTDIR)$(LIBDIR)/slt $(DESTDIR)$(BINDIR)

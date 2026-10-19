@@ -22,6 +22,42 @@ defining it (see scripts/build)."
                 "CORE-TEXT-FRAMEWORK" "CORE-GRAPHICS-FRAMEWORK"))
   (define-optional-library "SLT" name :dont-deploy t))
 
+;;; The gtk backend: GTK and the libraries under it belong to the system
+;;; (they need their own data files and modules), and cl-cffi-gtk runs
+;;; gtk_init from SBCL's init hooks, which run before Deploy reopens
+;;; libraries; run it from a boot hook instead.
+(loop for (package name) in '(("GLIB" "GLIB") ("GLIB" "GTHREAD") ("GOBJECT" "GOBJECT")
+                              ("GIO" "GIO") ("GDK" "GDK") ("GDK" "GTK") ("GTK" "GTK")
+                              ("GDK-PIXBUF" "GDK-PIXBUF") ("PANGO" "PANGO")
+                              ("PANGO" "PANGOCAIRO") ("CAIRO" "CAIRO"))
+      do (define-optional-library package name :dont-deploy t))
+
+;;; Deploy clears CFFI's library directories when it dumps, which drops
+;;; CFFI's macOS fallback (Homebrew, MacPorts, /usr/local).  Libraries left
+;;; to the system, such as GTK, are found through them, so restore them just
+;;; before Deploy reloads libraries.
+(defparameter *system-library-directories* cffi:*foreign-library-directories*)
+
+(deploy:define-hook (:boot system-library-directories (- most-positive-fixnum 9)) ()
+  (setf cffi:*foreign-library-directories* *system-library-directories*))
+
+(defun gtk-initializers ()
+  (and (find-package "GLIB") (find-symbol "RUN-INITIALIZERS" "GLIB")))
+
+(deploy:define-hook (:deploy defer-gtk-init) (directory)
+  (declare (ignore directory))
+  (let ((initializers (gtk-initializers)))
+    (when initializers
+      (setf sb-ext:*init-hooks* (remove initializers sb-ext:*init-hooks*)))))
+
+(deploy:define-hook (:boot gtk-init) ()
+  (let ((initializers (gtk-initializers)))
+    (when initializers
+      ;; cl-cffi-gtk warns about each GType this GTK lacks (the X11 ones on
+      ;; macOS, for instance); they are not used.
+      (handler-bind ((warning #'muffle-warning))
+        (funcall initializers)))))
+
 ;;; ghostty-vt loads its library by explicit path, which CFFI registers as
 ;;; an anonymous library (deployed as usual); its named definition has no
 ;;; path.

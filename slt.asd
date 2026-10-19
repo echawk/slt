@@ -50,6 +50,12 @@ servers appear when those are loaded."
   :pathname "src/"
   :components ((:file "ltk-backend")))
 
+(asdf:defsystem #:slt/gtk
+  :description "GTK 3 backend through cl-cffi-gtk: Cairo and Pango drawing."
+  :depends-on (:slt/core :cl-cffi-gtk)
+  :pathname "src/"
+  :components ((:file "gtk-backend")))
+
 (asdf:defsystem #:slt/3bst
   :description "3bst engine for slt: pure Lisp, a fork of 3b's port of st."
   :depends-on (:slt/core :3bst)

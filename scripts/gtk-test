@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# Smoke-test the gtk backend (t/gtk-snapshot.lisp).  Needs a display: on
+# Linux CI run it under xvfb-run.  SLT_ENGINE picks the engine (default 3bst).
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+exec "$root/scripts/lisp" --non-interactive --load "$root/t/gtk-snapshot.lisp"

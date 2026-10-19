@@ -94,6 +94,7 @@ and compares the resulting screens. `slt/bench` measures throughput.
 |---|---|
 | `cocoa` | macOS default: AppKit window, Metal renderer, CoreText glyphs |
 | `gl` | Linux/BSD default: GLFW window (X11 or Wayland), OpenGL 3.3 or OpenGL ES 3.0, FreeType glyphs found through font-discovery; also runs on macOS with CoreText glyphs |
+| `gtk` | GTK 3 window drawn with Cairo and Pango, via [cl-cffi-gtk](https://github.com/crategus/cl-cffi-gtk) (`slt/gtk`; needs GTK 3) |
 | `ltk` | Tk; portable fallback (needs `wish`) where `gl` cannot run |
 | `sdl2` | SDL2 renderer (`slt/sdl2`; needs SDL2, SDL2_ttf and SDL2_image) |
 | `web` | serves a browser terminal; see [web/README.md](web/README.md) |
@@ -107,6 +108,11 @@ bindings, which ship GLFW 3.4 for Linux and macOS (the BSDs use the system's
 `make gl-test` renders styled text in a hidden window and checks the pixels.
 [doc/gpu-backends.md](doc/gpu-backends.md) describes the design and what
 Vulkan would add.
+
+The `gtk` backend uses the system's GTK 3 (on macOS, Homebrew's `gtk+3`).
+Build it in with `BACKENDS=gtk`, for example `make lean BACKENDS=gtk`.
+`make gtk-test` checks its drawing the same way `make gl-test` does. It
+has no input method support yet, and its font menu lists no families.
 
 ## Connecting from SLIME or SLY
 
