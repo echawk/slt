@@ -126,7 +126,7 @@ for example, when a native library has not been built)."
 (defun default-engine ()
   (or *default-engine*
       (find-if #'engine-available-p *engine-preference*)
-      :3bst))
+      :lispvt))
 
 (defun make-engine (designator &rest arguments &key rows columns &allow-other-keys)
   (declare (ignore rows columns))

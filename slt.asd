@@ -5,7 +5,7 @@
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.2.0"
-  :depends-on (:3bst :lispvt :babel :bordeaux-threads :cffi :osicat (:feature :sbcl :sb-posix))
+  :depends-on (:lispvt :babel :bordeaux-threads :cffi :osicat (:feature :sbcl :sb-posix))
   :pathname "src/"
   :serial t
   :components ((:file "package")
@@ -15,7 +15,6 @@
                (:file "core")
                (:file "backend")
                (:file "engine")
-               (:file "engine-3bst")
                (:file "engine-lispvt")
                (:file "transport")
                (:file "gpu")
@@ -27,7 +26,7 @@
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.2.0"
-  :depends-on (:slt/core :slt/web :clingon :ltk
+  :depends-on (:slt/core :slt/cli :slt/3bst :slt/web :ltk
                ;; REPL servers, with the contribs their clients ask for.
                :swank/exts :slynk/arglists :slynk/fancy-inspector
                :slynk/package-fu :slynk/mrepl :slynk/trace-dialog
@@ -36,9 +35,21 @@
   :pathname "src/"
   :serial t
   :components ((:file "ltk-backend")
-               (:file "repl-server")
-               (:file "cli"))
+               (:file "repl-server"))
   :in-order-to ((test-op (test-op "slt/tests"))))
+
+(asdf:defsystem #:slt/cli
+  :description "The slt command line; options for the web backend and REPL
+servers appear when those are loaded."
+  :depends-on (:slt/core :clingon)
+  :pathname "src/"
+  :components ((:file "cli")))
+
+(asdf:defsystem #:slt/3bst
+  :description "3bst engine for slt: pure Lisp, a fork of 3b's port of st."
+  :depends-on (:slt/core :3bst)
+  :pathname "src/"
+  :components ((:file "engine-3bst")))
 
 (asdf:defsystem #:slt/sdl2
   :description "SDL2 backend (needs SDL2, SDL2_ttf and SDL2_image installed)."
@@ -112,12 +123,14 @@
 
 (asdf:defsystem #:slt/app
   :description "The distributed executable: bin/slt plus its native
-libraries, built with Deploy by 'make' (scripts/build).  Optional engines
-and backends are loaded by the build before this system is made."
+libraries, built with Deploy by 'make' (scripts/build).  This is the
+command line over slt/core; the build first loads slt (ltk and web
+backends, REPL servers, 3bst) unless LEAN, plus the optional engines and
+backends."
   :defsystem-depends-on (:deploy)
   :build-operation "deploy-console-op"
   :build-pathname "slt"
   :entry-point "slt:main"
-  :depends-on (:slt)
+  :depends-on (:slt/cli (:feature :darwin :slt/cocoa))
   :pathname "src/"
   :components ((:file "deploy")))

@@ -1,11 +1,13 @@
 #!/usr/bin/env sh
-# Run SBCL with ASDF confined to this project and its ocicl/ dependency tree.
+# Run SBCL with ASDF confined to this project and its ocicl/ dependency tree
+# ($SLT_OCICL, default ocicl/; lean builds use build/lean/ocicl).
 # Usage: scripts/lisp --eval '...' [...]
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 : "${SBCL:=sbcl}"
 export XDG_CACHE_HOME="$root/.cache"
-export CL_SOURCE_REGISTRY="$root/:$root/ocicl//:$root/lib//"
+: "${SLT_OCICL:=$root/ocicl}"
+export CL_SOURCE_REGISTRY="$root/:$SLT_OCICL//:$root/lib//"
 core_args=""
 if [ -n "${SBCL_CORE:-}" ]; then core_args="--core $SBCL_CORE"; fi
 # shellcheck disable=SC2086 # core_args is intentionally split

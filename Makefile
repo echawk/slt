@@ -4,10 +4,15 @@
 #   make run ARGS='--engine 3bst' build, then run bin/slt with ARGS
 #   make check                    unit tests and engine conformance
 #   make install                  install into $(DESTDIR)$(PREFIX)
+#   make lean [install]           bin/ with only this system's GUI backend and
+#                                 the pure-Lisp lispvt engine (= LEAN=1)
 #
 # Packagers: `make deps` fetches the Lisp dependencies (the only step that
 # needs the network besides building native engines), then
 #   make ENGINES='...' && make install DESTDIR=... PREFIX=/usr
+# For a lean package, pass LEAN=1 to every step: `make deps LEAN=1` fetches
+# only what that build loads (no Zig, Ghostty, Tk or web stack), then
+#   make LEAN=1 && make install LEAN=1 DESTDIR=... PREFIX=/usr
 # bin/ is self-contained: the executable finds its libraries next to it, so
 # it is installed into $(LIBDIR)/slt with a symlink in $(BINDIR).
 #
@@ -22,7 +27,7 @@ SBCL  ?= sbcl
 OCICL ?= ocicl
 export SBCL
 
-# Native engines to build in; the pure-Lisp 3bst is always included.
+# Native engines to build in; the pure-Lisp lispvt is always included (3bst too, via BASE).
 # ghostty downloads Zig and Ghostty to build; libvterm needs only a C compiler.
 ENGINES ?= ghostty libvterm
 
@@ -34,6 +39,33 @@ else
 BACKENDS ?= gl
 endif
 
+# The slt system: the ltk and web backends, the REPL servers and the 3bst
+# engine.  bin/slt is the command line over slt/core plus BASE, ENGINES and
+# BACKENDS.
+BASE ?= slt
+
+# LEAN=1: only the native GUI backend (cocoa on macOS, gl elsewhere) and the
+# lispvt engine, which lives in slt/core.  Its Lisp dependencies are fetched
+# on their own into build/lean/ocicl (scripts/fetch-lean), and no native
+# engine is built.
+ifeq ($(shell uname -s),Darwin)
+NATIVE_BACKEND = cocoa
+else
+NATIVE_BACKEND = gl
+endif
+ifneq ($(filter lean,$(MAKECMDGOALS)),)
+LEAN = 1
+endif
+ifdef LEAN
+BASE =
+ENGINES =
+BACKENDS = $(NATIVE_BACKEND)
+export SLT_OCICL := $(CURDIR)/build/lean/ocicl
+DEPS_STAMP = build/lean/.stamp
+else
+DEPS_STAMP = ocicl/.stamp
+endif
+
 LISP    = scripts/lisp
 SOURCES = slt.asd ocicl.csv $(shell find src lib conformance -name '*.lisp' -o -name '*.c')
 STAMPS  = $(ENGINES:%=build/stamp/%)
@@ -41,22 +73,28 @@ GHOSTTY_DIR = $(dir ocicl/$(shell awk -F', ' '$$1 == "ghostty-vt" {print $$3}' o
 
 # Rebuild when ENGINES or BACKENDS change: build/stamp/config holds the
 # configuration bin/ was built with, and a different one discards bin/.
-CONFIG := $(ENGINES) / $(BACKENDS)
+CONFIG := $(BASE) / $(ENGINES) / $(BACKENDS)
 $(shell mkdir -p build/stamp && \
         (echo '$(CONFIG)' | cmp -s - build/stamp/config || \
          { echo '$(CONFIG)' > build/stamp/config; rm -rf bin; }))
 
-.PHONY: all deps run check test conformance web-test gl-test install uninstall clean distclean
+.PHONY: all lean deps run check test conformance web-test gl-test install uninstall clean distclean
 
 all: bin/slt
 
-bin/slt: ocicl/.stamp $(STAMPS) $(SOURCES)
-	SLT_SYSTEMS="$(ENGINES:%=slt/%) $(BACKENDS:%=slt/%)" scripts/build
+bin/slt: $(DEPS_STAMP) $(STAMPS) $(SOURCES)
+	SLT_SYSTEMS="$(BASE) $(ENGINES:%=slt/%) $(BACKENDS:%=slt/%)" scripts/build
 
-deps: ocicl/.stamp
+lean: bin/slt
+
+deps: $(DEPS_STAMP)
 
 ocicl/.stamp: ocicl.csv
 	$(OCICL) install
+	touch $@
+
+build/lean/.stamp: ocicl.csv slt.asd
+	OCICL=$(OCICL) scripts/fetch-lean slt/app $(BACKENDS:%=slt/%)
 	touch $@
 
 # Native engine libraries; the scripts skip work that is already done.
@@ -79,6 +117,7 @@ test: ocicl/.stamp $(STAMPS)
 # Runs the same byte streams through every engine that loads.
 conformance: ocicl/.stamp $(STAMPS)
 	$(LISP) --eval '(asdf:load-system :slt/conformance)' \
+		--eval '(asdf:load-system :slt/3bst)' \
 		--eval '(ignore-errors (asdf:load-system :slt/libvterm))' \
 		--eval '(ignore-errors (asdf:load-system :slt/ghostty))' \
 		--eval '(uiop:quit (if (slt/conformance:conformance-main) 0 1))'

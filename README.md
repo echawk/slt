@@ -14,6 +14,7 @@ make                 # build bin/slt and the libraries it loads
 bin/slt              # run it (or: make run ARGS='--engine libvterm')
 make check           # unit tests and engine conformance
 make install         # into /usr/local; PREFIX and DESTDIR are honored
+make lean            # only this system's GUI and the lispvt engine (see below)
 ```
 
 `make` fetches the Lisp dependencies into `ocicl/`, builds the native engines,
@@ -33,6 +34,14 @@ it. `make uninstall` removes both.
 For a package, run `make deps` while the network is available (building
 ghostty also downloads Zig and Ghostty), then
 `make && make install DESTDIR="$pkgdir" PREFIX=/usr`.
+
+`make lean` (or `LEAN=1` on any step) builds a smaller slt: the native GUI
+backend (cocoa on macOS, gl elsewhere), the pure-Lisp `lispvt` engine and the
+headless backend, without ltk, the web backend, the REPL servers or other
+engines. It fetches only the Lisp libraries that build loads, at the versions
+pinned in `ocicl.csv`, into `build/lean/ocicl`, and downloads no Zig or
+Ghostty. For a package: `make deps LEAN=1`, then
+`make LEAN=1 && make install LEAN=1 DESTDIR="$pkgdir" PREFIX=/usr`.
 
 `scripts/lisp` runs SBCL with ASDF limited to this project, for working at a
 REPL: everything is resolved from `ocicl.csv`, `ocicl/` and `lib/`.

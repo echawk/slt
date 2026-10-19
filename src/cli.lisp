@@ -5,87 +5,99 @@
         (asdf:component-version (asdf:find-system :slt nil)))
       "0.1.0"))
 
+(defun web-backend-loaded-p ()
+  (boundp '*web-host*))
+
+(defun repl-server-loaded-p ()
+  (fboundp 'toggle-repl-server))
+
 (defun cli-options ()
-  (list
-   (clingon:make-option :string
-                        :key :backend
-                        :short-name #\b
-                        :long-name "backend"
-                        :description "GUI backend to use.")
-   (clingon:make-option :string
-                        :key :engine
-                        :short-name #\e
-                        :long-name "engine"
-                        :description "Terminal engine (VT implementation) to use.")
-   (clingon:make-option :integer
-                        :key :rows
-                        :long-name "rows"
-                        :description "Initial terminal row count.")
-   (clingon:make-option :integer
-                        :key :columns
-                        :long-name "columns"
-                        :description "Initial terminal column count.")
-   (clingon:make-option :string
-                        :key :font-family
-                        :long-name "font-family"
-                        :description "Font family or path to use.")
-   (clingon:make-option :integer
-                        :key :font-size
-                        :long-name "font-size"
-                        :description "Font size for the terminal.")
-   (clingon:make-option :integer
-                        :key :cell-width
-                        :long-name "cell-width"
-                        :description "Override the measured cell width.")
-   (clingon:make-option :integer
-                        :key :cell-height
-                        :long-name "cell-height"
-                        :description "Override the measured cell height.")
-   (clingon:make-option :string
-                        :key :shell
-                        :long-name "shell"
-                        :description "Shell executable to spawn.")
-   (clingon:make-option :string
-                        :key :term-name
-                        :long-name "term"
-                        :description "TERM value to expose to the child process.")
-   (clingon:make-option :integer
-                        :key :poll-interval
-                        :long-name "poll-interval"
-                        :description "Process poll interval in milliseconds.")
-   (clingon:make-option :string
-                        :key :title
-                        :long-name "title"
-                        :description "Window title.")
-   (clingon:make-option :string
-                        :key :web-host
-                        :long-name "web-host"
-                        :description "Address the web backend listens on (default 127.0.0.1).")
-   (clingon:make-option :integer
-                        :key :web-port
-                        :long-name "web-port"
-                        :description "Port the web backend listens on (default 8080).")
-   (clingon:make-option :choice
-                        :key :repl-server
-                        :long-name "repl-server"
-                        :items '("swank" "slynk")
-                        :description "Start a Swank (SLIME) or Slynk (SLY) server.")
-   (clingon:make-option :integer
-                        :key :repl-port
-                        :long-name "repl-port"
-                        :description "Port for the Swank or Slynk server (default 4005).")
-   (clingon:make-option :flag
-                        :key :no-config
-                        :long-name "no-config"
-                        :description "Do not load the user init file.")
-   (clingon:make-option :flag
-                        :key :list-engines
-                        :long-name "list-engines"
-                        :description "Print the available terminal engines and exit.")
-   (clingon:make-option :flag
-                        :key :list-backends
-                        :long-name "list-backends"
-                        :description "Print the available GUI backends and exit.")))
+  (remove
+   nil
+   (list
+    (clingon:make-option :string
+                         :key :backend
+                         :short-name #\b
+                         :long-name "backend"
+                         :description "GUI backend to use.")
+    (clingon:make-option :string
+                         :key :engine
+                         :short-name #\e
+                         :long-name "engine"
+                         :description "Terminal engine (VT implementation) to use.")
+    (clingon:make-option :integer
+                         :key :rows
+                         :long-name "rows"
+                         :description "Initial terminal row count.")
+    (clingon:make-option :integer
+                         :key :columns
+                         :long-name "columns"
+                         :description "Initial terminal column count.")
+    (clingon:make-option :string
+                         :key :font-family
+                         :long-name "font-family"
+                         :description "Font family or path to use.")
+    (clingon:make-option :integer
+                         :key :font-size
+                         :long-name "font-size"
+                         :description "Font size for the terminal.")
+    (clingon:make-option :integer
+                         :key :cell-width
+                         :long-name "cell-width"
+                         :description "Override the measured cell width.")
+    (clingon:make-option :integer
+                         :key :cell-height
+                         :long-name "cell-height"
+                         :description "Override the measured cell height.")
+    (clingon:make-option :string
+                         :key :shell
+                         :long-name "shell"
+                         :description "Shell executable to spawn.")
+    (clingon:make-option :string
+                         :key :term-name
+                         :long-name "term"
+                         :description "TERM value to expose to the child process.")
+    (clingon:make-option :integer
+                         :key :poll-interval
+                         :long-name "poll-interval"
+                         :description "Process poll interval in milliseconds.")
+    (clingon:make-option :string
+                         :key :title
+                         :long-name "title"
+                         :description "Window title.")
+    (when (web-backend-loaded-p)
+      (clingon:make-option :string
+                           :key :web-host
+                           :long-name "web-host"
+                           :description "Address the web backend listens on (default 127.0.0.1)."))
+    (when (web-backend-loaded-p)
+      (clingon:make-option :integer
+                           :key :web-port
+                           :long-name "web-port"
+                           :description "Port the web backend listens on (default 8080)."))
+    (when (repl-server-loaded-p)
+      (clingon:make-option :choice
+                           :key :repl-server
+                           :long-name "repl-server"
+                           :items '("swank" "slynk")
+                           :description "Start a Swank (SLIME) or Slynk (SLY) server."))
+    (when (repl-server-loaded-p)
+      (clingon:make-option :integer
+                           :key :repl-port
+                           :long-name "repl-port"
+                           :description "Port for the Swank or Slynk server (default 4005)."))
+    (clingon:make-option :flag
+                         :key :no-config
+                         :long-name "no-config"
+                         :description "Do not load the user init file.")
+    (clingon:make-option :flag
+                         :key :list-engines
+                         :long-name "list-engines"
+                         :description "Print the available terminal engines and exit.")
+    (clingon:make-option :flag
+                         :key :list-backends
+                         :long-name "list-backends"
+                         :description "Print the available GUI backends and exit."))))
 
 (defun cli-backend-argument (command)
   (let ((free-arguments (clingon:command-arguments command)))
@@ -152,15 +164,23 @@
        (format stream "~(~a~)~%" engine))
      t)
     (t
-     (let ((*web-host* (or (clingon:getopt command :web-host nil) *web-host*))
-           (*web-port* (or (clingon:getopt command :web-port nil) *web-port*))
+     ;; The web backend and REPL servers are in the slt system, which a
+     ;; lean build (slt/app alone) leaves out; their variables are only
+     ;; touched when it is loaded.
+     (let ((web-variables (and (web-backend-loaded-p) '(*web-host* *web-port*)))
            (repl-server (clingon:getopt command :repl-server nil)))
-       ;; Set globally so the menu and key binding use them too.
-       (setf *repl-server-port* (clingon:getopt command :repl-port *repl-server-port*))
-       (when repl-server
-         (setf *repl-server* (intern (string-upcase repl-server) :keyword))
-         (toggle-repl-server))
-       (apply launcher (command-launch-arguments command))))))
+       (when (repl-server-loaded-p)
+         ;; Set globally so the menu and key binding use them too.
+         (setf (symbol-value '*repl-server-port*)
+               (clingon:getopt command :repl-port (symbol-value '*repl-server-port*)))
+         (when repl-server
+           (setf (symbol-value '*repl-server*) (intern (string-upcase repl-server) :keyword))
+           (funcall 'toggle-repl-server)))
+       (progv web-variables
+           (and web-variables
+                (list (or (clingon:getopt command :web-host nil) (symbol-value '*web-host*))
+                      (or (clingon:getopt command :web-port nil) (symbol-value '*web-port*))))
+         (apply launcher (command-launch-arguments command)))))))
 
 (defun cli-command-handler (command)
   (handle-cli-command command))
