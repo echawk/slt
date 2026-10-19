@@ -25,6 +25,15 @@
 (cffi:defcfun ("_exit" %c-exit) :void
   (status :int))
 
+;;; Newer SBCLs may start children with posix_spawn, which cannot give a
+;;; PTY its controlling terminal; older ones (Alpine's 2.5.4) have neither
+;;; posix_spawn nor the keyword that turns it off.
+#+(and sbcl (not darwin))
+(defparameter *run-program-pty-arguments*
+  (and (search "USE-POSIX-SPAWN"
+               (prin1-to-string (sb-kernel:%fun-lambda-list #'sb-ext:run-program)))
+       '(:use-posix-spawn nil)))
+
 ;;; struct winsize and TIOCSWINSZ, which sb-posix lacks.  The struct is
 ;;; four unsigned shorts on every Unix.  TIOCSWINSZ is _IOW('t', 103,
 ;;; struct winsize) on the BSDs, macOS and Linux on alpha, mips, powerpc and
@@ -245,19 +254,19 @@
                                 :pixel-width pixel-width
                                 :pixel-height pixel-height)
   #-(or darwin (not sbcl))
-  (let* ((process (sb-ext:run-program shell
-                                      '("-i")
-                                      :environment (terminal-process-environment
-                                                     :term-name term-name
-                                                     :rows rows
-                                                     :columns columns)
-                                      :search (shell-search-path-p shell)
-                                      :wait nil
-                                      :pty t
-                                      :use-posix-spawn nil
-                                      :input nil
-                                      :output nil
-                                      :error :output))
+  (let* ((process (apply #'sb-ext:run-program shell
+                                              '("-i")
+                                              :environment (terminal-process-environment
+                                                             :term-name term-name
+                                                             :rows rows
+                                                             :columns columns)
+                                              :search (shell-search-path-p shell)
+                                              :wait nil
+                                              :pty t
+                                              :input nil
+                                              :output nil
+                                              :error :output
+                                              *run-program-pty-arguments*))
          (stream (sb-ext:process-pty process)))
     (when (and rows columns)
       (resize-process-pty process
