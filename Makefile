@@ -6,12 +6,14 @@
 #   make install                  install into $(DESTDIR)$(PREFIX)
 #   make lean [install]           bin/ with only this system's GUI backend and
 #                                 the pure-Lisp lispvt engine (= LEAN=1)
+#   make tiny [install]           the same with the Tk (ltk) backend (= TINY=1)
 #
 # Packagers: `make deps` fetches the Lisp dependencies (the only step that
 # needs the network besides building native engines), then
 #   make ENGINES='...' && make install DESTDIR=... PREFIX=/usr
-# For a lean package, pass LEAN=1 to every step: `make deps LEAN=1` fetches
-# only what that build loads (no Zig, Ghostty, Tk or web stack), then
+# For a lean package, pass LEAN=1 (or TINY=1) to every step: `make deps
+# LEAN=1` fetches only what that build loads (no Zig, Ghostty or web stack),
+# then
 #   make LEAN=1 && make install LEAN=1 DESTDIR=... PREFIX=/usr
 # bin/ is self-contained: the executable finds its libraries next to it, so
 # it is installed into $(LIBDIR)/slt with a symlink in $(BINDIR).
@@ -47,7 +49,8 @@ BASE ?= slt
 # LEAN=1: only the native GUI backend (cocoa on macOS, gl elsewhere) and the
 # lispvt engine, which lives in slt/core.  Its Lisp dependencies are fetched
 # on their own into build/lean/ocicl (scripts/fetch-lean), and no native
-# engine is built.
+# engine is built.  TINY=1: the same with the ltk backend instead, which
+# needs only Tk's wish at run time; its dependencies go to build/tiny/ocicl.
 ifeq ($(shell uname -s),Darwin)
 NATIVE_BACKEND = cocoa
 else
@@ -56,12 +59,21 @@ endif
 ifneq ($(filter lean,$(MAKECMDGOALS)),)
 LEAN = 1
 endif
-ifdef LEAN
+ifneq ($(filter tiny,$(MAKECMDGOALS)),)
+TINY = 1
+endif
+ifdef TINY
+LEAN_DIR = build/tiny
+BACKENDS = ltk
+else ifdef LEAN
+LEAN_DIR = build/lean
+BACKENDS = $(NATIVE_BACKEND)
+endif
+ifdef LEAN_DIR
 BASE =
 ENGINES =
-BACKENDS = $(NATIVE_BACKEND)
-export SLT_OCICL := $(CURDIR)/build/lean/ocicl
-DEPS_STAMP = build/lean/.stamp
+export SLT_OCICL := $(CURDIR)/$(LEAN_DIR)/ocicl
+DEPS_STAMP = $(LEAN_DIR)/.stamp
 else
 DEPS_STAMP = ocicl/.stamp
 endif
@@ -78,14 +90,14 @@ $(shell mkdir -p build/stamp && \
         (echo '$(CONFIG)' | cmp -s - build/stamp/config || \
          { echo '$(CONFIG)' > build/stamp/config; rm -rf bin; }))
 
-.PHONY: all lean deps run check test conformance web-test gl-test install uninstall clean distclean
+.PHONY: all lean tiny deps run check test conformance web-test gl-test install uninstall clean distclean
 
 all: bin/slt
 
 bin/slt: $(DEPS_STAMP) $(STAMPS) $(SOURCES)
 	SLT_SYSTEMS="$(BASE) $(ENGINES:%=slt/%) $(BACKENDS:%=slt/%)" scripts/build
 
-lean: bin/slt
+lean tiny: bin/slt
 
 deps: $(DEPS_STAMP)
 
@@ -93,8 +105,8 @@ ocicl/.stamp: ocicl.csv
 	$(OCICL) install
 	touch $@
 
-build/lean/.stamp: ocicl.csv slt.asd
-	OCICL=$(OCICL) scripts/fetch-lean slt/app $(BACKENDS:%=slt/%)
+build/lean/.stamp build/tiny/.stamp: ocicl.csv slt.asd
+	OCICL=$(OCICL) scripts/fetch-lean $(@D) slt/app $(BACKENDS:%=slt/%)
 	touch $@
 
 # Native engine libraries; the scripts skip work that is already done.

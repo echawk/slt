@@ -1,17 +1,18 @@
 #!/usr/bin/env sh
-# Fetch only the Lisp dependencies of a lean build (make LEAN=1) into
-# build/lean/ocicl, at the versions pinned in ocicl.csv.
-# Usage: scripts/fetch-lean SYSTEM...
+# Fetch only the Lisp dependencies of a lean or tiny build (make LEAN=1,
+# make TINY=1) into DIR/ocicl, at the versions pinned in ocicl.csv.
+# Usage: scripts/fetch-lean DIR SYSTEM...
 #
 # `ocicl install` would fetch everything in ocicl.csv (ghostty-vt, ltk, the
 # web stack, ...).  Instead the SYSTEMs are loaded, and each system ASDF
 # reports missing is looked up in ocicl.csv and fetched by its digest:
-# `ocicl install` run in build/lean with a csv of just the needed entries.
+# `ocicl install` run in DIR with a csv of just the needed entries.
 # That fetches exactly those entries and nothing else.
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
-lean="$root/build/lean"
-mkdir -p "$lean"
+mkdir -p "$1"
+lean=$(cd "$1" && pwd)
+shift
 : "${OCICL:=ocicl}"
 export OCICL
 SLT_OCICL="$lean/ocicl" SLT_LEAN_DIR="$lean" SLT_ROOT="$root" "$root/scripts/lisp" \

@@ -14,15 +14,13 @@ defining it (see scripts/build)."
 
 (define-optional-library "CFFI" "LIBFFI" :dont-deploy t)
 
-#+darwin
-(progn
-  (deploy:define-library org.shirakumo.cocoas.cffi:foundation :dont-deploy t)
-  (deploy:define-library org.shirakumo.cocoas.cffi:appkit :dont-deploy t)
-  (deploy:define-library org.shirakumo.cocoas.cffi:cocoa :dont-deploy t)
-  (deploy:define-library metal-framework :dont-deploy t)
-  (deploy:define-library quartz-core-framework :dont-deploy t)
-  (deploy:define-library core-text-framework :dont-deploy t)
-  (deploy:define-library core-graphics-framework :dont-deploy t))
+;;; macOS system frameworks, loaded by the cocoa backend (and the gl
+;;; backend's CoreText glyphs).
+(dolist (name '("FOUNDATION" "APPKIT" "COCOA"))
+  (define-optional-library "ORG.SHIRAKUMO.COCOAS.CFFI" name :dont-deploy t))
+(dolist (name '("METAL-FRAMEWORK" "QUARTZ-CORE-FRAMEWORK"
+                "CORE-TEXT-FRAMEWORK" "CORE-GRAPHICS-FRAMEWORK"))
+  (define-optional-library "SLT" name :dont-deploy t))
 
 ;;; ghostty-vt loads its library by explicit path, which CFFI registers as
 ;;; an anonymous library (deployed as usual); its named definition has no

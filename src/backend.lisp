@@ -18,7 +18,7 @@
         constructor)
   (normalize-backend-name name))
 
-(defvar *optional-backends* '(:gl :sdl2)
+(defvar *optional-backends* '(:gl :ltk :sdl2)
   "Backends that live in their own slt/NAME systems and load on first use.")
 
 (defun load-backend-system (name)

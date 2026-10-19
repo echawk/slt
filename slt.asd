@@ -26,7 +26,7 @@
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.2.0"
-  :depends-on (:slt/core :slt/cli :slt/3bst :slt/web :ltk
+  :depends-on (:slt/core :slt/cli :slt/3bst :slt/web :slt/ltk
                ;; REPL servers, with the contribs their clients ask for.
                :swank/exts :slynk/arglists :slynk/fancy-inspector
                :slynk/package-fu :slynk/mrepl :slynk/trace-dialog
@@ -34,8 +34,7 @@
                (:feature :darwin :slt/cocoa))
   :pathname "src/"
   :serial t
-  :components ((:file "ltk-backend")
-               (:file "repl-server"))
+  :components ((:file "repl-server"))
   :in-order-to ((test-op (test-op "slt/tests"))))
 
 (asdf:defsystem #:slt/cli
@@ -44,6 +43,12 @@ servers appear when those are loaded."
   :depends-on (:slt/core :clingon)
   :pathname "src/"
   :components ((:file "cli")))
+
+(asdf:defsystem #:slt/ltk
+  :description "Tk backend for slt, through LTK (needs wish at run time)."
+  :depends-on (:slt/core :ltk)
+  :pathname "src/"
+  :components ((:file "ltk-backend")))
 
 (asdf:defsystem #:slt/3bst
   :description "3bst engine for slt: pure Lisp, a fork of 3b's port of st."
@@ -131,6 +136,6 @@ backends."
   :build-operation "deploy-console-op"
   :build-pathname "slt"
   :entry-point "slt:main"
-  :depends-on (:slt/cli (:feature :darwin :slt/cocoa))
+  :depends-on (:slt/cli)
   :pathname "src/"
   :components ((:file "deploy")))
