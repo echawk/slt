@@ -59,7 +59,6 @@ ltk-remote, ghcr.io/ocicl/ltk@sha256:7b5144463f26c4024779ce84d8bf82c809dd063af77
 mathkit, ghcr.io/ocicl/mathkit@sha256:ea75fc533d17f2b0540c631f0e2cb8929168c4c084345ea1eef0b66f49b6f15f, mathkit-20240503-fd884f9/mathkit.asd
 md5, ghcr.io/ocicl/md5@sha256:7d8a8d7af07a2bcbca05ad839555730a0e021c697bf13cc02279669c7a9b038b, md5-2.0.5/md5.asd
 multilang-documentation-utils, ghcr.io/ocicl/documentation-utils@sha256:b2a1b3f3bcd1a738af85ae2b0168d408c177661eab6d6bbebb254e394d983f54, documentation-utils-20230511-98630dd/multilang-documentation-utils.asd
-osicat, ghcr.io/ocicl/osicat@sha256:48af110420f02e99c37370e48bee10d7c7aada7e563483e1f47e3bc1173545f9, osicat-20251007-68732bd/osicat.asd
 pathname-utils, ghcr.io/ocicl/pathname-utils@sha256:1f6f209c3d5286afdccf42ec7a46a5ae99d8f1dbcdf8b3ee4381a03c79dd44dc, pathname-utils-20260812-397216b/pathname-utils.asd
 pathname-utils-test, ghcr.io/ocicl/pathname-utils@sha256:1f6f209c3d5286afdccf42ec7a46a5ae99d8f1dbcdf8b3ee4381a03c79dd44dc, pathname-utils-20260812-397216b/pathname-utils-test.asd
 rfc2388, ghcr.io/ocicl/rfc2388@sha256:4190f6eb36b3b2f53def6eff56b44e76edf4086ada2feb6d88bb671a40fc9f70, rfc2388-20240503-591bcf7/rfc2388.asd

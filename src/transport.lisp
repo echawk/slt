@@ -25,6 +25,21 @@
 (cffi:defcfun ("_exit" %c-exit) :void
   (status :int))
 
+;;; struct winsize and TIOCSWINSZ, which sb-posix lacks.  The struct is
+;;; four unsigned shorts on every Unix.  TIOCSWINSZ is _IOW('t', 103,
+;;; struct winsize) on the BSDs, macOS and Linux on alpha, mips, powerpc and
+;;; sparc; other Linux ports use the old 0x5414.
+
+(cffi:defcstruct winsize
+  (row :unsigned-short)
+  (col :unsigned-short)
+  (xpixel :unsigned-short)
+  (ypixel :unsigned-short))
+
+(defconstant +tiocswinsz+
+  #+(or (not linux) alpha mips ppc ppc64 sparc sparc64) #x80087467
+  #-(or (not linux) alpha mips ppc ppc64 sparc sparc64) #x5414)
+
 (defun read-available-output (stream)
   (handler-case
       (with-output-to-string (buffer)
@@ -114,17 +129,17 @@
     #+darwin
     (forkpty-process
      (ignore-errors
-       (sb-posix:killpg (forkpty-process-pid process) osicat-posix:sigterm))
+       (sb-posix:killpg (forkpty-process-pid process) sb-posix:sigterm))
      (ignore-errors
-       (sb-posix:kill (forkpty-process-pid process) osicat-posix:sigterm)))
+       (sb-posix:kill (forkpty-process-pid process) sb-posix:sigterm)))
     #+sbcl
     (sb-impl::process
      (when process
        (multiple-value-bind (ok errno)
-           (sb-ext:process-kill process osicat-posix:sigterm :pty-process-group)
+           (sb-ext:process-kill process sb-posix:sigterm :pty-process-group)
          (declare (ignore errno))
          (unless ok
-           (sb-ext:process-kill process osicat-posix:sigterm))))))
+           (sb-ext:process-kill process sb-posix:sigterm))))))
   process)
 
 (defun resolve-shell-path (shell)
@@ -175,22 +190,22 @@
                                             :rows rows
                                             :columns columns)))
            (cffi:with-foreign-object (master :int)
-             (cffi:with-foreign-object (winsize '(:struct osicat-posix:winsize))
+             (cffi:with-foreign-object (winsize '(:struct winsize))
                (setf (cffi:foreign-slot-value winsize
-                                              '(:struct osicat-posix:winsize)
-                                              'osicat-posix::row)
+                                              '(:struct winsize)
+                                              'row)
                      (max 1 (or rows 24))
                      (cffi:foreign-slot-value winsize
-                                              '(:struct osicat-posix:winsize)
-                                              'osicat-posix::col)
+                                              '(:struct winsize)
+                                              'col)
                      (max 1 (or columns 80))
                      (cffi:foreign-slot-value winsize
-                                              '(:struct osicat-posix:winsize)
-                                              'osicat-posix::xpixel)
+                                              '(:struct winsize)
+                                              'xpixel)
                      (max 0 pixel-width)
                      (cffi:foreign-slot-value winsize
-                                              '(:struct osicat-posix:winsize)
-                                              'osicat-posix::ypixel)
+                                              '(:struct winsize)
+                                              'ypixel)
                      (max 0 pixel-height))
                (let ((pid (%forkpty master
                                     (cffi:null-pointer)
@@ -261,26 +276,26 @@
   (when process
     (let ((stream (process-pty-stream process)))
       (when stream
-        (cffi:with-foreign-object (winsize '(:struct osicat-posix:winsize))
+        (cffi:with-foreign-object (winsize '(:struct winsize))
           (setf (cffi:foreign-slot-value winsize
-                                         '(:struct osicat-posix:winsize)
-                                         'osicat-posix::row)
+                                         '(:struct winsize)
+                                         'row)
                 (max 1 rows)
                 (cffi:foreign-slot-value winsize
-                                         '(:struct osicat-posix:winsize)
-                                         'osicat-posix::col)
+                                         '(:struct winsize)
+                                         'col)
                 (max 1 columns)
                 (cffi:foreign-slot-value winsize
-                                         '(:struct osicat-posix:winsize)
-                                         'osicat-posix::xpixel)
+                                         '(:struct winsize)
+                                         'xpixel)
                 (max 0 pixel-width)
                 (cffi:foreign-slot-value winsize
-                                         '(:struct osicat-posix:winsize)
-                                         'osicat-posix::ypixel)
+                                         '(:struct winsize)
+                                         'ypixel)
                 (max 0 pixel-height))
           (multiple-value-bind (ok errno)
               (sb-unix:unix-ioctl (sb-sys:fd-stream-fd stream)
-                                  osicat-posix:tiocswinsz
+                                  +tiocswinsz+
                                   (sb-sys:int-sap (cffi:pointer-address winsize)))
             (unless ok
               (error "TIOCSWINSZ failed with errno ~A" errno)))))))

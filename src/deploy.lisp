@@ -13,7 +13,6 @@ defining it (see scripts/build)."
       (eval `(deploy:define-library ,symbol ,@initargs)))))
 
 (define-optional-library "CFFI" "LIBFFI" :dont-deploy t)
-(define-optional-library "OSICAT-POSIX" "LIBRT" :dont-deploy t)
 
 #+darwin
 (progn
