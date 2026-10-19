@@ -3,8 +3,15 @@
 ;;;; Finding runs of printable ASCII.  Most terminal output is plain
 ;;;; text, and the parser hands each run to a bulk printer, so the scan
 ;;;; for the next control or non-ASCII byte is the innermost loop.  On
-;;;; arm64 it tests 16 bytes per step with NEON (sb-simd); elsewhere it
-;;;; tests 8 bytes per step within a 64-bit word.
+;;;; arm64 it tests 16 bytes per step with NEON when SBCL has the sb-simd
+;;;; contrib (some builds, such as Alpine's, do not); otherwise it tests 8
+;;;; bytes per step within a 64-bit word.
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  #+(and sbcl arm64)
+  (when (and (ignore-errors (require "sb-simd") t)
+             (find-package "SB-SIMD-NEON"))
+    (pushnew :lispvt-neon *features*)))
 
 (deftype octets () '(simple-array (unsigned-byte 8) (*)))
 (deftype index () `(integer 0 ,array-dimension-limit))
@@ -50,7 +57,7 @@ byte is below #x20 or above #x7E."
                        (return))))))
     (scan-printable-scalar octets i end)))
 
-#+(and sbcl arm64)
+#+lispvt-neon
 (defun scan-printable-neon (octets start end)
   (declare (type octets octets)
            (type index start end)
@@ -72,5 +79,5 @@ byte is below #x20 or above #x7E."
 (defun scan-printable (octets start end)
   "The index of the first octet of OCTETS in [START, END) outside printable
 ASCII (#x20-#x7E), or END."
-  #+(and sbcl arm64) (scan-printable-neon octets start end)
-  #-(and sbcl arm64) (scan-printable-swar octets start end))
+  #+lispvt-neon (scan-printable-neon octets start end)
+  #-lispvt-neon (scan-printable-swar octets start end))

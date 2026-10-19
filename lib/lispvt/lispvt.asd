@@ -3,8 +3,7 @@
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.1.0"
-  ;; NEON byte scanning on arm64; other platforms use a 64-bit SWAR scan.
-  :depends-on ((:feature (:and :sbcl :arm64) (:require "sb-simd")))
+  ;; scan.lisp uses NEON through sb-simd on arm64 when SBCL has it.
   :serial t
   :components ((:file "package")
                (:file "scan")
