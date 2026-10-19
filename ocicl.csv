@@ -46,7 +46,7 @@ flexi-streams, ghcr.io/ocicl/flexi-streams@sha256:95005b06a8a95c82780c75ead53810
 flexi-streams-test, ghcr.io/ocicl/flexi-streams@sha256:95005b06a8a95c82780c75ead53810bcb273d07fcf5fe76b527f1856df9923f2, flexi-streams-20240503-4951d57/flexi-streams-test.asd
 float-features, ghcr.io/ocicl/float-features@sha256:96d7f31d99c87db8771f3f4e4866df1f09f9f3c0c7bca86b6d221bba403c83b1, float-features-20261011-ee18952/float-features.asd
 font-discovery, git+https://codeberg.org/shinmera/font-discovery@c6e472872b84c8a99e427048c38adaedf7640e29, font-discovery-c6e4728/font-discovery.asd
-ghostty-vt, git+https://github.com/echawk/cl-ghostty-vt@30892ccb54d72c1740d391b3144b7c248b237626#ref=main, cl-ghostty-vt-30892cc/ghostty-vt.asd
+ghostty-vt, git+https://github.com/echawk/cl-ghostty-vt@30892ccb54d72c1740d391b3144b7c248b237626#ref=master, cl-ghostty-vt-30892cc/ghostty-vt.asd
 glfw, git+https://codeberg.org/shirakumo/glfw@eb8d12177efee08568e16be5eb69168174854cee, glfw-eb8d121/glfw.asd
 global-vars, ghcr.io/ocicl/global-vars@sha256:d197e871c9c9abc4bf31b1186f5fd28f0ca848ebe2e9dddf2d82ecee01dbdc65, global-vars-20240503-c749f32/global-vars.asd
 global-vars-test, ghcr.io/ocicl/global-vars@sha256:d197e871c9c9abc4bf31b1186f5fd28f0ca848ebe2e9dddf2d82ecee01dbdc65, global-vars-20240503-c749f32/global-vars-test.asd
