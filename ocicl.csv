@@ -49,6 +49,7 @@ clingon.demo, ghcr.io/ocicl/clingon@sha256:27d1426613e66fd28223c737bd7886dfdd4f2
 clingon.intro, ghcr.io/ocicl/clingon@sha256:27d1426613e66fd28223c737bd7886dfdd4f20df742212bd0903c2fc6791871f, clingon-20260807-e7e936b/clingon.intro.asd
 clingon.test, ghcr.io/ocicl/clingon@sha256:27d1426613e66fd28223c737bd7886dfdd4f20df742212bd0903c2fc6791871f, clingon-20260807-e7e936b/clingon.test.asd
 closer-mop, ghcr.io/ocicl/closer-mop@sha256:39ec579e68118a8be57a7882812ff31094a031f88b77f11cf4434a92261f1126, closer-mop-20260329-04db182/closer-mop.asd
+clx, ghcr.io/ocicl/clx@sha256:fbe1b16e4115b4603ae98435cc851917f6a901383b69b499025bf5509197c184, clx-20261012-7512924/clx.asd
 cocoas, git+https://codeberg.org/shinmera/cocoas@d35ee431cf7fc017bb29242fd0b6d1c564fc0808, cocoas-d35ee43/cocoas.asd
 com.inuoe.jzon, ghcr.io/ocicl/com.inuoe.jzon@sha256:b0cfbc3d8fb3c09526d92575b40b13a68ad93be7edeb48fd69dcea053c5611a5, jzon-20251113-f05afbb/com.inuoe.jzon.asd
 com.inuoe.jzon-tests, ghcr.io/ocicl/com.inuoe.jzon@sha256:b0cfbc3d8fb3c09526d92575b40b13a68ad93be7edeb48fd69dcea053c5611a5, jzon-20251113-f05afbb/com.inuoe.jzon-tests.asd

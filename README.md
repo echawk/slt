@@ -93,6 +93,7 @@ and compares the resulting screens. `slt/bench` measures throughput.
 | backend | |
 |---|---|
 | `cocoa` | macOS default: AppKit window, Metal renderer, CoreText glyphs |
+| `clx` | X11 window through [CLX](https://github.com/sharplispers/clx), X core fonts, no foreign libraries (`slt/clx`; needs an X server) |
 | `gl` | Linux/BSD default: GLFW window (X11 or Wayland), OpenGL 3.3 or OpenGL ES 3.0, FreeType glyphs found through font-discovery; also runs on macOS with CoreText glyphs |
 | `gtk` | GTK 3 window drawn with Cairo and Pango, via [cl-cffi-gtk](https://github.com/crategus/cl-cffi-gtk) (`slt/gtk`; needs GTK 3) |
 | `ltk` | Tk; portable fallback (needs `wish`) where `gl` cannot run |
@@ -113,6 +114,12 @@ The `gtk` backend uses the system's GTK 3 (on macOS, Homebrew's `gtk+3`).
 Build it in with `BACKENDS=gtk`, for example `make lean BACKENDS=gtk`.
 `make gtk-test` checks its drawing the same way `make gl-test` does. It
 has no input method support yet, and its font menu lists no families.
+
+The `clx` backend speaks the X protocol in Lisp, so it needs only an X
+server, with a 24-bit TrueColor visual; build it in with `BACKENDS=clx`.
+It draws with the server's core fonts (ISO 10646 ones when the server has
+them, which covers the Basic Multilingual Plane only), so glyph coverage
+depends on the server's font path. `make clx-test` checks its drawing.
 
 ## Connecting from SLIME or SLY
 

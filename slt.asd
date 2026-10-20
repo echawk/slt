@@ -56,6 +56,12 @@ servers appear when those are loaded."
   :pathname "src/"
   :components ((:file "gtk-backend")))
 
+(asdf:defsystem #:slt/clx
+  :description "X11 backend through CLX: core fonts, no foreign libraries."
+  :depends-on (:slt/core :clx)
+  :pathname "src/"
+  :components ((:file "clx-backend")))
+
 (asdf:defsystem #:slt/3bst
   :description "3bst engine for slt: pure Lisp, a fork of 3b's port of st."
   :depends-on (:slt/core :3bst)
