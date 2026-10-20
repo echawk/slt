@@ -30,7 +30,13 @@
   engine)
 
 (defmethod engine-mode ((engine lispvt-engine) mode)
-  (lispvt:terminal-mode (lispvt-engine-terminal engine) mode))
+  (let ((terminal (lispvt-engine-terminal engine)))
+    (if (eq mode :mouse-tracking)
+        (cond ((lispvt:terminal-mode terminal :mouse-any) :any)
+              ((lispvt:terminal-mode terminal :mouse-button) :button)
+              ((lispvt:terminal-mode terminal :mouse-normal) :normal)
+              ((lispvt:terminal-mode terminal :mouse-x10) :x10))
+        (lispvt:terminal-mode terminal mode))))
 
 (defmethod engine-scroll ((engine lispvt-engine) how)
   (lispvt:terminal-scroll-viewport (lispvt-engine-terminal engine) how)

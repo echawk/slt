@@ -9,16 +9,19 @@
 ;;;;
 ;;;; Protocol (JSON text frames, version 1):
 ;;;;   server -> client
-;;;;     {"t":"hello","v":1,"rows":R,"cols":C,"title":S}
+;;;;     {"t":"hello","v":1,"rows":R,"cols":C,"title":S,"mouse":B}
 ;;;;     {"t":"frame","rows":[[ROW,[[TEXT,FG,BG,ATTRS],...]],...],
 ;;;;      "cursor":[ROW,COL,VISIBLE,SHAPE]}
 ;;;;       FG/BG are grid colors: 0 default, #x01000000+N palette, #x02000000+RGB.
 ;;;;       ATTRS are the grid attribute bits; a wide glyph is its own run.
 ;;;;     {"t":"title","title":S}  {"t":"bell"}  {"t":"exit"}
+;;;;     {"t":"mouse","tracking":B}   (whether the program wants mouse events)
 ;;;;   client -> server
 ;;;;     {"t":"key","char":S,"keysym":S,"state":N}   (X11 keysyms/modifier bits)
 ;;;;     {"t":"paste","text":S}
 ;;;;     {"t":"scroll","rows":N}                     (negative scrolls back)
+;;;;     {"t":"mouse","action":A,"row":R,"col":C,"button":B,"state":N}
+;;;;       A is "press", "release", "drag" or "motion"; B is 1-3, or 0 for none
 ;;;;     {"t":"resize","rows":R,"cols":C}
 ;;;;
 ;;;; Anyone who can open the socket can run commands as you, so the server
@@ -170,7 +173,8 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
   (json-object "t" "hello" "v" 1
           "rows" (headless-view-rows view)
           "cols" (headless-view-columns view)
-          "title" (headless-view-title view)))
+          "title" (headless-view-title view)
+          "mouse" (headless-view-mouse-tracking view)))
 
 (defmethod hunchensocket:client-connected ((resource web-resource) client)
   (let ((backend (web-resource-backend resource)))
@@ -207,6 +211,18 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
            (let ((rows (json-integer data "rows" 0)))
              (when (< -10000 rows 10000)
                (headless-scroll view rows))))
+          ((equal type "mouse")
+           (let ((action (cdr (assoc (json-string data "action")
+                                     '(("press" . :press) ("release" . :release)
+                                       ("drag" . :drag) ("motion" . :motion))
+                                     :test #'string=)))
+                 (row (json-integer data "row" -1))
+                 (column (json-integer data "col" -1))
+                 (button (json-integer data "button")))
+             (when (and action (< -1 row 1000) (< -1 column 1000) (<= 0 button 3))
+               (headless-mouse view action row column 1
+                               (if (zerop button) nil button)
+                               (logand (json-integer data "state") #xff)))))
           ((equal type "resize")
            (let ((rows (json-integer data "rows" 0))
                  (columns (json-integer data "cols" 0)))
@@ -231,6 +247,10 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
 (defmethod backend-resize-view :after ((backend web-backend) view rows columns)
   (declare (ignore view))
   (web-broadcast backend (json-object "t" "resize" "rows" rows "cols" columns)))
+
+(defmethod backend-set-mouse-tracking :after ((backend web-backend) view tracking)
+  (declare (ignore view))
+  (web-broadcast backend (json-object "t" "mouse" "tracking" tracking)))
 
 (defmethod backend-request-exit :before ((backend web-backend) view)
   (declare (ignore view))

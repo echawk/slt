@@ -64,7 +64,8 @@ steps, so it uses a smaller multiplier.")
    (scroll-callback :initform nil :accessor gl-view-scroll-callback)
    (mouse-callback :initform nil :accessor gl-view-mouse-callback)
    ;; Primary button state, and the last press for counting multi-clicks.
-   (button-down-p :initform nil :accessor gl-view-button-down-p)
+   ;; The mouse button held down, or NIL.
+   (button :initform nil :accessor gl-view-button)
    (last-click :initform nil :accessor gl-view-last-click)
    (click-count :initform 0 :accessor gl-view-click-count)
    (close-callback :initform nil :accessor gl-view-close-callback)
@@ -211,27 +212,32 @@ one quickly at the same cell."
           (gl-view-last-click view) (cons now cell))
     (gl-view-click-count view)))
 
-(defun deliver-gl-mouse (view action cell clicks)
+(defun deliver-gl-mouse (view action cell clicks button state)
   (when (gl-view-mouse-callback view)
-    (funcall (gl-view-mouse-callback view) action (first cell) (second cell) clicks)))
+    (funcall (gl-view-mouse-callback view) action (first cell) (second cell) clicks
+             button state)))
 
 (defmethod glfw:mouse-button-changed ((view gl-view) button action modifiers)
-  (declare (ignore modifiers))
-  (when (eq button :left)
-    (with-live-view (view)
-      (let ((cell (apply #'gl-pointer-cell view (glfw:cursor-location view))))
-        (case action
-          (:press
-           (setf (gl-view-button-down-p view) t)
-           (deliver-gl-mouse view :press cell (count-gl-click view cell)))
-          (:release
-           (setf (gl-view-button-down-p view) nil)
-           (deliver-gl-mouse view :release cell (gl-view-click-count view))))))))
+  (let ((number (case button (:left 1) (:middle 2) (:right 3))))
+    (when number
+      (with-live-view (view)
+        (let ((cell (apply #'gl-pointer-cell view (glfw:cursor-location view)))
+              (state (glfw-modifiers->state modifiers)))
+          (case action
+            (:press
+             (setf (gl-view-button view) number)
+             (deliver-gl-mouse view :press cell (count-gl-click view cell) number state))
+            (:release
+             (setf (gl-view-button view) nil)
+             (deliver-gl-mouse view :release cell (gl-view-click-count view)
+                               number state))))))))
 
 (defmethod glfw:mouse-moved ((view gl-view) x y)
-  (when (gl-view-button-down-p view)
-    (with-live-view (view)
-      (deliver-gl-mouse view :drag (gl-pointer-cell view x y) (gl-view-click-count view)))))
+  (with-live-view (view)
+    (let ((button (gl-view-button view)))
+      (deliver-gl-mouse view (if button :drag :motion) (gl-pointer-cell view x y)
+                        (gl-view-click-count view) button
+                        0))))
 
 ;;; Other window events
 

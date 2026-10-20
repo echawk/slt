@@ -119,7 +119,7 @@ expects, or NIL for keys the terminal should not see."
           ;; Scrolling content down (positive delta) moves back in history.
           (funcall (cocoa-view-scroll-callback view) (- whole)))))))
 
-(defun deliver-cocoa-mouse (self event action)
+(defun deliver-cocoa-mouse (self event action &optional (button 1))
   (let ((view (cocoa-view-for self)))
     (when (and view (cocoa-view-mouse-callback view))
       (multiple-value-bind (x y) (objc-point event "locationInWindow")
@@ -131,19 +131,34 @@ expects, or NIL for keys the terminal should not see."
                      action
                      (floor (* (- height y) scale) (cocoa-view-cell-height view))
                      (floor (* x scale) (cocoa-view-cell-width view))
-                     (msg event "clickCount" :long))))))))
+                     (if (eq action :motion) 0 (msg event "clickCount" :long))
+                     button
+                     (ns-modifiers->state (msg event "modifierFlags" :unsigned-long)))))))))
 
-(cffi:defcallback slt-view-mouse-down :void ((self :pointer) (command :pointer) (event :pointer))
-  (declare (ignore command))
-  (deliver-cocoa-mouse self event :press))
+(defmacro define-cocoa-mouse-callbacks (&rest definitions)
+  "Define view callbacks from (NAME ACTION BUTTON); BUTTON :OTHER is the
+middle button, which Cocoa numbers 2 among its other buttons."
+  `(progn
+     ,@(loop for (name action button) in definitions
+             collect `(cffi:defcallback ,name :void
+                          ((self :pointer) (command :pointer) (event :pointer))
+                        (declare (ignore command))
+                        ,(if (eq button :other)
+                             `(when (= (msg event "buttonNumber" :long) 2)
+                                (deliver-cocoa-mouse self event ,action 2))
+                             `(deliver-cocoa-mouse self event ,action ,button))))))
 
-(cffi:defcallback slt-view-mouse-dragged :void ((self :pointer) (command :pointer) (event :pointer))
-  (declare (ignore command))
-  (deliver-cocoa-mouse self event :drag))
-
-(cffi:defcallback slt-view-mouse-up :void ((self :pointer) (command :pointer) (event :pointer))
-  (declare (ignore command))
-  (deliver-cocoa-mouse self event :release))
+(define-cocoa-mouse-callbacks
+  (slt-view-mouse-down :press 1)
+  (slt-view-mouse-dragged :drag 1)
+  (slt-view-mouse-up :release 1)
+  (slt-view-right-mouse-down :press 3)
+  (slt-view-right-mouse-dragged :drag 3)
+  (slt-view-right-mouse-up :release 3)
+  (slt-view-other-mouse-down :press :other)
+  (slt-view-other-mouse-dragged :drag :other)
+  (slt-view-other-mouse-up :release :other)
+  (slt-view-mouse-moved :motion nil))
 
 (cffi:defcallback slt-window-will-start-live-resize :void
     ((self :pointer) (command :pointer) (notification :pointer))
@@ -217,7 +232,14 @@ expects, or NIL for keys the terminal should not see."
                           ("scrollWheel:" slt-view-scroll-wheel "v@:@")
                           ("mouseDown:" slt-view-mouse-down "v@:@")
                           ("mouseDragged:" slt-view-mouse-dragged "v@:@")
-                          ("mouseUp:" slt-view-mouse-up "v@:@")))
+                          ("mouseUp:" slt-view-mouse-up "v@:@")
+                          ("rightMouseDown:" slt-view-right-mouse-down "v@:@")
+                          ("rightMouseDragged:" slt-view-right-mouse-dragged "v@:@")
+                          ("rightMouseUp:" slt-view-right-mouse-up "v@:@")
+                          ("otherMouseDown:" slt-view-other-mouse-down "v@:@")
+                          ("otherMouseDragged:" slt-view-other-mouse-dragged "v@:@")
+                          ("otherMouseUp:" slt-view-other-mouse-up "v@:@")
+                          ("mouseMoved:" slt-view-mouse-moved "v@:@")))
   (define-objc-subclass "SLTWindowDelegate" "NSObject"
                         '(("windowWillClose:" slt-window-will-close "v@:@")
                           ("windowDidResize:" slt-window-did-resize "v@:@")
@@ -423,6 +445,7 @@ expects, or NIL for keys the terminal should not see."
     (msg window "center" :void)
     (msg window "makeKeyAndOrderFront:" :pointer (cffi:null-pointer) :void)
     (msg window "makeFirstResponder:" :pointer ns-view :bool)
+    (msg window "setAcceptsMouseMovedEvents:" :bool t :void)
     (update-cocoa-drawable-size view)
     view))
 

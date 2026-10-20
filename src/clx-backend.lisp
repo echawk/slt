@@ -47,7 +47,8 @@
   close-callback
   ;; The text this window offers as the CLIPBOARD selection.
   clipboard
-  (button-down-p nil)
+  ;; The mouse button held down, or NIL.
+  (button nil)
   (last-click nil)
   (click-count 1)
   (closed-p nil))
@@ -291,18 +292,21 @@ points and Unicode keysyms are #x01000000 plus theirs."
               1)
           (clx-view-last-click view) (cons now cell))))
 
-(defun clx-deliver-mouse (view action cell)
+(defun clx-deliver-mouse (view action cell button state)
   (when (clx-view-mouse-callback view)
     (funcall (clx-view-mouse-callback view)
-             action (first cell) (second cell) (clx-view-click-count view))))
+             action (first cell) (second cell) (clx-view-click-count view)
+             button (logand state (logior +shift-mask+ +control-mask+
+                                          +mod1-mask+ +mod4-mask+)))))
 
-(defun clx-button (view action code x y)
+(defun clx-button (view action code x y state)
   (case code
-    (1 (let ((cell (clx-pointer-cell view x y)))
-         (setf (clx-view-button-down-p view) (eq action :press))
-         (when (eq action :press)
-           (clx-count-click view cell))
-         (clx-deliver-mouse view action cell)))
+    ((1 2 3)
+     (let ((cell (clx-pointer-cell view x y)))
+       (setf (clx-view-button view) (and (eq action :press) code))
+       (when (eq action :press)
+         (clx-count-click view cell))
+       (clx-deliver-mouse view action cell code state)))
     ((4 5) (when (and (eq action :press) (clx-view-scroll-callback view))
              (funcall (clx-view-scroll-callback view)
                       (if (= code 4) (- *clx-scroll-rows*) *clx-scroll-rows*))))))
@@ -375,11 +379,12 @@ points and Unicode keysyms are #x01000000 plus theirs."
                (funcall (clx-view-resize-callback view)))))
           (:key-press
            (clx-key-press view display code state))
-          (:button-press (clx-button view :press code x y))
-          (:button-release (clx-button view :release code x y))
+          (:button-press (clx-button view :press code x y state))
+          (:button-release (clx-button view :release code x y state))
           (:motion-notify
-           (when (clx-view-button-down-p view)
-             (clx-deliver-mouse view :drag (clx-pointer-cell view x y))))
+           (let ((button (clx-view-button view)))
+             (clx-deliver-mouse view (if button :drag :motion)
+                                (clx-pointer-cell view x y) button state)))
           (:client-message
            (when (and (eq type :wm_protocols)
                       (eq (xlib:atom-name display (aref data 0)) :wm_delete_window)
@@ -461,7 +466,7 @@ the next timer, or NIL."
                       :background (clx-pixel (palette-background *palette*))
                       :event-mask (xlib:make-event-mask
                                    :exposure :structure-notify :key-press
-                                   :button-press :button-release :button-1-motion)))
+                                   :button-press :button-release :pointer-motion)))
              (gcontext (xlib:create-gcontext :drawable window :font font
                                              :foreground (clx-pixel (palette-foreground *palette*))
                                              :background (clx-pixel (palette-background *palette*))))

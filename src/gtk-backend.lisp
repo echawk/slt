@@ -28,7 +28,8 @@
   paste-callback
   close-callback
   (scroll-remainder 0d0)
-  (button-down-p nil)
+  ;; The mouse button held down, or NIL.
+  (button nil)
   (last-click nil)
   (click-count 1)
   (closed-p nil))
@@ -236,23 +237,25 @@ cairo_t pointer."
               1)
           (gtk-view-last-click view) (cons now cell))))
 
-(defun gtk-deliver-mouse (view action cell)
+(defun gtk-deliver-mouse (view action cell button flags)
   (when (gtk-view-mouse-callback view)
     (funcall (gtk-view-mouse-callback view)
-             action (first cell) (second cell) (gtk-view-click-count view))))
+             action (first cell) (second cell) (gtk-view-click-count view)
+             button (gtk-modifier-state flags))))
 
 (defun gtk-button-event (view event action)
   ;; GTK reports double and triple clicks as extra events; count our own.
-  (when (and (= 1 (gdk:gdk-event-button-button event))
-             (member (gdk:gdk-event-button-type event) '(:button-press :button-release)))
-    (let ((cell (gtk-pointer-cell view
-                                  (gdk:gdk-event-button-x event)
-                                  (gdk:gdk-event-button-y event))))
-      (setf (gtk-view-button-down-p view) (eq action :press))
-      (when (eq action :press)
-        (gtk:gtk-widget-grab-focus (gtk-view-area view))
-        (gtk-count-click view cell))
-      (gtk-deliver-mouse view action cell)))
+  (let ((button (gdk:gdk-event-button-button event)))
+    (when (and (<= 1 button 3)
+               (member (gdk:gdk-event-button-type event) '(:button-press :button-release)))
+      (let ((cell (gtk-pointer-cell view
+                                    (gdk:gdk-event-button-x event)
+                                    (gdk:gdk-event-button-y event))))
+        (setf (gtk-view-button view) (and (eq action :press) button))
+        (when (eq action :press)
+          (gtk:gtk-widget-grab-focus (gtk-view-area view))
+          (gtk-count-click view cell))
+        (gtk-deliver-mouse view action cell button (gdk:gdk-event-button-state event)))))
   t)
 
 (defun gtk-scroll (view event)
@@ -295,7 +298,7 @@ cairo_t pointer."
       (setf (gtk-view-cell-width view) (or cell-width cw)
             (gtk-view-cell-height view) (or cell-height ch)))
     (gtk:gtk-widget-add-events area '(:button-press-mask :button-release-mask
-                                      :button-motion-mask :scroll-mask
+                                      :pointer-motion-mask :scroll-mask
                                       :smooth-scroll-mask :key-press-mask))
     (gtk:gtk-container-add window area)
     (gtk:gtk-window-resize window
@@ -318,12 +321,14 @@ cairo_t pointer."
     (gobject:g-signal-connect area "motion-notify-event"
                               (lambda (widget event)
                                 (declare (ignore widget))
-                                (when (gtk-view-button-down-p view)
-                                  (gtk-deliver-mouse view :drag
+                                (let ((button (gtk-view-button view)))
+                                  (gtk-deliver-mouse view (if button :drag :motion)
                                                      (gtk-pointer-cell
                                                       view
                                                       (gdk:gdk-event-motion-x event)
-                                                      (gdk:gdk-event-motion-y event))))
+                                                      (gdk:gdk-event-motion-y event))
+                                                     button
+                                                     (gdk:gdk-event-motion-state event)))
                                 t))
     (gobject:g-signal-connect area "scroll-event"
                               (lambda (widget event)

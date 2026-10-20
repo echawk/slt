@@ -71,6 +71,10 @@
   (vt :pointer) (c :uint32) (mod :int))
 (cffi:defcfun ("vterm_keyboard_key" %vterm-keyboard-key) :void
   (vt :pointer) (key :int) (mod :int))
+(cffi:defcfun ("vterm_mouse_move" %vterm-mouse-move) :void
+  (vt :pointer) (row :int) (col :int) (mod :int))
+(cffi:defcfun ("vterm_mouse_button" %vterm-mouse-button) :void
+  (vt :pointer) (button :int) (pressed :bool) (mod :int))
 (cffi:defcfun ("vterm_keyboard_start_paste" %vterm-keyboard-start-paste) :void (vt :pointer))
 (cffi:defcfun ("vterm_keyboard_end_paste" %vterm-keyboard-end-paste) :void (vt :pointer))
 (cffi:defcfun ("vterm_obtain_screen" %vterm-obtain-screen) :pointer (vt :pointer))

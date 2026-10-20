@@ -46,6 +46,7 @@
    #:vterm-char
    #:vterm-encode-key
    #:vterm-encode-char
+   #:vterm-encode-mouse
    #:vterm-paste-start
    #:vterm-paste-end
    ;; packed-attribute bit masks

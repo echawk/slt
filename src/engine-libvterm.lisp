@@ -130,7 +130,20 @@
 (defmethod engine-mode ((engine libvterm-engine) mode)
   (case mode
     (:alternate-screen (libvterm:vterm-altscreen-p (libvterm-engine-vterm engine)))
+    (:mouse-tracking (case (libvterm:vterm-property (libvterm-engine-vterm engine) :mouse)
+                       (1 :normal)
+                       (2 :button)
+                       (3 :any)))
     (t nil)))
+
+(defmethod engine-encode-mouse ((engine libvterm-engine) action button row column modifiers)
+  (let ((octets (libvterm:vterm-encode-mouse
+                 (libvterm-engine-vterm engine) row column
+                 :button (and (not (eq action :motion)) button)
+                 :pressed (eq action :press)
+                 :mods (remove :super modifiers))))
+    (when (plusp (length octets))
+      (babel:octets-to-string octets :encoding :utf-8 :errorp nil))))
 
 (defmethod engine-encode-key ((engine libvterm-engine) key modifiers)
   (let ((vt (libvterm-engine-vterm engine))

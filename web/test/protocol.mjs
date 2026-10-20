@@ -31,10 +31,12 @@ check("socket with a wrong token is refused", refused);
 const socket = new WebSocket(`${wsBase}/ws?token=${token}`);
 const lines = [];
 let hello = null;
+let tracking = null;
 const text = () => lines.map((runs) => (runs || []).map((run) => run[0]).join("").trimEnd()).join("\n");
 socket.onmessage = (event) => {
   const message = JSON.parse(event.data);
   if (message.t === "hello") hello = message;
+  if (message.t === "mouse") tracking = message.tracking;
   if (message.t === "frame") for (const [row, runs] of message.rows) lines[row] = runs;
 };
 await new Promise((resolve) => (socket.onopen = resolve));
@@ -53,5 +55,17 @@ check("resize is applied (50 columns)",
       await until(() => lines.some((runs) => runs && runs.map((run) => run[0]).join("").length === 50)));
 socket.send(JSON.stringify({ t: "paste", text: "echo pasted\n" }));
 check("paste reaches the shell", await until(() => /\npasted/.test(text())));
+
+socket.send(JSON.stringify({ t: "paste", text: "printf '\\033[?1000h\\033[?1006h'; cat -v\n" }));
+check("mouse tracking is announced", await until(() => tracking === true));
+socket.send(JSON.stringify({ t: "mouse", action: "press", row: 2, col: 4, button: 1, state: 0 }));
+socket.send(JSON.stringify({ t: "mouse", action: "release", row: 2, col: 4, button: 1, state: 0 }));
+socket.send(JSON.stringify({ t: "key", char: "", keysym: "Return", state: 0 }));
+check("mouse reports reach the program",
+      await until(() => text().includes("^[[<0;5;3M^[[<0;5;3m")));
+// Leave the shell as we found it for the browser checks.
+socket.send(JSON.stringify({ t: "key", char: "c", keysym: "c", state: 4 }));
+socket.send(JSON.stringify({ t: "paste", text: "printf '\\033[?1000l\\033[?1006l'; clear\n" }));
+check("mouse tracking is withdrawn", await until(() => tracking === false));
 socket.close();
 process.exit(process.exitCode ?? 0);

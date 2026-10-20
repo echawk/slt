@@ -72,6 +72,7 @@
    #:engine-update-grid
    #:engine-mode
    #:engine-encode-key
+   #:engine-encode-mouse
    #:engine-close
    #:engine-scroll
    #:engine-emit-output
@@ -81,6 +82,7 @@
    #:engine-title-function
    #:engine-bell-function
    #:xterm-encode-key
+   #:xterm-encode-mouse
    ;; Backends
    #:terminal-backend
    #:register-backend

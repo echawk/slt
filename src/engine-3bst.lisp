@@ -95,6 +95,11 @@
       (:application-keypad (logtest 3bst::+mode-appkeypad+ term-mode))
       (:bracketed-paste (logtest 3bst::+mode-brcktpaste+ term-mode))
       (:alternate-screen (logtest 3bst::+mode-altscreen+ term-mode))
+      (:mouse-tracking (cond ((logtest 3bst::+mode-mousemany+ term-mode) :any)
+                             ((logtest 3bst::+mode-mousemotion+ term-mode) :button)
+                             ((logtest 3bst::+mode-mousebtn+ term-mode) :normal)
+                             ((logtest 3bst::+mode-mousex10+ term-mode) :x10)))
+      (:mouse-sgr (logtest 3bst::+mode-mousesgr+ term-mode))
       (t nil))))
 
 (declaim (inline 3bst-color->color))

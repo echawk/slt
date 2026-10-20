@@ -380,6 +380,15 @@ The encoding depends on terminal modes (e.g. DECCKM)."
   "Like VTERM-CHAR but return the encoded octets instead of calling ON-OUTPUT."
   (%capture vt (lambda () (vterm-char vt char :mods mods))))
 
+(defun vterm-encode-mouse (vt row col &key button pressed mods)
+  "Move the pointer to ROW, COL and, with BUTTON (1-3, or 4/5 for the
+wheel), press or release it; return the report octets the application's
+mouse mode calls for (possibly none)."
+  (%capture vt (lambda ()
+                 (%vterm-mouse-move (%ptr vt) row col (%mods mods))
+                 (when button
+                   (%vterm-mouse-button (%ptr vt) button pressed (%mods mods))))))
+
 (defun vterm-paste-start (vt)
   "Emit the bracketed-paste start sequence if the application enabled it."
   (%vterm-keyboard-start-paste (%ptr vt)) nil)

@@ -10,7 +10,18 @@
   cell-width
   cell-height
   background-items
-  text-items)
+  text-items
+  ;; The mouse button held down, the last click's time and cell, and the
+  ;; clicks counted so far.
+  (button nil)
+  (last-click nil)
+  (click-count 1))
+
+(defvar *ltk-multi-click-seconds* 0.4
+  "The longest gap between clicks of a double or triple click.")
+
+(defvar *ltk-scroll-rows* 3
+  "Rows scrolled per mouse wheel notch.")
 
 (defun tcl-bool (value)
   (if value 1 0))
@@ -230,6 +241,67 @@
      "bind ~a <KeyPress> {global server; puts $server \"(:callback \\\"~a\\\" \\\"[escape_for_lisp %A]\\\" \\\"[escape_for_lisp %K]\\\" %s)\"; flush $server; break}"
      (ltk:widget-path (ltk-view-canvas view))
      name)
+    view))
+
+(defun ltk-count-click (view cell)
+  (let ((now (get-internal-real-time))
+        (last (ltk-view-last-click view)))
+    (setf (ltk-view-click-count view)
+          (if (and last
+                   (equal cell (cdr last))
+                   (< (- now (car last))
+                      (* *ltk-multi-click-seconds* internal-time-units-per-second)))
+              (1+ (ltk-view-click-count view))
+              1)
+          (ltk-view-last-click view) (cons now cell))))
+
+(defun ltk-mouse-event (view callback action button x y state)
+  (let* ((cell (list (floor y (ltk-view-cell-height view))
+                     (floor x (ltk-view-cell-width view))))
+         (state (logand (normalize-event-state state)
+                        (logior +shift-mask+ +control-mask+ +mod1-mask+ +mod4-mask+))))
+    (case action
+      (:press (setf (ltk-view-button view) button)
+       (ltk-count-click view cell))
+      (:release (setf (ltk-view-button view) nil))
+      (:motion (setf button (ltk-view-button view))
+       (when button (setf action :drag))))
+    (funcall callback action (first cell) (second cell) (ltk-view-click-count view)
+             button state)))
+
+(defmethod backend-bind-mouse ((backend ltk-backend) (view ltk-view) callback)
+  (declare (ignore backend))
+  (let ((path (ltk:widget-path (ltk-view-canvas view))))
+    ;; Motion events have no button (%b is "??").
+    (loop for (event action button) in '(("ButtonPress" :press "%b")
+                                         ("ButtonRelease" :release "%b")
+                                         ("Motion" :motion "0"))
+          for name = (ltk::create-name)
+          do (let ((action action))
+               (ltk::add-callback name
+                                  (lambda (button x y state)
+                                    (when (or (eq action :motion) (<= 1 button 3))
+                                      (ltk-mouse-event view callback action button x y
+                                                       state)))))
+             (ltk:format-wish "bind ~a <~a> {global server; puts $server \"(:callback \\\"~a\\\" ~a %x %y %s)\"; flush $server}"
+                              path event name button))
+    view))
+
+(defmethod backend-bind-scroll ((backend ltk-backend) (view ltk-view) callback)
+  (declare (ignore backend))
+  (let ((path (ltk:widget-path (ltk-view-canvas view)))
+        (name (ltk::create-name)))
+    (ltk::add-callback name
+                       (lambda (direction)
+                         ;; Positive is wheel up: back through history.
+                         (unless (zerop direction)
+                           (funcall callback (if (plusp direction)
+                                                 (- *ltk-scroll-rows*)
+                                                 *ltk-scroll-rows*)))))
+    ;; X11 Tk before 8.7 reports the wheel as buttons 4 and 5.
+    (loop for (event direction) in '(("MouseWheel" "%D") ("Button-4" "1") ("Button-5" "-1"))
+          do (ltk:format-wish "bind ~a <~a> {global server; puts $server \"(:callback \\\"~a\\\" ~a)\"; flush $server}"
+                              path event name direction))
     view))
 
 (defmethod backend-on-close ((backend ltk-backend) (view ltk-view) callback)

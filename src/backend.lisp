@@ -99,10 +99,21 @@ to scroll (negative is back through history) when the user scrolls.")
 (defgeneric backend-bind-mouse (backend view callback)
   (:documentation "Arrange for CALLBACK to be called with ACTION (:PRESS,
 :DRAG or :RELEASE), ROW, COLUMN and CLICKS (1 for a single click, 2 for a
-double click, ...) for the primary mouse button.  ROW and COLUMN are the
-cell under the pointer and may lie outside the grid.")
+double click, ...), and optionally BUTTON (1, 2 or 3 for left, middle and
+right; 1 when omitted) and the modifier STATE (as for keypresses), when a
+mouse button is used.  Backends that see the pointer move with no button
+held may also call it with ACTION :MOTION.  ROW and COLUMN are the cell
+under the pointer and may lie outside the grid.")
   (:method (backend view callback)
     (declare (ignore backend view callback))
+    nil))
+
+(defgeneric backend-set-mouse-tracking (backend view tracking)
+  (:documentation "Called when the child starts (TRACKING true) or stops
+asking for mouse reports.  Backends whose own text selection competes with
+the mouse, such as a browser's, use it to hand the mouse over.")
+  (:method (backend view tracking)
+    (declare (ignore backend view tracking))
     nil))
 
 (defgeneric backend-bind-menu (backend view items)

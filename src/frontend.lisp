@@ -37,7 +37,12 @@
   ;; Mouse selection: the cell index where it started, and whether it
   ;; extends by characters, words or lines.
   (selection-anchor nil :type (or null fixnum))
-  (selection-unit :char :type (member :char :word :line)))
+  (selection-unit :char :type (member :char :word :line))
+  ;; Whether the child tracks the mouse, as last told to the backend.
+  (mouse-tracking nil)
+  ;; The cell last under the pointer, where wheel reports are placed.
+  (pointer-row 0 :type fixnum)
+  (pointer-column 0 :type fixnum))
 
 (defmacro with-engine ((engine emulator) &body body)
   "Run BODY holding EMULATOR's engine lock, with ENGINE bound to the engine."
@@ -130,9 +135,16 @@ it happens.  Callable from any thread."
 (defun render-emulator (emulator &key force)
   "Copy the engine's changes into the grid and draw them.  UI thread only;
 the engine lock is held only for the copy."
-  (let ((grid (terminal-emulator-grid emulator)))
+  (let ((grid (terminal-emulator-grid emulator))
+        (tracking nil))
     (with-engine (engine emulator)
-      (engine-update-grid engine grid :force force))
+      (engine-update-grid engine grid :force force)
+      (setf tracking (and (engine-mode engine :mouse-tracking) t)))
+    (unless (eq tracking (terminal-emulator-mouse-tracking emulator))
+      (setf (terminal-emulator-mouse-tracking emulator) tracking)
+      (backend-set-mouse-tracking (terminal-emulator-backend emulator)
+                                  (terminal-emulator-view emulator)
+                                  tracking))
     ;; Dirty rows here are the engine's changes, since every render clears
     ;; them; a selection whose text changed no longer means anything.
     (when (grid-selection-intersects-dirty-p grid)
@@ -242,6 +254,12 @@ scrollback."
 arrow keys so the program scrolls."
   (cond
     ((zerop rows))
+    ((with-engine (engine emulator) (engine-mode engine :mouse-tracking))
+     (loop repeat (abs rows)
+           do (report-mouse emulator :press (if (minusp rows) 4 5)
+                            (terminal-emulator-pointer-row emulator)
+                            (terminal-emulator-pointer-column emulator)
+                            '())))
     ((with-engine (engine emulator) (engine-mode engine :alternate-screen))
      (let ((sequence (with-engine (engine emulator)
                        (engine-encode-key engine (if (minusp rows) :up :down) '()))))
@@ -324,9 +342,42 @@ part of a word, so that paths and URLs are selected whole.")
                  do (incf last)))
          (values first last))))))
 
-(defun handle-mouse (emulator action row column clicks)
-  "Select with the primary button: drag for characters, double-click for
-words and triple-click for lines."
+(defun report-mouse (emulator action button row column modifiers &key (send t))
+  "Report a mouse event to the child at the cell ROW, COLUMN, kept inside
+the grid, unless SEND is false.  Return true when the child tracks the
+mouse."
+  (let ((grid (terminal-emulator-grid emulator))
+        (tracking nil)
+        (report nil))
+    (with-engine (engine emulator)
+      (setf tracking (engine-mode engine :mouse-tracking))
+      (when (and tracking send)
+        (setf report (engine-encode-mouse engine action button
+                                          (max 0 (min row (1- (grid-rows grid))))
+                                          (max 0 (min column (1- (grid-columns grid))))
+                                          modifiers))))
+    (write-input emulator report)
+    tracking))
+
+(defun handle-mouse (emulator action row column clicks &optional (button 1) (state 0))
+  "Report the event when the child tracks the mouse and Shift is not held;
+otherwise select with the primary button: drag for characters,
+double-click for words and triple-click for lines."
+  (let ((modifiers (decode-modifier-state state))
+        (moved (or (/= row (terminal-emulator-pointer-row emulator))
+                   (/= column (terminal-emulator-pointer-column emulator)))))
+    (setf (terminal-emulator-pointer-row emulator) row
+          (terminal-emulator-pointer-column emulator) column)
+    (unless (and (not (member :shift modifiers))
+                 (report-mouse emulator (if (eq action :drag) :motion action)
+                               (if (eq action :motion) nil button)
+                               row column modifiers
+                               ;; Motion within the same cell is not reported.
+                               :send (or moved (not (member action '(:drag :motion))))))
+      (when (and (eql button 1) (not (eq action :motion)))
+        (select-with-mouse emulator action row column clicks)))))
+
+(defun select-with-mouse (emulator action row column clicks)
   (let* ((grid (terminal-emulator-grid emulator))
          (rows (grid-rows grid))
          (columns (grid-columns grid))
@@ -597,8 +648,9 @@ and notice a child that exited without closing the PTY."
                                   (handle-keypress emulator char keysym state)))
          (backend-bind-mouse backend-instance
                              view
-                             (lambda (action row column clicks)
-                               (handle-mouse emulator action row column clicks)))
+                             (lambda (action row column clicks &optional (button 1) (state 0))
+                               (handle-mouse emulator action row column clicks
+                                             button state)))
          (backend-bind-paste backend-instance
                              view
                              (lambda (text)

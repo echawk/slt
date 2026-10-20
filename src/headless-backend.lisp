@@ -29,6 +29,7 @@
   (width 0 :type fixnum)
   (height 0 :type fixnum)
   (title "" :type string)
+  (mouse-tracking nil)
   (grid nil)
   (render-count 0 :type fixnum)
   resize-callback
@@ -109,12 +110,14 @@ bits are still set during the call.")
                    (when (headless-view-scroll-callback view)
                      (funcall (headless-view-scroll-callback view) rows)))))
 
-(defun headless-mouse (view action row column &optional (clicks 1))
-  "Deliver a primary-button ACTION (:PRESS, :DRAG or :RELEASE) at a cell."
+(defun headless-mouse (view action row column &optional (clicks 1) (button 1) (state 0))
+  "Deliver ACTION (:PRESS, :DRAG, :RELEASE or :MOTION) of BUTTON, with the
+modifier STATE, at a cell."
   (headless-call (headless-view-backend view)
                  (lambda ()
                    (when (headless-view-mouse-callback view)
-                     (funcall (headless-view-mouse-callback view) action row column clicks)))))
+                     (funcall (headless-view-mouse-callback view)
+                              action row column clicks button state)))))
 
 (defun headless-paste (view text)
   (headless-call (headless-view-backend view)
@@ -183,6 +186,9 @@ bits are still set during the call.")
 
 (defmethod backend-set-title ((backend headless-backend) (view headless-view) title)
   (setf (headless-view-title view) title))
+
+(defmethod backend-set-mouse-tracking ((backend headless-backend) (view headless-view) tracking)
+  (setf (headless-view-mouse-tracking view) tracking))
 
 (defmethod backend-schedule ((backend headless-backend) (view headless-view) delay-ms thunk)
   (let ((token (incf (headless-backend-timer-seq backend))))

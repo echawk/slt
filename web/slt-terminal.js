@@ -105,6 +105,7 @@ export class SltTerminal extends EventTarget {
     this._theme = { ...DEFAULT_THEME };
     this._palette = xtermPalette(this._theme.palette);
     this._cell = { w: 8, h: 16 };
+    this.mouseTracking = false;
     this._build();
     this.setTheme(options.theme ?? {});
     if (this.url && options.autoConnect !== false) this.connect(this.url);
@@ -269,6 +270,41 @@ export class SltTerminal extends EventTarget {
       wheelRemainder -= whole;
       this.scroll(whole);
     }, { passive: false });
+    // While the program tracks the mouse, send it the mouse; Shift keeps
+    // the browser's own selection.
+    let mouseButton = 0;
+    const mouse = (action, e, button) => {
+      if (!this.mouseTracking || e.shiftKey) return false;
+      const rect = this.screen.getBoundingClientRect();
+      const row = Math.max(0, Math.floor((e.clientY - rect.top) / this._cell.h));
+      const col = Math.max(0, Math.floor((e.clientX - rect.left) / this._cell.w));
+      let state = 0;
+      if (e.ctrlKey) state |= MOD_CONTROL;
+      if (e.altKey) state |= MOD_META;
+      if (e.metaKey) state |= MOD_SUPER;
+      this._send({ t: "mouse", action, row, col, button, state });
+      return true;
+    };
+    // DOM buttons are 0 left, 1 middle, 2 right; slt's are 1-3.
+    root.addEventListener("mousedown", (e) => {
+      if (e.button <= 2 && mouse("press", e, e.button + 1)) {
+        e.preventDefault();
+        mouseButton = e.button + 1;
+        this.focus();
+      }
+    });
+    window.addEventListener("mouseup", (e) => {
+      if (mouseButton && e.button + 1 === mouseButton) {
+        mouse("release", e, mouseButton);
+        mouseButton = 0;
+      }
+    });
+    root.addEventListener("mousemove", (e) => {
+      mouse(mouseButton ? "drag" : "motion", e, mouseButton);
+    });
+    root.addEventListener("contextmenu", (e) => {
+      if (this.mouseTracking && !e.shiftKey) e.preventDefault();
+    });
     input.addEventListener("paste", (e) => {
       e.preventDefault();
       const text = e.clipboardData?.getData("text/plain");
@@ -314,6 +350,7 @@ export class SltTerminal extends EventTarget {
       case "hello":
         this._setSize(message.rows, message.cols);
         this.title = message.title || "";
+        this.mouseTracking = !!message.mouse;
         this._emit("title", this.title);
         // Size to our container only once the server's size is known.
         this.fit();
@@ -336,6 +373,9 @@ export class SltTerminal extends EventTarget {
       case "title":
         this.title = message.title;
         this._emit("title", this.title);
+        break;
+      case "mouse":
+        this.mouseTracking = !!message.tracking;
         break;
       case "bell":
         this._emit("bell");

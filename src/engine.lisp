@@ -36,7 +36,11 @@ cursor state changed.  With FORCE, copy and dirty every row."))
 
 (defgeneric engine-mode (engine mode)
   (:documentation "Query a terminal mode; MODE is a keyword such as
-:application-cursor, :application-keypad or :bracketed-paste.")
+:application-cursor, :application-keypad or :bracketed-paste.  The mode
+:mouse-tracking answers NIL or the mouse events the child asked for: :X10
+(presses), :NORMAL (presses and releases), :BUTTON (also motion with a
+button held) or :ANY (all motion); :mouse-sgr whether reports use the SGR
+(1006) encoding.")
   (:method ((engine engine) mode)
     (declare (ignore mode))
     nil))
@@ -48,6 +52,17 @@ character or a key keyword) with MODIFIERS (a list of :shift, :control,
   (:method ((engine engine) key modifiers)
     (xterm-encode-key key modifiers
                       :application-cursor (engine-mode engine :application-cursor))))
+
+(defgeneric engine-encode-mouse (engine action button row column modifiers)
+  (:documentation "Return the string reporting a mouse event to the child,
+or NIL when the child's tracking mode does not report it.  ACTION is
+:PRESS, :RELEASE or :MOTION; BUTTON is 1, 2 or 3 (left, middle, right),
+4 or 5 (wheel up, down) or NIL for motion with no button held; ROW and
+COLUMN are the zero-based cell; MODIFIERS as for ENGINE-ENCODE-KEY.")
+  (:method ((engine engine) action button row column modifiers)
+    (xterm-encode-mouse action button row column modifiers
+                        :tracking (engine-mode engine :mouse-tracking)
+                        :sgr (engine-mode engine :mouse-sgr))))
 
 (defgeneric engine-scroll (engine how)
   (:documentation "Scroll the viewport through scrollback: HOW is :TOP,
@@ -211,3 +226,40 @@ for example, when a native library has not been built)."
                         (string (code-char (if (member :control modifiers) 8 127)))))
            (:escape (meta-prefix esc))
            (t nil)))))))
+
+;;; Default xterm mouse reporting.
+
+(defun xterm-encode-mouse (action button row column modifiers &key tracking sgr)
+  "The xterm report of a mouse event under TRACKING (see ENGINE-MODE), in
+the SGR encoding when SGR, else the legacy one."
+  (let ((code (case button
+                ((1 2 3) (1- button))
+                (4 64)
+                (5 65)
+                (t 3))))
+    (when (and tracking
+               (ecase action
+                 (:press button)
+                 ;; Wheel buttons have no release.
+                 (:release (and (not (eq tracking :x10)) (member button '(nil 1 2 3))))
+                 (:motion (or (eq tracking :any)
+                              (and (eq tracking :button) button)))))
+      (when (eq action :motion)
+        (incf code 32))
+      (unless (eq tracking :x10)
+        (incf code (+ (if (member :shift modifiers) 4 0)
+                      (if (member :meta modifiers) 8 0)
+                      (if (member :control modifiers) 16 0))))
+      (cond
+        (sgr
+         (format nil "~c[<~d;~d;~d~c" (code-char 27) code (1+ column) (1+ row)
+                 (if (eq action :release) #\m #\M)))
+        ;; Input reaches the child as UTF-8, so only coordinates that fit
+        ;; in one ASCII octet can be sent in the legacy encoding.
+        ((and (< (+ 33 column) 128) (< (+ 33 row) 128))
+         (format nil "~c[M~c~c~c" (code-char 27)
+                 (code-char (+ 32 (if (eq action :release)
+                                      (logior 3 (logand code (lognot 3)))
+                                      code)))
+                 (code-char (+ 33 column))
+                 (code-char (+ 33 row))))))))

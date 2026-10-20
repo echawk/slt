@@ -269,6 +269,11 @@
       (:application-keypad (ghostty-vt:terminal-mode terminal 66))
       (:bracketed-paste (ghostty-vt:terminal-mode terminal 2004))
       (:alternate-screen (eq (ghostty-vt:terminal-active-screen terminal) :alternate))
+      (:mouse-tracking (cond ((ghostty-vt:terminal-mode terminal 1003) :any)
+                             ((ghostty-vt:terminal-mode terminal 1002) :button)
+                             ((ghostty-vt:terminal-mode terminal 1000) :normal)
+                             ((ghostty-vt:terminal-mode terminal 9) :x10)))
+      (:mouse-sgr (ghostty-vt:terminal-mode terminal 1006))
       (t nil))))
 
 (defmethod engine-encode-key ((engine ghostty-engine) key modifiers)

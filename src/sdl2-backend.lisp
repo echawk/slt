@@ -47,7 +47,11 @@
   (target-height 0)
   resize-callback
   keypress-callback
+  mouse-callback
+  scroll-callback
   close-callback
+  ;; The mouse button held down, or NIL.
+  (button nil)
   (close-dispatched-p nil)
   (exit-requested-p nil))
 
@@ -458,6 +462,24 @@ it was (re)created, in which case its contents are undefined."
       (remhash token (sdl2-backend-timers backend))
       (funcall thunk))))
 
+(defvar *sdl-scroll-rows* 3
+  "Rows scrolled per mouse wheel notch.")
+
+(defun deliver-sdl-mouse (view action x y clicks button)
+  (when (sdl2-view-mouse-callback view)
+    (funcall (sdl2-view-mouse-callback view)
+             action
+             (floor y (sdl2-view-cell-height view))
+             (floor x (sdl2-view-cell-width view))
+             clicks
+             button
+             (sdl-modifiers->state
+              (sdl2:mod-keywords (sdl2-ffi.functions:sdl-get-mod-state))))))
+
+(defun sdl-button-number (button)
+  "slt's number for an SDL button: SDL numbers left, middle, right 1-3."
+  (and (<= 1 button 3) button))
+
 (defun run-sdl2-backend-loop (backend thunk)
   (sdl2:with-init (:video)
     (setf (sdl2-backend-ttf-initialized-p backend) nil
@@ -490,6 +512,24 @@ it was (re)created, in which case its contents are undefined."
                                         text
                                         text
                                         0)))
+                 (:mousebuttondown (:button button :x x :y y :clicks clicks)
+                                   (let ((number (sdl-button-number button)))
+                                     (when number
+                                       (setf (sdl2-view-button view) number)
+                                       (deliver-sdl-mouse view :press x y clicks number))))
+                 (:mousebuttonup (:button button :x x :y y :clicks clicks)
+                                 (let ((number (sdl-button-number button)))
+                                   (when number
+                                     (setf (sdl2-view-button view) nil)
+                                     (deliver-sdl-mouse view :release x y clicks number))))
+                 (:mousemotion (:x x :y y)
+                               (let ((button (sdl2-view-button view)))
+                                 (deliver-sdl-mouse view (if button :drag :motion) x y 1 button)))
+                 (:mousewheel (:y y)
+                              (when (and (/= y 0) (sdl2-view-scroll-callback view))
+                                ;; Wheel up (positive) moves back in history.
+                                (funcall (sdl2-view-scroll-callback view)
+                                         (* (- y) *sdl-scroll-rows*))))
                  (:windowevent (:event event :data1 data1 :data2 data2)
                                (declare (ignore data1 data2))
                                (case event
@@ -618,6 +658,16 @@ it was (re)created, in which case its contents are undefined."
 (defmethod backend-bind-keypress ((backend sdl2-backend) (view sdl2-view) callback)
   (declare (ignore backend))
   (setf (sdl2-view-keypress-callback view) callback)
+  view)
+
+(defmethod backend-bind-mouse ((backend sdl2-backend) (view sdl2-view) callback)
+  (declare (ignore backend))
+  (setf (sdl2-view-mouse-callback view) callback)
+  view)
+
+(defmethod backend-bind-scroll ((backend sdl2-backend) (view sdl2-view) callback)
+  (declare (ignore backend))
+  (setf (sdl2-view-scroll-callback view) callback)
   view)
 
 (defmethod backend-on-close ((backend sdl2-backend) (view sdl2-view) callback)
