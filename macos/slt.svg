@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="case" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f1e8d4"/>
+      <stop offset="1" stop-color="#cfc0a0"/>
+    </linearGradient>
+    <linearGradient id="bezel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a332b"/>
+      <stop offset="1" stop-color="#211d18"/>
+    </linearGradient>
+    <radialGradient id="screen" cx="0.5" cy="0.45" r="0.75">
+      <stop offset="0" stop-color="#2a2414"/>
+      <stop offset="1" stop-color="#0d0b07"/>
+    </radialGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="14" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <pattern id="scan" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="3" fill="#000" opacity="0.28"/>
+    </pattern>
+    <clipPath id="screenclip"><rect x="214" y="214" width="596" height="456" rx="46"/></clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#case)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="none" stroke="#a8977a" stroke-width="4"/>
+  <rect x="176" y="176" width="672" height="532" rx="70" fill="url(#bezel)"/>
+  <rect x="214" y="214" width="596" height="456" rx="46" fill="url(#screen)"/>
+  <g clip-path="url(#screenclip)">
+    <g filter="url(#glow)" stroke="#ffb000" stroke-width="44" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <path d="M 352 300 Q 412 292 432 352 L 548 590"/>
+      <path d="M 452 410 L 340 590"/>
+    </g>
+    <rect x="600" y="560" width="96" height="30" rx="4" fill="#ffb000" filter="url(#glow)"/>
+    <rect x="214" y="214" width="596" height="456" fill="url(#scan)"/>
+    <ellipse cx="400" cy="290" rx="220" ry="70" fill="#fff" opacity="0.05"/>
+  </g>
+  <g fill="#b3a383">
+    <rect x="300" y="770" width="424" height="18" rx="9"/>
+    <rect x="300" y="810" width="424" height="18" rx="9"/>
+  </g>
+  <circle cx="790" cy="740" r="12" fill="#6fd06f"/>
+</svg>

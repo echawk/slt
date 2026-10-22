@@ -48,7 +48,7 @@ vertex Fragment cell_vertex(uint vid [[vertex_id]],
   const float2 corners[6] = { {0,0}, {1,0}, {0,1}, {0,1}, {1,0}, {1,1} };
   float2 corner = corners[vid];
   uint4 cell = cells[iid];
-  float2 cell_origin = float2(iid % u.columns, iid / u.columns) * u.cell_size;
+  float2 cell_origin = u.padding + float2(iid % u.columns, iid / u.columns) * u.cell_size;
   float2 px = cell_origin + corner * u.cell_size;
   Fragment out;
   out.position = float4(px.x / u.viewport.x * 2.0 - 1.0,
@@ -91,6 +91,8 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
   (buffers (make-array +metal-frames-in-flight+ :initial-element nil))
   (buffer-sizes (make-array +metal-frames-in-flight+ :initial-element 0))
   (frame 0 :type fixnum)
+  ;; Device pixels between the drawable's top left corner and the grid.
+  (padding 0 :type fixnum)
   (uniforms (cffi:foreign-alloc :uint8 :count 48)))
 
 (defun metal-error-string (error-pointer)
@@ -217,8 +219,8 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
           (cffi:mem-aref u :float 3) (coerce height 'single-float)
           (cffi:mem-aref u :uint32 4) columns
           (cffi:mem-aref u :uint32 5) (glyph-atlas-slots-per-row atlas)
-          (cffi:mem-aref u :float 6) 0.0
-          (cffi:mem-aref u :float 7) 0.0
+          (cffi:mem-aref u :float 6) (coerce (metal-renderer-padding renderer) 'single-float)
+          (cffi:mem-aref u :float 7) (coerce (metal-renderer-padding renderer) 'single-float)
           (cffi:mem-aref u :float 8) (/ (ldb (byte 8 16) cursor) 255.0)
           (cffi:mem-aref u :float 9) (/ (ldb (byte 8 8) cursor) 255.0)
           (cffi:mem-aref u :float 10) (/ (ldb (byte 8 0) cursor) 255.0)

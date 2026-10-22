@@ -137,6 +137,48 @@ chosen.  Backends without menus ignore it.")
     (declare (ignore backend view text))
     nil))
 
+(defvar *window-padding* 4
+  "Space in points between the window's edges and the grid, on backends
+that support it (cocoa).")
+
+(defgeneric backend-set-font-size (backend view size)
+  (:documentation "Draw with the font at SIZE points from now on, and
+return true; the frontend then refits the grid to the window.  Backends
+that cannot change the font return NIL.")
+  (:method (backend view size)
+    (declare (ignore backend view size))
+    nil))
+
+(defgeneric backend-bind-focus (backend view callback)
+  (:documentation "Arrange for CALLBACK to be called with true when the
+window gains the keyboard focus and NIL when it loses it.")
+  (:method (backend view callback)
+    (declare (ignore backend view callback))
+    nil))
+
+(defgeneric backend-bind-drop (backend view callback)
+  (:documentation "Arrange for CALLBACK to be called with a list of native
+file names when files are dropped on the window.")
+  (:method (backend view callback)
+    (declare (ignore backend view callback))
+    nil))
+
+(defgeneric backend-bind-commands (backend view commands)
+  (:documentation "Offer COMMANDS, an alist from a command keyword (:COPY,
+:PASTE, :SELECT-ALL, :CLEAR-SCROLLBACK, :BIGGER, :SMALLER, :ACTUAL-SIZE,
+:RELOAD-CONFIG, :EDIT-CONFIG) to a function of no arguments, in the
+backend's application menus.  Backends without menus ignore it.")
+  (:method (backend view commands)
+    (declare (ignore backend view commands))
+    nil))
+
+(defgeneric backend-bell (backend view audible)
+  (:documentation "Ring the bell: beep when AUDIBLE, and draw the user's
+attention when the window is in the background.")
+  (:method (backend view audible)
+    (declare (ignore backend view audible))
+    nil))
+
 (defgeneric backend-focus (backend view))
 (defgeneric backend-request-exit (backend view))
 

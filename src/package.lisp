@@ -13,7 +13,18 @@
    #:*exit-hook*
    #:*load-user-config*
    #:user-config-pathname
+   #:default-config-pathname
+   #:config-file-locations
    #:load-user-config
+   #:reload-config
+   #:edit-config
+   #:*config-file*
+   #:*config-error*
+   #:*login-shell*
+   #:*working-directory*
+   #:*environment-variables*
+   #:*resize-delay-ms*
+   #:report-message
    ;; Grid
    #:grid
    #:make-grid
@@ -96,6 +107,27 @@
    #:backend-set-clipboard-text
    #:backend-bind-scroll
    #:backend-bind-menu
+   #:backend-bind-commands
+   #:backend-bind-focus
+   #:backend-bind-drop
+   #:backend-set-font-size
+   #:backend-bell
+   #:*window-padding*
+   #:*commands*
+   #:command-key-handler
+   #:select-all
+   #:clear-scrollback
+   #:set-font-size
+   #:increase-font-size
+   #:decrease-font-size
+   #:reset-font-size
+   #:refresh-emulator
+   #:url-at
+   #:*url-schemes*
+   #:open-external
+   #:*audible-bell*
+   #:ring-bell
+   #:shell-quote
    #:*menu-items*
    #:scroll-viewport
    #:scrollback-key-handler
@@ -159,6 +191,7 @@
    #:decode-modifier-state
    ;; Transport
    #:launch-shell-process
+   #:user-login-shell
    #:process-alive-p
    #:terminate-process
    #:resize-process-pty

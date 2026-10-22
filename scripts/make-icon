@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+# Render macos/slt.svg into macos/slt.icns, the application icon.
+# Needs rsvg-convert (Homebrew's librsvg) and iconutil; only for changing
+# the icon, since the .icns is committed.
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+set_dir="$work/slt.iconset"
+mkdir "$set_dir"
+for size in 16 32 128 256 512; do
+  rsvg-convert -w $size -h $size "$root/macos/slt.svg" -o "$set_dir/icon_${size}x${size}.png"
+  double=$((size * 2))
+  rsvg-convert -w $double -h $double "$root/macos/slt.svg" -o "$set_dir/icon_${size}x${size}@2x.png"
+done
+iconutil -c icns "$set_dir" -o "$root/macos/slt.icns"
+echo "wrote $root/macos/slt.icns"

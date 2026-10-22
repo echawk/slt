@@ -16,6 +16,8 @@ make check           # unit tests and engine conformance
 make install         # into /usr/local; PREFIX and DESTDIR are honored
 make lean            # only this system's GUI and the lispvt engine (see below)
 make tiny            # the same with the Tk (ltk) frontend
+make app             # macOS: build/slt.app (make lean app for the lean build)
+make install-app     # macOS: install slt.app into ~/Applications (APPDIR)
 ```
 
 `make` fetches the Lisp dependencies into `ocicl/`, builds the native engines,
@@ -151,8 +153,15 @@ over Swank's. Your code runs on the server's threads, not the UI thread.
 
 ## Configuration
 
-`~/.config/slt/init.lisp` is loaded at startup (skip it with `--no-config`).
-It runs in the `slt` package:
+As with StumpWM, the init file is plain Lisp loaded at startup, in the
+`slt` package, so it can run anything. slt loads the first of `$SLT_CONFIG`,
+`~/.sltrc`, `~/.slt.d/init.lisp` and `~/.config/slt/init.lisp` that exists;
+`--config FILE` names one, and `--no-config` skips it. An error stops the
+rest of the file but not slt: it is printed in red in the terminal. Reload
+the file with **slt ▸ Reload Settings** (Command+Shift+R; Super+Shift+R or
+Control+Shift+R elsewhere), and open it in your editor with **slt ▸
+Settings…** (Command+,), which creates it from a commented template first.
+For example:
 
 ```lisp
 (setf *default-engine* :ghostty)
@@ -163,6 +172,37 @@ It runs in the `slt` package:
                         (declare (ignore emulator))
                         (and (eql key #\q) (member :super modifiers))))
 ```
+
+## Shortcuts and the window
+
+On macOS the menus hold the usual commands: Copy, Paste and Select All
+(Command+C, V, A), Clear Scrollback (Command+K), Bigger, Smaller and Actual
+Size (Command+=, -, 0), Enter Full Screen (Control+Command+F), Close Window
+(Command+W), plus the Lisp menu. The right button opens a menu with the
+Edit commands unless the program tracks the mouse. On the other backends
+`command-key-handler` on `*key-hook*` gives the same commands on Super.
+`*commands*` maps each menu command to the function it calls.
+
+Command-click (Super-click) opens the link under the pointer
+(`*url-schemes*`). Files dropped on the window are pasted as shell-quoted
+names. The bell beeps (`*audible-bell*`) and bounces the Dock icon while
+slt is in the background (`*bell-hook*` holds `ring-bell`). Programs that
+ask for focus events (mode 1004) get them. `*window-padding*` sets the
+space around the grid in points.
+
+Children see `COLORTERM=truecolor`, `TERM_PROGRAM=slt` and, when the
+environment has no locale, `LANG=en_US.UTF-8`; add your own with
+`*environment-variables*`. `--directory DIR` starts the shell in DIR and
+`--login` makes it a login shell.
+
+## macOS application
+
+`make app` wraps `bin/` into `build/slt.app` (icon, `Info.plist`, ad-hoc
+signature) and `make install-app` copies it into `~/Applications` (set
+`APPDIR=/Applications` for everyone). Started from the Finder or the Dock,
+slt runs a login shell in your home directory, as Terminal does
+(`*login-shell*`, `*working-directory*`). The icon is `macos/slt.svg`;
+`make icon` regenerates `macos/slt.icns` from it (needs `rsvg-convert`).
 
 ## Distribution
 

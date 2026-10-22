@@ -7,6 +7,8 @@
 #   make lean [install]           bin/ with only this system's GUI backend and
 #                                 the pure-Lisp lispvt engine (= LEAN=1)
 #   make tiny [install]           the same with the Tk (ltk) backend (= TINY=1)
+#   make app                      macOS: build/slt.app around bin/
+#   make install-app              macOS: install slt.app into $(APPDIR)
 #
 # Packagers: `make deps` fetches the Lisp dependencies (the only step that
 # needs the network besides building native engines), then
@@ -24,6 +26,8 @@ PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
 LIBDIR  ?= $(PREFIX)/lib
 DESTDIR ?=
+# macOS application bundles go here; /Applications works too.
+APPDIR  ?= $(HOME)/Applications
 
 SBCL  ?= sbcl
 OCICL ?= ocicl
@@ -90,7 +94,7 @@ $(shell mkdir -p build/stamp && \
         (echo '$(CONFIG)' | cmp -s - build/stamp/config || \
          { echo '$(CONFIG)' > build/stamp/config; rm -rf bin; }))
 
-.PHONY: all lean tiny deps run check test conformance web-test gl-test gtk-test clx-test install uninstall clean distclean
+.PHONY: all lean tiny deps run check test conformance web-test gl-test gtk-test clx-test install uninstall app install-app uninstall-app icon clean distclean
 
 all: bin/slt
 
@@ -159,6 +163,25 @@ install: bin/slt
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/slt
 	rm -rf $(DESTDIR)$(LIBDIR)/slt
+
+# macOS application bundle.  `make lean app` and `make lean install-app`
+# bundle the lean build.
+app: build/slt.app
+
+build/slt.app: bin/slt macos/Info.plist macos/slt.icns scripts/make-app
+	scripts/make-app $@
+
+install-app: build/slt.app
+	mkdir -p $(DESTDIR)$(APPDIR)
+	rm -rf $(DESTDIR)$(APPDIR)/slt.app
+	cp -RP build/slt.app $(DESTDIR)$(APPDIR)/
+
+uninstall-app:
+	rm -rf $(DESTDIR)$(APPDIR)/slt.app
+
+# Regenerate macos/slt.icns from macos/slt.svg (needs rsvg-convert).
+icon:
+	scripts/make-icon
 
 clean:
 	rm -rf bin build

@@ -7,12 +7,13 @@
 
 (defclass cocoa-backend (terminal-backend)
   ((view :initform nil :accessor cocoa-backend-view)
-   (timers :initform '() :accessor cocoa-backend-timers)
    (timer-seq :initform 0 :accessor cocoa-backend-timer-seq)
    (quit-p :initform nil :accessor cocoa-backend-quit-p)
-   ;; Work posted from other threads (see BACKEND-WAKEUP).
+   ;; Work posted from other threads (see BACKEND-WAKEUP), and the run
+   ;; loop source that runs it.
    (wake-lock :initform (bt:make-lock "slt cocoa wakeup") :reader cocoa-backend-wake-lock)
-   (wake-thunks :initform '() :accessor cocoa-backend-wake-thunks)))
+   (wake-thunks :initform '() :accessor cocoa-backend-wake-thunks)
+   (wake-source :initform nil :accessor cocoa-backend-wake-source)))
 
 (defstruct (cocoa-view (:constructor %make-cocoa-view))
   backend
@@ -32,9 +33,20 @@
   scroll-callback
   mouse-callback
   close-callback
-  ;; The Lisp menu's target object and its items, indexed by tag.
+  focus-callback
+  drop-callback
+  ;; The font's family and size in points, for changing its size.
+  font-family
+  (font-size 15)
+  ;; Device pixels between the window's edges and the grid.
+  (padding 0 :type fixnum)
+  ;; The target object of slt's menu items, and their (LABEL FUNCTION)
+  ;; entries, indexed by tag.
   menu-target
-  (menu-items #() :type simple-vector)
+  (menu-items (make-array 0 :adjustable t :fill-pointer t) :type vector)
+  ;; The right button's menu, shown when the child does not track the mouse.
+  context-menu
+  (mouse-tracking nil)
   (closed-p nil)
   ;; Fractional rows from trackpad scrolling, carried between events.
   (scroll-remainder 0d0 :type double-float)
@@ -125,12 +137,13 @@ expects, or NIL for keys the terminal should not see."
       (multiple-value-bind (x y) (objc-point event "locationInWindow")
         (multiple-value-bind (left bottom width height) (objc-rect self "frame")
           (declare (ignore left bottom width))
-          (let ((scale (cocoa-view-scale view)))
+          (let ((scale (cocoa-view-scale view))
+                (padding (cocoa-view-padding view)))
             ;; Window coordinates start at the bottom left.
             (funcall (cocoa-view-mouse-callback view)
                      action
-                     (floor (* (- height y) scale) (cocoa-view-cell-height view))
-                     (floor (* x scale) (cocoa-view-cell-width view))
+                     (floor (- (* (- height y) scale) padding) (cocoa-view-cell-height view))
+                     (floor (- (* x scale) padding) (cocoa-view-cell-width view))
                      (if (eq action :motion) 0 (msg event "clickCount" :long))
                      button
                      (ns-modifiers->state (msg event "modifierFlags" :unsigned-long)))))))))
@@ -148,11 +161,18 @@ middle button, which Cocoa numbers 2 among its other buttons."
                                 (deliver-cocoa-mouse self event ,action 2))
                              `(deliver-cocoa-mouse self event ,action ,button))))))
 
+(cffi:defcallback slt-view-right-mouse-down :void ((self :pointer) (command :pointer) (event :pointer))
+  (declare (ignore command))
+  (let ((view (cocoa-view-for self)))
+    (if (and view (cocoa-view-context-menu view) (not (cocoa-view-mouse-tracking view)))
+        (msg "NSMenu" "popUpContextMenu:withEvent:forView:"
+             :pointer (cocoa-view-context-menu view) :pointer event :pointer self :void)
+        (deliver-cocoa-mouse self event :press 3))))
+
 (define-cocoa-mouse-callbacks
   (slt-view-mouse-down :press 1)
   (slt-view-mouse-dragged :drag 1)
   (slt-view-mouse-up :release 1)
-  (slt-view-right-mouse-down :press 3)
   (slt-view-right-mouse-dragged :drag 3)
   (slt-view-right-mouse-up :release 3)
   (slt-view-other-mouse-down :press :other)
@@ -200,12 +220,59 @@ middle button, which Cocoa numbers 2 among its other buttons."
         (run-cocoa-wake-thunks (cocoa-view-backend view)))
       (redraw-cocoa-view view))))
 
+(defun call-cocoa-focus-callback (self focused)
+  (let ((view (cocoa-view-for self)))
+    (when (and view (cocoa-view-focus-callback view))
+      (handler-case (funcall (cocoa-view-focus-callback view) focused)
+        (error (condition)
+          (format *error-output* "~&slt: focus handler error: ~a~%" condition))))))
+
+(cffi:defcallback slt-window-did-become-key :void
+    ((self :pointer) (command :pointer) (notification :pointer))
+  (declare (ignore command notification))
+  (call-cocoa-focus-callback self t))
+
+(cffi:defcallback slt-window-did-resign-key :void
+    ((self :pointer) (command :pointer) (notification :pointer))
+  (declare (ignore command notification))
+  (call-cocoa-focus-callback self nil))
+
+(defconstant +ns-drag-operation-copy+ 1)
+
+(cffi:defcallback slt-view-dragging-entered :unsigned-long
+    ((self :pointer) (command :pointer) (info :pointer))
+  (declare (ignore self command info))
+  +ns-drag-operation-copy+)
+
+(defun dragged-file-names (info)
+  (let* ((classes (msg "NSArray" "arrayWithObject:"
+                       :pointer (org.shirakumo.cocoas.cffi:get-class "NSURL")))
+         (urls (msg (msg info "draggingPasteboard") "readObjectsForClasses:options:"
+                    :pointer classes :pointer (cffi:null-pointer))))
+    (unless (cffi:null-pointer-p urls)
+      (loop for index below (msg urls "count" :unsigned-long)
+            for url = (msg urls "objectAtIndex:" :unsigned-long index)
+            when (msg url "isFileURL" :bool)
+              collect (ns-string->string (msg url "path"))))))
+
+(cffi:defcallback slt-view-perform-drag-operation :bool
+    ((self :pointer) (command :pointer) (info :pointer))
+  (declare (ignore command))
+  (let ((view (cocoa-view-for self)))
+    (when (and view (cocoa-view-drop-callback view))
+      (let ((names (dragged-file-names info)))
+        (when names
+          (handler-case (progn (funcall (cocoa-view-drop-callback view) names) t)
+            (error (condition)
+              (format *error-output* "~&slt: drop handler error: ~a~%" condition)
+              nil)))))))
+
 (defun cocoa-menu-item-entry (self item)
   "The (LABEL FUNCTION) entry of the Lisp menu's ITEM, sent to target SELF."
   (let ((view (cocoa-view-for self))
         (tag (msg item "tag" :long)))
     (when (and view (< -1 tag (length (cocoa-view-menu-items view))))
-      (svref (cocoa-view-menu-items view) tag))))
+      (aref (cocoa-view-menu-items view) tag))))
 
 (cffi:defcallback slt-menu-item-chosen :void ((self :pointer) (command :pointer) (item :pointer))
   (declare (ignore command))
@@ -239,9 +306,13 @@ middle button, which Cocoa numbers 2 among its other buttons."
                           ("otherMouseDown:" slt-view-other-mouse-down "v@:@")
                           ("otherMouseDragged:" slt-view-other-mouse-dragged "v@:@")
                           ("otherMouseUp:" slt-view-other-mouse-up "v@:@")
-                          ("mouseMoved:" slt-view-mouse-moved "v@:@")))
+                          ("mouseMoved:" slt-view-mouse-moved "v@:@")
+                          ("draggingEntered:" slt-view-dragging-entered "Q@:@")
+                          ("performDragOperation:" slt-view-perform-drag-operation "B@:@")))
   (define-objc-subclass "SLTWindowDelegate" "NSObject"
                         '(("windowWillClose:" slt-window-will-close "v@:@")
+                          ("windowDidBecomeKey:" slt-window-did-become-key "v@:@")
+                          ("windowDidResignKey:" slt-window-did-resign-key "v@:@")
                           ("windowDidResize:" slt-window-did-resize "v@:@")
                           ("windowWillStartLiveResize:" slt-window-will-start-live-resize "v@:@")
                           ("windowDidEndLiveResize:" slt-window-did-end-live-resize "v@:@")))
@@ -292,37 +363,82 @@ middle button, which Cocoa numbers 2 among its other buttons."
         (msg (msg "NSApplication" "sharedApplication") "postEvent:atStart:"
              :pointer event :bool nil :void)))))
 
-(defmethod backend-wakeup ((backend cocoa-backend) view thunk)
-  (declare (ignore view))
-  (bt:with-lock-held ((cocoa-backend-wake-lock backend))
-    (push thunk (cocoa-backend-wake-thunks backend)))
-  (post-wakeup-event)
-  t)
+;;; Work from other threads and timers run from the main run loop in its
+;;; common modes.  Those include the modes AppKit runs it in while the user
+;;; drags a window edge, so a program's redraw after a resize appears
+;;; during the drag rather than when the mouse is released.
+
+(cffi:defcfun ("CFRunLoopGetMain" %cf-run-loop-get-main) :pointer)
+(cffi:defcfun ("CFRunLoopWakeUp" %cf-run-loop-wake-up) :void (run-loop :pointer))
+(cffi:defcfun ("CFRunLoopSourceCreate" %cf-run-loop-source-create) :pointer
+  (allocator :pointer) (order :long) (context :pointer))
+(cffi:defcfun ("CFRunLoopAddSource" %cf-run-loop-add-source) :void
+  (run-loop :pointer) (source :pointer) (mode :pointer))
+(cffi:defcfun ("CFRunLoopSourceSignal" %cf-run-loop-source-signal) :void (source :pointer))
+(cffi:defcfun ("CFAbsoluteTimeGetCurrent" %cf-absolute-time-get-current) :double)
+(cffi:defcfun ("CFRunLoopTimerCreate" %cf-run-loop-timer-create) :pointer
+  (allocator :pointer) (fire-date :double) (interval :double) (flags :unsigned-long)
+  (order :long) (callout :pointer) (context :pointer))
+(cffi:defcfun ("CFRunLoopAddTimer" %cf-run-loop-add-timer) :void
+  (run-loop :pointer) (timer :pointer) (mode :pointer))
+(cffi:defcfun ("CFRunLoopTimerInvalidate" %cf-run-loop-timer-invalidate) :void (timer :pointer))
+
+(defun call-from-run-loop (thunk)
+  "Call THUNK from a run loop callback, which must not unwind into C."
+  (handler-case (funcall thunk)
+    (error (condition)
+      (format *error-output* "~&slt: ~a~%" condition))))
+
+(defvar *cocoa-wake-backend* nil
+  "The backend whose posted work the run loop source runs.")
 
 (defun run-cocoa-wake-thunks (backend)
   (let ((thunks (bt:with-lock-held ((cocoa-backend-wake-lock backend))
                   (shiftf (cocoa-backend-wake-thunks backend) '()))))
     (dolist (thunk (nreverse thunks))
-      (funcall thunk))))
+      (call-from-run-loop thunk))))
 
-(defun run-cocoa-timers (backend)
-  (let ((now (get-internal-real-time))
-        (due '()))
-    (setf (cocoa-backend-timers backend)
-          (remove-if (lambda (timer)
-                       (when (<= (first timer) now)
-                         (push timer due)
-                         t))
-                     (cocoa-backend-timers backend)))
-    (dolist (timer (sort due #'< :key #'first))
-      (funcall (third timer)))))
+(cffi:defcallback slt-run-loop-perform :void ((info :pointer))
+  (declare (ignore info))
+  (when *cocoa-wake-backend*
+    (run-cocoa-wake-thunks *cocoa-wake-backend*)))
 
-(defun next-timer-timeout (backend)
-  (let ((timers (cocoa-backend-timers backend)))
-    (if timers
-        (max 0 (/ (- (reduce #'min timers :key #'first) (get-internal-real-time))
-                  internal-time-units-per-second))
-        0.25)))
+(defun install-cocoa-wake-source (backend)
+  ;; CFRunLoopSourceContext: version, info, retain, release,
+  ;; copyDescription, equal, hash, schedule, cancel, perform.
+  (cffi:with-foreign-object (context :pointer 10)
+    (dotimes (i 10)
+      (setf (cffi:mem-aref context :pointer i) (cffi:null-pointer)))
+    (setf (cffi:mem-aref context :pointer 9) (cffi:callback slt-run-loop-perform))
+    (let ((source (%cf-run-loop-source-create (cffi:null-pointer) 0 context)))
+      (%cf-run-loop-add-source (%cf-run-loop-get-main) source
+                               (foreign-global "kCFRunLoopCommonModes"))
+      (setf (cocoa-backend-wake-source backend) source
+            *cocoa-wake-backend* backend))))
+
+(defmethod backend-wakeup ((backend cocoa-backend) view thunk)
+  (declare (ignore view))
+  (bt:with-lock-held ((cocoa-backend-wake-lock backend))
+    (push thunk (cocoa-backend-wake-thunks backend)))
+  (let ((source (cocoa-backend-wake-source backend)))
+    (if source
+        (progn (%cf-run-loop-source-signal source)
+               (%cf-run-loop-wake-up (%cf-run-loop-get-main)))
+        (post-wakeup-event)))
+  t)
+
+(defvar *cocoa-timers* (make-hash-table)
+  "Scheduled timers: token to (CFRUNLOOPTIMER . THUNK).")
+
+(cffi:defcallback slt-run-loop-timer :void ((timer :pointer) (info :pointer))
+  (declare (ignore timer))
+  (let* ((token (cffi:pointer-address info))
+         (entry (gethash token *cocoa-timers*)))
+    (when entry
+      (remhash token *cocoa-timers*)
+      ;; The run loop keeps its own reference while it calls us.
+      (cf-release (car entry))
+      (call-from-run-loop (cdr entry)))))
 
 (defmethod backend-call-with-event-loop ((backend cocoa-backend) thunk)
   (float-features:with-float-traps-masked t
@@ -332,14 +448,14 @@ middle button, which Cocoa numbers 2 among its other buttons."
       (msg app "setActivationPolicy:" :long 0 :bool)
       (install-application-menu app)
       (msg app "finishLaunching" :void)
+      (install-cocoa-wake-source backend)
       (unwind-protect
            (progn
              (funcall thunk)
              (msg app "activateIgnoringOtherApps:" :bool t :void)
              (loop until (cocoa-backend-quit-p backend)
-                   do (cocoa-pump-events app (min 0.25 (next-timer-timeout backend)))
-                      (run-cocoa-wake-thunks backend)
-                      (run-cocoa-timers backend)))
+                   do (cocoa-pump-events app 0.25)
+                      (run-cocoa-wake-thunks backend)))
         (let ((view (cocoa-backend-view backend)))
           (when view
             (destroy-cocoa-view view)))))))
@@ -409,11 +525,15 @@ middle button, which Cocoa numbers 2 among its other buttons."
                  (coretext-font-cell-width font)))
          (ch (or (and cell-height (round (* cell-height screen-scale)))
                  (coretext-font-cell-height font)))
-         (window (msg (msg "NSWindow" "alloc") "initWithContentRect:styleMask:backing:defer:"
-                      :double 0d0 :double 0d0
-                      :double (/ (* columns cw) screen-scale)
-                      :double (/ (* rows ch) screen-scale)
-                      :unsigned-long 15 :unsigned-long 2 :bool nil))
+         (padding (round (* (max 0 *window-padding*) screen-scale)))
+         (window (progn
+                   ;; slt has no tabs; this keeps AppKit's tab menu items away.
+                   (msg "NSWindow" "setAllowsAutomaticWindowTabbing:" :bool nil :void)
+                   (msg (msg "NSWindow" "alloc") "initWithContentRect:styleMask:backing:defer:"
+                        :double 0d0 :double 0d0
+                        :double (/ (+ (* columns cw) (* 2 padding)) screen-scale)
+                        :double (/ (+ (* rows ch) (* 2 padding)) screen-scale)
+                        :unsigned-long 15 :unsigned-long 2 :bool nil)))
          (ns-view (msg (msg "SLTTerminalView" "alloc") "init"))
          (delegate (msg (msg "SLTWindowDelegate" "alloc") "init"))
          (renderer (make-metal-renderer))
@@ -426,7 +546,11 @@ middle button, which Cocoa numbers 2 among its other buttons."
                                  :atlas (make-glyph-atlas cw ch (coretext-rasterizer font))
                                  :scale (msg window "backingScaleFactor" :double)
                                  :cell-width cw
-                                 :cell-height ch)))
+                                 :cell-height ch
+                                 :font-family font-family
+                                 :font-size font-size
+                                 :padding padding)))
+    (setf (metal-renderer-padding renderer) padding)
     (setf (gethash (cffi:pointer-address ns-view) *cocoa-views*) view
           (gethash (cffi:pointer-address delegate) *cocoa-views*) view
           (cocoa-backend-view backend) view)
@@ -446,6 +570,13 @@ middle button, which Cocoa numbers 2 among its other buttons."
     (msg window "makeKeyAndOrderFront:" :pointer (cffi:null-pointer) :void)
     (msg window "makeFirstResponder:" :pointer ns-view :bool)
     (msg window "setAcceptsMouseMovedEvents:" :bool t :void)
+    ;; NSWindowCollectionBehaviorFullScreenPrimary: the green button goes full screen.
+    (msg window "setCollectionBehavior:" :unsigned-long 128 :void)
+    (msg window "setMinSize:" :double 200d0 :double 100d0 :void)
+    (msg ns-view "registerForDraggedTypes:"
+         :pointer (msg "NSArray" "arrayWithObject:"
+                       :pointer (foreign-global "NSPasteboardTypeFileURL"))
+         :void)
     (update-cocoa-drawable-size view)
     view))
 
@@ -456,7 +587,9 @@ middle button, which Cocoa numbers 2 among its other buttons."
   (cocoa-view-cell-height view))
 
 (defmethod backend-view-window-size ((backend cocoa-backend) (view cocoa-view))
-  (cocoa-view-pixel-size view))
+  (multiple-value-bind (width height) (cocoa-view-pixel-size view)
+    (let ((padding (* 2 (cocoa-view-padding view))))
+      (values (max 1 (- width padding)) (max 1 (- height padding))))))
 
 (defmethod backend-resize-view ((backend cocoa-backend) (view cocoa-view) rows columns)
   (declare (ignore rows columns))
@@ -473,16 +606,26 @@ middle button, which Cocoa numbers 2 among its other buttons."
 
 (defmethod backend-schedule ((backend cocoa-backend) (view cocoa-view) delay-ms thunk)
   (let ((token (incf (cocoa-backend-timer-seq backend))))
-    (push (list (+ (get-internal-real-time)
-                   (round (* (max 0 delay-ms) internal-time-units-per-second) 1000))
-                token
-                thunk)
-          (cocoa-backend-timers backend))
+    ;; CFRunLoopTimerContext: version, info, retain, release, copyDescription.
+    (cffi:with-foreign-object (context :pointer 5)
+      (dotimes (i 5)
+        (setf (cffi:mem-aref context :pointer i) (cffi:null-pointer)))
+      (setf (cffi:mem-aref context :pointer 1) (cffi:make-pointer token))
+      (let ((timer (%cf-run-loop-timer-create
+                    (cffi:null-pointer)
+                    (+ (%cf-absolute-time-get-current) (/ (max 0 delay-ms) 1000d0))
+                    0d0 0 0 (cffi:callback slt-run-loop-timer) context)))
+        (setf (gethash token *cocoa-timers*) (cons timer thunk))
+        (%cf-run-loop-add-timer (%cf-run-loop-get-main) timer
+                                (foreign-global "kCFRunLoopCommonModes"))))
     token))
 
 (defmethod backend-cancel-scheduled ((backend cocoa-backend) (view cocoa-view) token)
-  (setf (cocoa-backend-timers backend)
-        (remove token (cocoa-backend-timers backend) :key #'second)))
+  (let ((entry (gethash token *cocoa-timers*)))
+    (when entry
+      (remhash token *cocoa-timers*)
+      (%cf-run-loop-timer-invalidate (car entry))
+      (cf-release (car entry)))))
 
 (defmethod backend-bind-resize ((backend cocoa-backend) (view cocoa-view) callback)
   (setf (cocoa-view-resize-callback view) callback))
@@ -496,27 +639,148 @@ middle button, which Cocoa numbers 2 among its other buttons."
 (defmethod backend-bind-mouse ((backend cocoa-backend) (view cocoa-view) callback)
   (setf (cocoa-view-mouse-callback view) callback))
 
+;;; Menus
+
+(defun cocoa-menu-target (view)
+  (or (cocoa-view-menu-target view)
+      (let ((target (msg (msg "SLTMenuTarget" "alloc") "init")))
+        (setf (gethash (cffi:pointer-address target) *cocoa-views*) view
+              (cocoa-view-menu-target view) target))))
+
+(defun make-ns-menu-item (title action key &optional (modifiers +ns-command-key-mask+))
+  "A menu item sending ACTION (a selector) along the responder chain."
+  (let ((item (msg (msg "NSMenuItem" "alloc") "initWithTitle:action:keyEquivalent:"
+                   :pointer (ns-string title) :pointer action :pointer (ns-string key))))
+    (msg item "setKeyEquivalentModifierMask:" :unsigned-long modifiers :void)
+    item))
+
+(defun make-slt-menu-item (view label function &optional (key "") (modifiers +ns-command-key-mask+))
+  "A menu item calling FUNCTION, with LABEL a string or a function
+returning one (see *MENU-ITEMS*)."
+  (let ((item (make-ns-menu-item (if (stringp label) label (funcall label))
+                                 (selector "sltMenuItemChosen:") key modifiers))
+        (tag (vector-push-extend (list label function) (cocoa-view-menu-items view))))
+    (msg item "setTarget:" :pointer (cocoa-menu-target view) :void)
+    (msg item "setTag:" :long tag :void)
+    item))
+
+(defun make-ns-menu (title items)
+  "An NSMenu holding ITEMS, where NIL is a separator."
+  (let ((menu (msg (msg "NSMenu" "alloc") "initWithTitle:" :pointer (ns-string title))))
+    (dolist (item items menu)
+      (msg menu "addItem:" :pointer (or item (msg "NSMenuItem" "separatorItem")) :void))))
+
+(defun add-menu-bar-menu (bar menu &optional index)
+  (let ((bar-item (msg (msg "NSMenuItem" "alloc") "init")))
+    (msg bar-item "setSubmenu:" :pointer menu :void)
+    (if index
+        (msg bar "insertItem:atIndex:" :pointer bar-item :long index :void)
+        (msg bar "addItem:" :pointer bar-item :void))
+    bar-item))
+
+(defmethod backend-bind-commands ((backend cocoa-backend) (view cocoa-view) commands)
+  "Replace the menu bar with the standard application, Shell, Edit, View
+and Window menus, whose slt items call COMMANDS, and set the right
+button's menu."
+  (flet ((command (name title &optional (key "") (modifiers +ns-command-key-mask+))
+           (let ((function (cdr (assoc name commands))))
+             (and function (make-slt-menu-item view title function key modifiers))))
+         (standard (title action &optional (key "") (modifiers +ns-command-key-mask+))
+           (make-ns-menu-item title action key modifiers)))
+    (let* ((cmd +ns-command-key-mask+)
+           (app (msg "NSApplication" "sharedApplication"))
+           (bar (msg (msg "NSMenu" "alloc") "init"))
+           (window-menu
+             (make-ns-menu "Window"
+                           (list (standard "Minimize" (selector "performMiniaturize:") "m")
+                                 (standard "Zoom" (selector "performZoom:"))
+                                 nil
+                                 (standard "Bring All to Front" (selector "arrangeInFront:"))))))
+      (dolist (menu
+               (list
+                (make-ns-menu "slt"
+                              (list (standard "About slt" (selector "orderFrontStandardAboutPanel:"))
+                                    nil
+                                    (command :edit-config "Settings…" ",")
+                                    (command :reload-config "Reload Settings" "r"
+                                             (logior cmd +ns-shift-key-mask+))
+                                    nil
+                                    (standard "Hide slt" (selector "hide:") "h")
+                                    (standard "Hide Others" (selector "hideOtherApplications:") "h"
+                                              (logior cmd +ns-option-key-mask+))
+                                    (standard "Show All" (selector "unhideAllApplications:"))
+                                    nil
+                                    (standard "Quit slt" (selector "terminate:") "q")))
+                (make-ns-menu "Shell"
+                              (list (standard "Close Window" (selector "performClose:") "w")))
+                (make-ns-menu "Edit"
+                              (list (command :copy "Copy" "c")
+                                    (command :paste "Paste" "v")
+                                    (command :select-all "Select All" "a")
+                                    nil
+                                    (command :clear-scrollback "Clear Scrollback" "k")))
+                (make-ns-menu "View"
+                              (list (command :bigger "Bigger" "=")
+                                    (command :smaller "Smaller" "-")
+                                    (command :actual-size "Actual Size" "0")
+                                    nil
+                                    (standard "Enter Full Screen" (selector "toggleFullScreen:") "f"
+                                              (logior cmd +ns-control-key-mask+))))
+                window-menu))
+        (add-menu-bar-menu bar menu))
+      (msg app "setMainMenu:" :pointer bar :void)
+      (msg app "setWindowsMenu:" :pointer window-menu :void)
+      (setf (cocoa-view-context-menu view)
+            (make-ns-menu "" (list (command :copy "Copy")
+                                   (command :paste "Paste")
+                                   (command :select-all "Select All")
+                                   nil
+                                   (command :clear-scrollback "Clear Scrollback")))))))
+
 (defmethod backend-bind-menu ((backend cocoa-backend) (view cocoa-view) items)
-  "Add a Lisp menu holding ITEMS to the menu bar."
+  "Add a Lisp menu holding ITEMS to the menu bar, before the Window menu."
   (when items
-    (let ((target (msg (msg "SLTMenuTarget" "alloc") "init"))
-          (bar-item (msg (msg "NSMenuItem" "alloc") "init"))
-          (menu (msg (msg "NSMenu" "alloc") "initWithTitle:" :pointer (ns-string "Lisp"))))
-      (setf (cocoa-view-menu-target view) target
-            (cocoa-view-menu-items view) (coerce items 'simple-vector)
-            (gethash (cffi:pointer-address target) *cocoa-views*) view)
-      (loop for (label) in items
-            for tag from 0
-            do (let ((item (msg (msg "NSMenuItem" "alloc") "initWithTitle:action:keyEquivalent:"
-                                :pointer (ns-string (if (stringp label) label (funcall label)))
-                                :pointer (selector "sltMenuItemChosen:")
-                                :pointer (ns-string ""))))
-                 (msg item "setTarget:" :pointer target :void)
-                 (msg item "setTag:" :long tag :void)
-                 (msg menu "addItem:" :pointer item :void)))
-      (msg bar-item "setSubmenu:" :pointer menu :void)
-      (msg (msg (msg "NSApplication" "sharedApplication") "mainMenu") "addItem:"
-           :pointer bar-item :void))))
+    (let ((bar (msg (msg "NSApplication" "sharedApplication") "mainMenu")))
+      (add-menu-bar-menu bar
+                         (make-ns-menu "Lisp"
+                                       (loop for (label function) in items
+                                             collect (make-slt-menu-item view label function)))
+                         (max 0 (1- (msg bar "numberOfItems" :long)))))))
+
+(defmethod backend-set-mouse-tracking ((backend cocoa-backend) (view cocoa-view) tracking)
+  (setf (cocoa-view-mouse-tracking view) tracking))
+
+(defmethod backend-bind-focus ((backend cocoa-backend) (view cocoa-view) callback)
+  (setf (cocoa-view-focus-callback view) callback))
+
+(defmethod backend-bind-drop ((backend cocoa-backend) (view cocoa-view) callback)
+  (setf (cocoa-view-drop-callback view) callback))
+
+(defmethod backend-bell ((backend cocoa-backend) (view cocoa-view) audible)
+  (let ((app (msg "NSApplication" "sharedApplication")))
+    (cond
+      ;; NSInformationalRequest: bounce the Dock icon once.
+      ((not (msg app "isActive" :bool))
+       (msg app "requestUserAttention:" :unsigned-long 10 :long))
+      (audible
+       (cffi:foreign-funcall "NSBeep" :void)))))
+
+(defmethod backend-set-font-size ((backend cocoa-backend) (view cocoa-view) size)
+  (let* ((old (cocoa-view-font view))
+         (font (make-coretext-font (cocoa-view-font-family view)
+                                   (* size (cocoa-view-scale view))))
+         (cw (coretext-font-cell-width font))
+         (ch (coretext-font-cell-height font)))
+    (setf (cocoa-view-font view) font
+          (cocoa-view-font-size view) size
+          (cocoa-view-cell-width view) cw
+          (cocoa-view-cell-height view) ch
+          (cocoa-view-atlas view) (make-glyph-atlas cw ch (coretext-rasterizer font))
+          ;; A new atlas starts at generation 0 too: make the renderer
+          ;; replace its texture.
+          (metal-renderer-atlas-texture-generation (cocoa-view-renderer view)) -1)
+    (free-coretext-font old)
+    t))
 
 (defmethod backend-clipboard-text ((backend cocoa-backend) (view cocoa-view))
   (with-autorelease-pool ()
@@ -540,6 +804,7 @@ middle button, which Cocoa numbers 2 among its other buttons."
 
 (defmethod backend-request-exit ((backend cocoa-backend) (view cocoa-view))
   (setf (cocoa-backend-quit-p backend) t)
+  (post-wakeup-event)
   (unless (cocoa-view-closed-p view)
     (setf (cocoa-view-closed-p view) t)
     (msg (cocoa-view-window view) "close" :void)))

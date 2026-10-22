@@ -268,6 +268,7 @@
       (:application-cursor (ghostty-vt:terminal-mode terminal 1))
       (:application-keypad (ghostty-vt:terminal-mode terminal 66))
       (:bracketed-paste (ghostty-vt:terminal-mode terminal 2004))
+      (:focus-events (ghostty-vt:terminal-mode terminal 1004))
       (:alternate-screen (eq (ghostty-vt:terminal-active-screen terminal) :alternate))
       (:mouse-tracking (cond ((ghostty-vt:terminal-mode terminal 1003) :any)
                              ((ghostty-vt:terminal-mode terminal 1002) :button)

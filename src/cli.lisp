@@ -1,10 +1,5 @@
 (in-package #:slt)
 
-(defun system-version ()
-  (or (ignore-errors
-        (asdf:component-version (asdf:find-system :slt nil)))
-      "0.1.0"))
-
 (defun web-backend-loaded-p ()
   (boundp '*web-host*))
 
@@ -86,6 +81,21 @@
                            :key :repl-port
                            :long-name "repl-port"
                            :description "Port for the Swank or Slynk server (default 4005)."))
+    (clingon:make-option :filepath
+                         :key :config
+                         :short-name #\c
+                         :long-name "config"
+                         :description "Load this init file instead of searching for one.")
+    (clingon:make-option :filepath
+                         :key :directory
+                         :short-name #\d
+                         :long-name "directory"
+                         :description "Start the shell in this directory.")
+    (clingon:make-option :flag
+                         :key :login
+                         :short-name #\l
+                         :long-name "login"
+                         :description "Start the shell as a login shell (macOS).")
     (clingon:make-option :flag
                          :key :no-config
                          :long-name "no-config"
@@ -148,6 +158,11 @@
     (setf arguments (%append-keyword-argument arguments
                                               :title
                                               (clingon:getopt command :title nil)))
+    (setf arguments (%append-keyword-argument arguments
+                                              :directory
+                                              (clingon:getopt command :directory nil)))
+    (when (clingon:getopt command :login nil)
+      (setf arguments (append arguments (list :login-shell t))))
     (when (clingon:getopt command :no-config nil)
       (setf arguments (append arguments (list :load-config nil))))
     arguments))
@@ -169,6 +184,8 @@
      ;; touched when it is loaded.
      (let ((web-variables (and (web-backend-loaded-p) '(*web-host* *web-port*)))
            (repl-server (clingon:getopt command :repl-server nil)))
+       (when (clingon:getopt command :config nil)
+         (setf *config-file* (clingon:getopt command :config nil)))
        (when (repl-server-loaded-p)
          ;; Set globally so the menu and key binding use them too.
          (setf (symbol-value '*repl-server-port*)
@@ -201,4 +218,7 @@
 
 (defun main (&optional (arguments (uiop:command-line-arguments)))
   "Entry point of bin/slt.  ARGUMENTS default to the process's command line."
-  (clingon:run (make-cli-command) arguments))
+  ;; Older macOS passes -psn_0_NNNN to applications the Finder starts.
+  (clingon:run (make-cli-command)
+               (remove-if (lambda (argument) (uiop:string-prefix-p "-psn_" argument))
+                          arguments)))

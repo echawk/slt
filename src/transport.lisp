@@ -80,6 +80,7 @@
                                        (term-name "xterm-256color")
                                        rows
                                        columns
+                                       (variables '())
                                      #+sbcl
                                        (base-environment (sb-ext:posix-environ))
                                      #-sbcl
@@ -96,7 +97,50 @@
       (setf environment
             (replace-environment-variable environment "COLUMNS"
                                           (princ-to-string columns))))
+    ;; VARIABLES is an alist of (NAME . VALUE); a NIL value unsets NAME,
+    ;; and (NAME . :DEFAULT) sets NAME only when it is not already set.
+    (loop for (name . value) in variables
+          do (cond
+               ((null value)
+                (setf environment
+                      (remove name environment :key #'environment-entry-name
+                                               :test #'string-equal)))
+               ((eq value :default))
+               (t
+                (setf environment
+                      (replace-environment-variable environment name value)))))
     environment))
+
+(defun default-environment-variables (&optional (base-environment
+                                                 #+sbcl (sb-ext:posix-environ)
+                                                 #-sbcl '()))
+  "Variables a terminal sets for its children: truecolor support, the
+program's name, and a UTF-8 locale when the environment has none (as for
+an application started from the Finder)."
+  (flet ((setp (name)
+           (find name base-environment :key #'environment-entry-name
+                                       :test #'string-equal)))
+    (append
+     (list (cons "COLORTERM" "truecolor")
+           (cons "TERM_PROGRAM" "slt")
+           (cons "TERM_PROGRAM_VERSION" (system-version)))
+     (unless (or (setp "LANG") (setp "LC_ALL") (setp "LC_CTYPE"))
+       (list (cons "LANG" "en_US.UTF-8"))))))
+
+(defun user-login-shell ()
+  "The user's shell: $SHELL, else the password database's, else /bin/sh."
+  (or (uiop:getenv "SHELL")
+      (ignore-errors
+        (let ((shell (sb-posix:passwd-shell (sb-posix:getpwuid (sb-posix:getuid)))))
+          (and (plusp (length shell)) shell)))
+      "/bin/sh"))
+
+(defun shell-arguments (shell-path login)
+  "argv for SHELL-PATH: a login shell gets argv[0] starting with -, as
+login(1) does; otherwise -i asks for an interactive shell."
+  (if login
+      (list (concatenate 'string "-" (file-namestring shell-path)))
+      (list shell-path "-i")))
 
 (defun native-pty-supported-p ()
   #+sbcl (not (uiop:os-windows-p))
@@ -178,12 +222,19 @@
     (cffi:foreign-free vector)))
 
 #+darwin
+(cffi:defcfun ("chdir" %chdir) :int
+  (pathname :string))
+
+#+darwin
 (defun launch-shell-process/forkpty (shell &key
                                            (term-name "xterm-256color")
                                            rows
                                            columns
                                            (pixel-width 0)
-                                           (pixel-height 0))
+                                           (pixel-height 0)
+                                           login
+                                           directory
+                                           (variables '()))
   (let* ((shell-path (resolve-shell-path shell))
          (argv nil)
          (argv-pointers nil)
@@ -192,12 +243,13 @@
     (unwind-protect
          (progn
            (multiple-value-setq (argv argv-pointers)
-             (make-foreign-string-vector (list shell-path "-i")))
+             (make-foreign-string-vector (shell-arguments shell-path login)))
            (multiple-value-setq (envp envp-pointers)
              (make-foreign-string-vector
               (terminal-process-environment :term-name term-name
                                             :rows rows
-                                            :columns columns)))
+                                            :columns columns
+                                            :variables variables)))
            (cffi:with-foreign-object (master :int)
              (cffi:with-foreign-object (winsize '(:struct winsize))
                (setf (cffi:foreign-slot-value winsize
@@ -224,6 +276,8 @@
                    ((minusp pid)
                     (error "forkpty failed."))
                    ((zerop pid)
+                    (when directory
+                      (%chdir directory))
                     (%execve shell-path argv envp)
                     (%c-exit 127))
                    (t
@@ -245,21 +299,34 @@
                                      rows
                                      columns
                                      (pixel-width 0)
-                                     (pixel-height 0))
+                                     (pixel-height 0)
+                                     login
+                                     directory
+                                     (variables '()))
+  "Start SHELL on a new PTY.  LOGIN makes it a login shell (macOS only;
+elsewhere it is started with -i), DIRECTORY is its working directory, and
+VARIABLES are added to its environment (see TERMINAL-PROCESS-ENVIRONMENT)."
   #+darwin
   (launch-shell-process/forkpty shell
                                 :term-name term-name
                                 :rows rows
                                 :columns columns
                                 :pixel-width pixel-width
-                                :pixel-height pixel-height)
+                                :pixel-height pixel-height
+                                :login login
+                                :directory directory
+                                :variables variables)
+  #-(or darwin (not sbcl))
+  (declare (ignore login))
   #-(or darwin (not sbcl))
   (let* ((process (apply #'sb-ext:run-program shell
                                               '("-i")
+                                              :directory directory
                                               :environment (terminal-process-environment
                                                              :term-name term-name
                                                              :rows rows
-                                                             :columns columns)
+                                                             :columns columns
+                                                             :variables variables)
                                               :search (shell-search-path-p shell)
                                               :wait nil
                                               :pty t
@@ -276,7 +343,8 @@
                           :pixel-height pixel-height))
     (values process stream stream))
   #-(or darwin sbcl)
-  (declare (ignore shell term-name rows columns pixel-width pixel-height))
+  (declare (ignore shell term-name rows columns pixel-width pixel-height
+                   login directory variables))
   #-(or darwin sbcl)
   (error "Native PTY shell transport is only implemented on SBCL."))
 

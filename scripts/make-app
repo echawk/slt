@@ -1,0 +1,22 @@
+#!/usr/bin/env sh
+# Wrap bin/ into a macOS application bundle: scripts/make-app OUTPUT.app
+# bin/ is self-contained, so it becomes Contents/MacOS as it is; the
+# executable notices it runs from a bundle and starts a login shell in the
+# home directory (see *login-shell* and *working-directory*).
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+app=$1
+version=$(sed -n 's/.*:version "\([^"]*\)".*/\1/p' "$root/slt.asd" | head -1)
+
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp -RP "$root/bin/." "$app/Contents/MacOS/"
+cp "$root/macos/slt.icns" "$app/Contents/Resources/slt.icns"
+sed "s/@VERSION@/$version/g" "$root/macos/Info.plist" > "$app/Contents/Info.plist"
+printf 'APPL????' > "$app/Contents/PkgInfo"
+
+# Ad-hoc sign the bundle so that it carries its Info.plist and resources;
+# as for bin/slt, codesign warns that the appended Lisp core fails strict
+# validation, which is expected.
+codesign -f -s - -i com.github.echawk.slt "$app" 2>&1 | grep -v "strict validation\|replacing existing" || true
+echo "built $app"

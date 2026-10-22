@@ -1061,6 +1061,52 @@
         (setf (slt::headless-backend-quit-p backend) t)
         (bt:join-thread thread)))))
 
+;;; Links, quoting, the shell's environment and the init file
+
+(defun grid-showing (string &key (rows 2) (columns 60))
+  (let ((engine (make-engine :lispvt :rows rows :columns columns))
+        (grid (make-grid rows columns)))
+    (engine-feed-string engine string)
+    (engine-update-grid engine grid)
+    grid))
+
+(deftest url-at-finds-the-link-under-a-cell ()
+  (let ((grid (grid-showing "see https://example.com/a?b=1, ok")))
+    (is-equal "https://example.com/a?b=1" (url-at grid 0 10))
+    (is-equal "https://example.com/a?b=1" (url-at grid 0 4)
+              "the scheme's first letter counts")
+    (is (null (url-at grid 0 1)) "plain words are not links")
+    (is (null (url-at grid 0 30)) "nor are trailing words")
+    (is (null (url-at grid 5 0)) "cells outside the grid have none")))
+
+(deftest shell-quote-leaves-plain-words-alone ()
+  (is-equal "/tmp/a-b_c.txt" (shell-quote "/tmp/a-b_c.txt"))
+  (is-equal "'/tmp/two words'" (shell-quote "/tmp/two words"))
+  (is-equal "'it'\\''s'" (shell-quote "it's")))
+
+(deftest terminal-process-environment-adds-and-removes-variables ()
+  (is-equal '("COLORTERM=truecolor" "HOME=/tmp")
+            (terminal-process-environment :term-name nil
+                                          :variables '(("COLORTERM" . "truecolor")
+                                                       ("LANG" . nil))
+                                          :base-environment '("LANG=C" "HOME=/tmp"))))
+
+(deftest shell-arguments-mark-login-shells-with-a-dash ()
+  (is-equal '("-zsh") (slt::shell-arguments "/bin/zsh" t))
+  (is-equal '("/bin/zsh" "-i") (slt::shell-arguments "/bin/zsh" nil)))
+
+(deftest load-user-config-reports-errors-instead-of-signalling ()
+  (let ((pathname (uiop:with-temporary-file (:stream out :pathname p :keep t)
+                    (write-string "(defparameter cl-user::*slt-test-loaded* t) (error \"boom\")" out)
+                    p)))
+    (unwind-protect
+         (progn
+           (is-equal pathname (load-user-config pathname))
+           (is (symbol-value 'cl-user::*slt-test-loaded*) "forms before the error ran")
+           (is (search "boom" *config-error*)))
+      (delete-file pathname)
+      (setf *config-error* nil))))
+
 (defun run-tests ()
   (let ((failures '()))
     (dolist (test (reverse *tests*))

@@ -42,7 +42,10 @@
   (mouse-tracking nil)
   ;; The cell last under the pointer, where wheel reports are placed.
   (pointer-row 0 :type fixnum)
-  (pointer-column 0 :type fixnum))
+  (pointer-column 0 :type fixnum)
+  ;; The font size now, and the one the window opened with.
+  (font-size 15)
+  (initial-font-size 15))
 
 (defmacro with-engine ((engine emulator) &body body)
   "Run BODY holding EMULATOR's engine lock, with ENGINE bound to the engine."
@@ -65,14 +68,151 @@
         ((and (not (uiop:os-macosx-p)) (gl-backend-usable-p)) :gl)
         (t :ltk)))
 
-(defun user-config-pathname ()
+;;; The init file.  As in StumpWM, it is ordinary Lisp loaded at startup
+;;; (in the slt package), so it can do anything: set variables, add hooks,
+;;; define commands.  An error in it is reported rather than fatal.
+
+(defvar *config-file* nil
+  "The init file to load instead of searching CONFIG-FILE-LOCATIONS; set
+by --config.")
+
+(defvar *config-error* nil
+  "A description of the error the init file signalled when it was last
+loaded, or NIL.  It is shown in the terminal when the window opens.")
+
+(defun default-config-pathname ()
   (uiop:xdg-config-home "slt/init.lisp"))
 
+(defun config-file-locations ()
+  "The places an init file is looked for, in order: $SLT_CONFIG,
+~/.sltrc, ~/.slt.d/init.lisp and $XDG_CONFIG_HOME/slt/init.lisp."
+  (let ((environment (uiop:getenv "SLT_CONFIG"))
+        (home (user-homedir-pathname)))
+    (remove nil
+            (list (and environment (plusp (length environment))
+                       (uiop:parse-native-namestring environment))
+                  (merge-pathnames ".sltrc" home)
+                  (merge-pathnames ".slt.d/init.lisp" home)
+                  (default-config-pathname)))))
+
+(defun user-config-pathname ()
+  "The init file: *CONFIG-FILE* when set, else the first of
+CONFIG-FILE-LOCATIONS that exists, else NIL."
+  (if *config-file*
+      (uiop:ensure-pathname *config-file* :want-pathname t)
+      (find-if #'probe-file (config-file-locations))))
+
 (defun load-user-config (&optional (pathname (user-config-pathname)))
-  (when (and pathname (probe-file pathname))
-    (let ((*package* (find-package '#:slt)))
-      (load pathname))
-    pathname))
+  "Load PATHNAME in the slt package and return it, or NIL when there is no
+such file.  An error stops the load but not slt: it is printed, and kept
+in *CONFIG-ERROR* to be shown in the terminal."
+  (setf *config-error* nil)
+  (cond
+    ((null pathname) nil)
+    ((not (probe-file pathname))
+     (when *config-file*
+       (setf *config-error* (format nil "~a does not exist"
+                                    (uiop:native-namestring pathname))))
+     nil)
+    (t
+     (handler-case
+         (let ((*package* (find-package '#:slt)))
+           (load pathname))
+       (error (condition)
+         (setf *config-error* (format nil "error in ~a: ~a"
+                                      (uiop:native-namestring pathname) condition))
+         (format *error-output* "~&slt: ~a~%" *config-error*)))
+     pathname)))
+
+(defparameter *config-template*
+  ";;; slt init file, loaded at startup in the slt package.
+;;; Reload it with Command+Shift+R (Super+Shift+R elsewhere) or the slt menu.
+
+;; (setf *default-engine* :ghostty)
+;; (setf *palette* (make-palette :foreground #xcdd6f4 :background #x1e1e2e))
+;; (setf *window-padding* 6)        ; points around the grid (cocoa)
+;; (setf *option-as-meta* t)        ; Option sends Meta instead of composing
+;; (setf *copy-on-select* t)
+;; (setf *audible-bell* nil)
+;; (add-hook '*key-hook*            ; return true to consume the key
+;;           (lambda (emulator key modifiers)
+;;             (when (and (eql key #\d) (member :super modifiers))
+;;               (write-input emulator \"date\") t)))
+"
+  "The contents of a new init file made by EDIT-CONFIG.")
+
+(defun report-message (emulator format-control &rest arguments)
+  "Show a message from slt itself in EMULATOR's terminal, in bold red."
+  (let ((esc (code-char 27)))
+    (with-engine (engine emulator)
+      (engine-feed-string engine
+                          (format nil "~c[1;31mslt:~c[0m ~?~c~c"
+                                  esc esc format-control arguments
+                                  #\Return #\Linefeed)))
+    (request-render emulator)))
+
+(defun refresh-emulator (emulator)
+  "Redraw everything, e.g. after the palette changed."
+  (grid-mark-all-dirty (terminal-emulator-grid emulator))
+  (render-emulator emulator :force t))
+
+(defun reload-config (emulator)
+  "Load the init file again and redraw with whatever it changed."
+  (load-user-config)
+  (when *config-error*
+    (report-message emulator "~a" *config-error*))
+  (refresh-emulator emulator))
+
+(defun open-external (thing)
+  "Open THING (a URL or a file name) with the desktop's default handler."
+  (ignore-errors
+    (uiop:launch-program (list (if (uiop:os-macosx-p) "open" "xdg-open") thing))))
+
+(defun edit-config (emulator)
+  "Open the init file in the default text editor, creating it first."
+  (declare (ignore emulator))
+  (let ((pathname (or (user-config-pathname) (default-config-pathname))))
+    (unless (probe-file pathname)
+      (ensure-directories-exist pathname)
+      (with-open-file (out pathname :direction :output)
+        (write-string *config-template* out)))
+    (if (uiop:os-macosx-p)
+        (ignore-errors
+          (uiop:launch-program (list "open" "-t" (uiop:native-namestring pathname))))
+        (open-external (uiop:native-namestring pathname)))))
+
+;;; How the shell starts
+
+(defvar *login-shell* :bundle
+  "Whether the shell is started as a login shell: true, false, or :BUNDLE
+for only when slt runs as a macOS application (from the Finder or the
+Dock, where no login shell has set up the environment).")
+
+(defvar *working-directory* :bundle
+  "The shell's working directory: a pathname or string; NIL for slt's own;
+or :BUNDLE for the home directory when slt runs as a macOS application
+and its own otherwise.")
+
+(defvar *environment-variables* '()
+  "An alist of (NAME . VALUE) added to the shell's environment after
+slt's own (COLORTERM, TERM_PROGRAM, LANG when unset); a NIL value removes
+NAME.")
+
+(defun running-in-app-bundle-p ()
+  (and (uiop:os-macosx-p)
+       (search ".app/Contents/MacOS/"
+               (let ((runtime sb-ext:*runtime-pathname*))
+                 (if runtime (namestring runtime) "")))
+       t))
+
+(defun resolve-bundle-option (value)
+  (if (eq value :bundle) (running-in-app-bundle-p) value))
+
+(defun shell-working-directory (directory)
+  (let ((directory (if (eq directory :bundle)
+                       (and (running-in-app-bundle-p) (user-homedir-pathname))
+                       directory)))
+    (and directory (uiop:native-namestring directory))))
 
 (defun send-to-process (emulator string)
   (let ((fd (terminal-emulator-fd emulator)))
@@ -222,6 +362,9 @@ the engine lock is held only for the copy."
                               :pixel-width (* columns cell-width)
                               :pixel-height (* rows cell-height)))))))
 
+(defvar *resize-delay-ms* 16
+  "How long a resize waits for the window size to settle.")
+
 (defun schedule-resize (emulator)
   "Apply the window's size shortly.  Requests arriving while one is pending
 join it rather than postponing it, so a steady stream of resize events
@@ -231,7 +374,7 @@ current when it runs."
     (setf (terminal-emulator-resize-after-id emulator)
           (backend-schedule (terminal-emulator-backend emulator)
                             (terminal-emulator-view emulator)
-                            120
+                            *resize-delay-ms*
                             (lambda ()
                               (unless (terminal-emulator-closed-p emulator)
                                 (apply-resize emulator)))))))
@@ -368,6 +511,10 @@ double-click for words and triple-click for lines."
                    (/= column (terminal-emulator-pointer-column emulator)))))
     (setf (terminal-emulator-pointer-row emulator) row
           (terminal-emulator-pointer-column emulator) column)
+    (when (and (eq action :press) (eql button 1) (eql clicks 1)
+               (member :super modifiers)
+               (open-url-at emulator row column))
+      (return-from handle-mouse nil))
     (unless (and (not (member :shift modifiers))
                  (report-mouse emulator (if (eq action :drag) :motion action)
                                (if (eq action :motion) nil button)
@@ -436,6 +583,174 @@ and Control+Shift+C / Control+Shift+V.  On *KEY-HOOK*; remove it to rebind."
         (#\v (paste-clipboard emulator) t)))))
 
 (add-hook '*key-hook* 'clipboard-key-handler)
+
+;;; Commands: the things a menu or a shortcut does, as functions of the
+;;; emulator.
+
+(defun select-all (emulator)
+  (let ((grid (terminal-emulator-grid emulator)))
+    (grid-set-selection grid 0 (1- (* (grid-rows grid) (grid-columns grid))))
+    (render-selection emulator)))
+
+(defun clear-scrollback (emulator)
+  "Erase the screen and the history, then ask the shell to redraw its
+prompt (Control+L), as Command+K does in Terminal.  Does nothing while a
+full-screen program runs."
+  (unless (with-engine (engine emulator) (engine-mode engine :alternate-screen))
+    (let ((esc (code-char 27)))
+      (scroll-viewport emulator :bottom)
+      (clear-selection emulator)
+      (with-engine (engine emulator)
+        (engine-feed-string engine (format nil "~c[H~c[2J~c[3J" esc esc esc)))
+      (write-input emulator (string (code-char 12)))
+      (request-render emulator))))
+
+(defvar *minimum-font-size* 6)
+(defvar *maximum-font-size* 96)
+
+(defun set-font-size (emulator size)
+  "Draw with font SIZE, keeping the window's size and refitting the grid."
+  (let ((size (max *minimum-font-size* (min *maximum-font-size* size))))
+    (when (and (/= size (terminal-emulator-font-size emulator))
+               (backend-set-font-size (terminal-emulator-backend emulator)
+                                      (terminal-emulator-view emulator)
+                                      size))
+      (setf (terminal-emulator-font-size emulator) size)
+      (apply-resize emulator)
+      (refresh-emulator emulator))
+    size))
+
+(defun increase-font-size (emulator)
+  (set-font-size emulator (1+ (terminal-emulator-font-size emulator))))
+
+(defun decrease-font-size (emulator)
+  (set-font-size emulator (1- (terminal-emulator-font-size emulator))))
+
+(defun reset-font-size (emulator)
+  (set-font-size emulator (terminal-emulator-initial-font-size emulator)))
+
+(defvar *commands*
+  '((:copy . copy-selection)
+    (:paste . paste-clipboard)
+    (:select-all . select-all)
+    (:clear-scrollback . clear-scrollback)
+    (:bigger . increase-font-size)
+    (:smaller . decrease-font-size)
+    (:actual-size . reset-font-size)
+    (:reload-config . reload-config)
+    (:edit-config . edit-config))
+  "Commands offered by backends with application menus (cocoa), as an
+alist from a keyword to a function of the emulator.  Change an entry to
+change what that menu item does.  Read when the window is created.")
+
+(defun emulator-commands (emulator)
+  "*COMMANDS* in the form BACKEND-BIND-COMMANDS takes."
+  (loop for (name . function) in *commands*
+        collect (cons name (let ((function function))
+                             (lambda () (funcall function emulator))))))
+
+(defun command-key-handler (emulator key modifiers)
+  "Shortcuts for the commands: Super with = or +, -, 0, A and K (Command on
+macOS), and Super+Shift+R or Control+Shift+R to reload the init file.  On
+*KEY-HOOK*; remove it to rebind.  (The cocoa backend's menus take these
+keys first.)"
+  (when (characterp key)
+    (let ((super (member :super modifiers)))
+      (cond
+        ((and super (member key '(#\= #\+))) (increase-font-size emulator) t)
+        ((and super (eql key #\-)) (decrease-font-size emulator) t)
+        ((and super (eql key #\0)) (reset-font-size emulator) t)
+        ((and super (eql key #\a)) (select-all emulator) t)
+        ((and super (eql key #\k)) (clear-scrollback emulator) t)
+        ((and (or super (member :control modifiers)) (eql key #\R))
+         (reload-config emulator) t)))))
+
+(add-hook '*key-hook* 'command-key-handler)
+
+;;; Links
+
+(defvar *url-schemes* '("http" "https" "ftp" "file" "mailto" "ssh" "git")
+  "Schemes of the links Command-click (Super-click elsewhere) opens.")
+
+(defun url-cell-p (grid index)
+  (let ((code (aref (grid-codes grid) index)))
+    (and (> code 32)
+         (not (logtest (aref (grid-attrs grid) index) +attr-wide-spacer+))
+         (not (find (code-char code) "<>\"'`{}|\\^")))))
+
+(defun url-at (grid row column)
+  "The URL shown at ROW, COLUMN of GRID, or NIL."
+  (when (and (< -1 row (grid-rows grid)) (< -1 column (grid-columns grid)))
+    (let* ((columns (grid-columns grid))
+           (row-start (* row columns))
+           (index (+ row-start column)))
+      (when (url-cell-p grid index)
+        (let ((first index)
+              (last index))
+          (loop while (and (> first row-start) (url-cell-p grid (1- first)))
+                do (decf first))
+          (loop while (and (< last (+ row-start columns -1)) (url-cell-p grid (1+ last)))
+                do (incf last))
+          (let* ((text (grid-range-text grid first last))
+                 (start (let ((positions
+                                (loop for scheme in *url-schemes*
+                                      for position = (search (concatenate 'string scheme ":")
+                                                             text :test #'char-equal)
+                                      when position collect position)))
+                          (and positions (reduce #'min positions)))))
+            (when start
+              ;; Punctuation after a link is usually the sentence's.
+              (let ((url (string-right-trim ".,;:!?)]'" (subseq text start))))
+                (when (and (< (position #\: url) (1- (length url)))
+                           ;; The link must cover the clicked cell.
+                           (<= (+ first start) index (+ first start (length url) -1)))
+                  url)))))))))
+
+(defun open-url-at (emulator row column)
+  "Open the link at ROW, COLUMN; return true if there was one."
+  (let ((url (url-at (terminal-emulator-grid emulator) row column)))
+    (when url
+      (open-external url)
+      t)))
+
+;;; Focus and the bell
+
+(defun handle-focus (emulator focused)
+  "Tell the child about focus changes when it asked (mode 1004)."
+  (when (with-engine (engine emulator) (engine-mode engine :focus-events))
+    (write-input emulator (format nil "~c[~c" (code-char 27) (if focused #\I #\O)))))
+
+(defvar *audible-bell* t
+  "When true, the bell beeps; otherwise backends that can only flash or
+ask for attention.")
+
+(defun ring-bell (emulator)
+  "The default bell: beep, or bounce the Dock icon when slt is in the
+background (cocoa).  On *BELL-HOOK*."
+  (backend-bell (terminal-emulator-backend emulator)
+                (terminal-emulator-view emulator)
+                *audible-bell*))
+
+(add-hook '*bell-hook* 'ring-bell)
+
+;;; Files dropped on the window are pasted as shell words.
+
+(defun shell-quote (string)
+  (if (and (plusp (length string))
+           (every (lambda (char)
+                    (or (alphanumericp char) (find char "-_./+@%:,=")))
+                  string))
+      string
+      (with-output-to-string (out)
+        (write-char #\' out)
+        (loop for char across string
+              do (if (char= char #\')
+                     (write-string "'\\''" out)
+                     (write-char char out)))
+        (write-char #\' out))))
+
+(defun drop-files (emulator pathnames)
+  (paste-text emulator (format nil "~{~a~^ ~} " (mapcar #'shell-quote pathnames))))
 
 ;;; The menu
 
@@ -569,11 +884,13 @@ and notice a child that exited without closing the PTY."
                           cell-height
                           font-family
                           (font-size 15)
-                          (shell (or (uiop:getenv "SHELL") "/bin/sh"))
+                          (shell (user-login-shell))
                           (term-name (or (uiop:getenv "SLT_TERM")
                                          "xterm-256color"))
                           (poll-interval 16)
                           (title "slt")
+                          (login-shell *login-shell*)
+                          (directory *working-directory*)
                           (load-config *load-user-config*))
   (when load-config
     (load-user-config))
@@ -605,6 +922,10 @@ and notice a child that exited without closing the PTY."
                                          :term-name term-name
                                          :rows rows
                                          :columns columns
+                                         :login (resolve-bundle-option login-shell)
+                                         :directory (shell-working-directory directory)
+                                         :variables (append (default-environment-variables)
+                                                            *environment-variables*)
                                          :pixel-width (* columns
                                                          (backend-view-cell-width
                                                           backend-instance view))
@@ -627,8 +948,12 @@ and notice a child that exited without closing the PTY."
                          :process process
                          :fd (and process (set-fd-nonblocking (process-fd process)))
                          :poll-interval poll-interval
-                         :title title)
+                         :title title
+                         :font-size (abs resolved-font-size)
+                         :initial-font-size (abs resolved-font-size))
                (car emulator-cell) emulator)
+         (when (and load-config *config-error*)
+           (report-message emulator "~a" *config-error*))
          (render-emulator emulator :force t)
          (backend-bind-resize backend-instance
                               view
@@ -655,6 +980,11 @@ and notice a child that exited without closing the PTY."
                              view
                              (lambda (text)
                                (paste-text emulator text)))
+         (backend-bind-focus backend-instance view
+                             (lambda (focused) (handle-focus emulator focused)))
+         (backend-bind-drop backend-instance view
+                            (lambda (pathnames) (drop-files emulator pathnames)))
+         (backend-bind-commands backend-instance view (emulator-commands emulator))
          (backend-bind-menu backend-instance view (emulator-menu-items emulator))
          (backend-on-close backend-instance
                            view

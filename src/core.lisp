@@ -1,5 +1,15 @@
 (in-package #:slt)
 
+(defparameter *version*
+  (or (ignore-errors
+        (asdf:component-version (asdf:find-system :slt/core nil)))
+      "0.1.0")
+  "slt's version, read when it is loaded rather than when the dumped
+executable runs, where ASDF has no source registry.")
+
+(defun system-version ()
+  *version*)
+
 ;;; X11-style modifier bits, which backends normalize their events to.
 (defconstant +shift-mask+ #x01)
 (defconstant +control-mask+ #x04)
