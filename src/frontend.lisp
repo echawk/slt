@@ -274,13 +274,151 @@ it happens.  Callable from any thread."
   (values (max 1 (floor width (max 1 cell-width)))
           (max 1 (floor height (max 1 cell-height)))))
 
+(defun grid-row-fingerprint (grid row)
+  (let ((hash 2166136261))
+    (loop for column below (grid-columns grid)
+          for index = (grid-index grid row column)
+          do (setf hash
+                   (logand #xffffffff
+                           (* 16777619
+                              (logxor hash
+                                      (aref (grid-codes grid) index)
+                                      (aref (grid-fg grid) index)
+                                      (aref (grid-bg grid) index)
+                                      (aref (grid-attrs grid) index))))))
+    hash))
+
+(defun grid-fingerprints (grid)
+  (let ((result (make-array (grid-rows grid))))
+    (dotimes (row (grid-rows grid) result)
+      (setf (aref result row) (grid-row-fingerprint grid row)))))
+
+(defstruct image-grid-snapshot
+  rows columns fingerprints codes fg bg attrs)
+
+(defun snapshot-image-grid (grid)
+  (make-image-grid-snapshot
+   :rows (grid-rows grid) :columns (grid-columns grid)
+   :fingerprints (grid-fingerprints grid)
+   :codes (copy-seq (grid-codes grid))
+   :fg (copy-seq (grid-fg grid))
+   :bg (copy-seq (grid-bg grid))
+   :attrs (copy-seq (grid-attrs grid))))
+
+(defun snapshot-cell-changed-p (snapshot old-row grid new-row column)
+  (if (or (minusp old-row) (>= old-row (image-grid-snapshot-rows snapshot)))
+      t
+      (let ((old-index (+ column (* old-row (image-grid-snapshot-columns snapshot))))
+            (new-index (grid-index grid new-row column)))
+        (or (/= (aref (image-grid-snapshot-codes snapshot) old-index)
+                (aref (grid-codes grid) new-index))
+            (/= (aref (image-grid-snapshot-fg snapshot) old-index)
+                (aref (grid-fg grid) new-index))
+            (/= (aref (image-grid-snapshot-bg snapshot) old-index)
+                (aref (grid-bg grid) new-index))
+            (/= (aref (image-grid-snapshot-attrs snapshot) old-index)
+                (aref (grid-attrs grid) new-index))))))
+
+(defun erase-written-image-cells (store snapshot grid scroll cell-width cell-height)
+  "Occlude SIXEL cells whose underlying terminal cells were rewritten."
+  (let ((changed nil))
+    (dolist (placement (terminal-image-store-placements store))
+      (when (and (terminal-image-placement-erase-on-write-p placement)
+                 (eq (terminal-image-placement-screen placement)
+                     (terminal-image-store-active-screen store)))
+        (let ((image (gethash (terminal-image-placement-image-id placement)
+                              (terminal-image-store-images store))))
+          (when image
+            (multiple-value-bind (columns rows)
+                (placement-cell-size placement image cell-width cell-height)
+              (dotimes (dr rows)
+                (dotimes (dc columns)
+                  (let ((row (+ (terminal-image-placement-row placement) dr))
+                        (column (+ (terminal-image-placement-column placement) dc)))
+                    (when (and (<= 0 row) (< row (grid-rows grid))
+                               (<= 0 column) (< column (grid-columns grid))
+                               (snapshot-cell-changed-p snapshot (+ row scroll)
+                                                        grid row column))
+                      (unless (gethash (+ dc (* dr columns))
+                                       (terminal-image-placement-hidden-cells placement))
+                        (setf (gethash (+ dc (* dr columns))
+                                       (terminal-image-placement-hidden-cells placement)) t
+                              changed t))))))))))
+    (when changed
+      (setf (terminal-image-store-dirty-p store) t))
+    changed)))
+
+(defun detect-grid-scroll (before grid)
+  "Infer a whole-screen scroll from row fingerprints; positive means up."
+  (let* ((rows (grid-rows grid))
+         (after (grid-fingerprints grid))
+         (best-delta 0)
+         ;; A character written into an otherwise repetitive screen must not
+         ;; be mistaken for a scroll merely because adjacent blank rows also
+         ;; match.  Only accept an offset alignment when it beats the natural
+         ;; zero-offset alignment.
+         (best-score (loop for row below rows
+                           count (= (aref before row) (aref after row)))))
+    (when (equalp before after)
+      (return-from detect-grid-scroll 0))
+    (labels ((consider (delta)
+               (let* ((amount (abs delta))
+                      (overlap (- rows amount))
+                      (matches
+                        (loop for row below overlap
+                              count (= (if (plusp delta)
+                                           (aref before (+ row amount))
+                                           (aref before row))
+                                       (if (plusp delta)
+                                           (aref after row)
+                                           (aref after (+ row amount)))))))
+                 (when (and (>= matches 2)
+                            (>= matches (ceiling (* overlap 3) 4))
+                            (> matches best-score))
+                   (setf best-score matches
+                         best-delta delta)))))
+      (loop for amount from 1 below rows
+            do (consider amount)
+               (consider (- amount))))
+    best-delta))
+
 (defun render-emulator (emulator &key force)
   "Copy the engine's changes into the grid and draw them.  UI thread only;
 the engine lock is held only for the copy."
   (let ((grid (terminal-emulator-grid emulator))
         (tracking nil))
     (with-engine (engine emulator)
-      (engine-update-grid engine grid :force force)
+      (let* ((store (terminal-emulator-image-store emulator))
+             (old-screen (terminal-image-store-active-screen store))
+             (before (and (terminal-image-store-placements store)
+                          (= (grid-rows grid) (engine-rows engine))
+                          (= (grid-columns grid) (engine-columns engine))
+                          (snapshot-image-grid grid))))
+        (engine-update-grid engine grid :force force)
+        (let* ((screen (if (engine-mode engine :alternate-screen)
+                           :alternate :primary))
+               (same-screen-p (eq screen old-screen))
+               (detected (if (and before same-screen-p)
+                             (detect-grid-scroll
+                              (image-grid-snapshot-fingerprints before) grid)
+                             0))
+               (pending (terminal-image-store-pending-scroll store))
+               (scroll (if (and (plusp pending) (< detected pending))
+                           pending
+                           detected)))
+          (unless same-screen-p
+            (setf (terminal-image-store-active-screen store) screen
+                  (terminal-image-store-dirty-p store) t))
+          (unless (zerop scroll)
+            (scroll-image-placements store scroll))
+          (when (and before same-screen-p)
+            (erase-written-image-cells
+             store before grid scroll
+             (backend-view-cell-width (terminal-emulator-backend emulator)
+                                      (terminal-emulator-view emulator))
+             (backend-view-cell-height (terminal-emulator-backend emulator)
+                                       (terminal-emulator-view emulator))))
+          (setf (terminal-image-store-pending-scroll store) 0)))
       (setf tracking (and (engine-mode engine :mouse-tracking) t)))
     (unless (eq tracking (terminal-emulator-mouse-tracking emulator))
       (setf (terminal-emulator-mouse-tracking emulator) tracking)
@@ -798,7 +936,11 @@ must hold EMULATOR's engine lock."
      (lambda (ordinary ordinary-start ordinary-end)
        (engine-feed engine ordinary :start ordinary-start :end ordinary-end))
      (lambda (sixel)
-       (handle-sixel-command store sixel engine))
+       (handle-sixel-command
+        store sixel engine
+        :cell-height (backend-view-cell-height
+                      (terminal-emulator-backend emulator)
+                      (terminal-emulator-view emulator))))
      (lambda (kitty)
        (let ((response (handle-kitty-command store kitty engine)))
          (when response

@@ -28,7 +28,10 @@
   (x-offset 0 :type integer)
   (y-offset 0 :type integer)
   (z-index 0 :type integer)
-  (virtual-p nil))
+  (virtual-p nil)
+  (screen :primary :type (member :primary :alternate))
+  (erase-on-write-p nil)
+  (hidden-cells (make-hash-table :test #'eql) :type hash-table))
 
 (defstruct (terminal-image-store (:constructor make-terminal-image-store))
   (images (make-hash-table) :type hash-table)
@@ -39,6 +42,8 @@
   (bytes 0 :type integer)
   (limit *terminal-image-storage-limit* :type integer)
   (dirty-p nil)
+  (pending-scroll 0 :type integer)
+  (active-screen :primary :type (member :primary :alternate))
   (kitty-decoder (kitty-graphics:make-graphics-decoder)))
 
 (defun image-store-id (store requested-id number)
@@ -99,7 +104,7 @@
     (setf (terminal-image-store-dirty-p store) t)
     image))
 
-(defun place-image (store id row column command)
+(defun place-image (store id row column command &key (screen :primary))
   (let* ((image (or (gethash id (terminal-image-store-images store))
                     (error "Image ~d does not exist" id)))
          (placement-id (kitty-graphics:graphics-command-integer command #\p 0))
@@ -118,7 +123,8 @@
                      :x-offset (kitty-graphics:graphics-command-integer command #\X 0)
                      :y-offset (kitty-graphics:graphics-command-integer command #\Y 0)
                      :z-index (kitty-graphics:graphics-command-integer command #\z 0)
-                     :virtual-p (= 1 (kitty-graphics:graphics-command-integer command #\U 0)))))
+                     :virtual-p (= 1 (kitty-graphics:graphics-command-integer command #\U 0))
+                     :screen screen)))
     (unless (and (< -1 (terminal-image-placement-source-x placement)
                     (terminal-image-width image))
                  (< -1 (terminal-image-placement-source-y placement)
@@ -157,23 +163,74 @@
             (or (terminal-image-placement-rows placement)
                 (ceiling (max 1 source-height) cell-height)))))
 
+(defun placement-render-records (placement image cell-width cell-height)
+  (multiple-value-bind (columns rows)
+      (placement-cell-size placement image cell-width cell-height)
+    (let ((hidden (terminal-image-placement-hidden-cells placement)))
+      (if (zerop (hash-table-count hidden))
+          (list (list placement image
+                      (+ (* (terminal-image-placement-column placement) cell-width)
+                         (terminal-image-placement-x-offset placement))
+                      (+ (* (terminal-image-placement-row placement) cell-height)
+                         (terminal-image-placement-y-offset placement))
+                      (* columns cell-width) (* rows cell-height)))
+          (let* ((source-x (terminal-image-placement-source-x placement))
+                 (source-y (terminal-image-placement-source-y placement))
+                 (source-width (or (terminal-image-placement-source-width placement)
+                                   (- (terminal-image-width image) source-x)))
+                 (source-height (or (terminal-image-placement-source-height placement)
+                                    (- (terminal-image-height image) source-y))))
+            (loop for dr below rows append
+              (loop for dc below columns
+                    for key = (+ dc (* dr columns))
+                    unless (gethash key hidden)
+                      append
+                      (let* ((left (floor (* dc source-width) columns))
+                             (right (floor (* (1+ dc) source-width) columns))
+                             (top (floor (* dr source-height) rows))
+                             (bottom (floor (* (1+ dr) source-height) rows)))
+                        (when (and (< left right) (< top bottom))
+                          (let ((fragment (copy-terminal-image-placement placement)))
+                            (setf (terminal-image-placement-row fragment)
+                                  (+ (terminal-image-placement-row placement) dr)
+                                  (terminal-image-placement-column fragment)
+                                  (+ (terminal-image-placement-column placement) dc)
+                                  (terminal-image-placement-columns fragment) 1
+                                  (terminal-image-placement-rows fragment) 1
+                                  (terminal-image-placement-source-x fragment) (+ source-x left)
+                                  (terminal-image-placement-source-y fragment) (+ source-y top)
+                                  (terminal-image-placement-source-width fragment) (- right left)
+                                  (terminal-image-placement-source-height fragment) (- bottom top))
+                            (list (list fragment image
+                                        (+ (* (terminal-image-placement-column fragment) cell-width)
+                                           (terminal-image-placement-x-offset fragment))
+                                        (+ (* (terminal-image-placement-row fragment) cell-height)
+                                           (terminal-image-placement-y-offset fragment))
+                                        cell-width cell-height))))))))))))
+
 (defun terminal-image-render-list (store cell-width cell-height)
   "Return visible (PLACEMENT IMAGE X Y WIDTH HEIGHT) records in z order."
   (sort
    (loop for placement in (terminal-image-store-placements store)
          for image = (gethash (terminal-image-placement-image-id placement)
                               (terminal-image-store-images store))
-         when (and image (not (terminal-image-placement-virtual-p placement)))
-           collect (multiple-value-bind (columns rows)
-                       (placement-cell-size placement image cell-width cell-height)
-                     (list placement image
-                           (+ (* (terminal-image-placement-column placement) cell-width)
-                              (terminal-image-placement-x-offset placement))
-                           (+ (* (terminal-image-placement-row placement) cell-height)
-                              (terminal-image-placement-y-offset placement))
-                           (* columns cell-width) (* rows cell-height))))
+         when (and image
+                   (eq (terminal-image-placement-screen placement)
+                       (terminal-image-store-active-screen store))
+                   (not (terminal-image-placement-virtual-p placement)))
+           append (placement-render-records placement image cell-width cell-height))
    #'< :key (lambda (record)
               (terminal-image-placement-z-index (first record)))))
+
+(defun scroll-image-placements (store rows)
+  "Move screen-anchored placements when terminal contents scroll up ROWS."
+  (unless (zerop rows)
+    (dolist (placement (terminal-image-store-placements store))
+      (when (eq (terminal-image-placement-screen placement)
+                (terminal-image-store-active-screen store))
+        (decf (terminal-image-placement-row placement) rows)))
+    (setf (terminal-image-store-dirty-p store) t))
+  store)
 
 (defun kitty-command-image-id (store command)
   (let ((id (kitty-graphics:graphics-command-integer command #\i 0))
@@ -325,7 +382,9 @@
                       (terminal-image-store-kitty-decoder store) payload)))
         (when command
           (multiple-value-bind (row column) (engine-cursor-position engine)
-            (case (kitty-graphics:graphics-command-action command)
+            (let ((screen (if (engine-mode engine :alternate-screen)
+                              :alternate :primary)))
+              (case (kitty-graphics:graphics-command-action command)
               (#\d
                (delete-kitty-images store command row column)
                nil)
@@ -334,7 +393,7 @@
                  (if image
                      (progn
                        (when (char= #\T (kitty-graphics:graphics-command-action command))
-                         (place-image store id row column command))
+                         (place-image store id row column command :screen screen))
                        (kitty-response command "OK" nil id))
                      (kitty-response command "ENOENT" "image not found" id))))
               (#\q
@@ -351,25 +410,38 @@
                (multiple-value-bind (id number) (kitty-command-image-id store command)
                  (declare (ignore number))
                  (if (gethash id (terminal-image-store-images store))
-                     (progn (place-image store id row column command)
+                     (progn (place-image store id row column command :screen screen)
                             (kitty-response command "OK" nil id))
                      (kitty-response command "ENOENT" "image not found" id))))
-              (t (kitty-response command "ENOTSUP" "action not implemented"))))))
+              (t (kitty-response command "ENOTSUP" "action not implemented")))))))
     (error (condition)
       (kitty-graphics:encode-graphics-response '() "EINVAL" (princ-to-string condition)))))
 
-(defun handle-sixel-command (store payload engine)
+(defun handle-sixel-command (store payload engine &key (cell-height 1))
   (handler-case
       (let ((image (cl-libsixel:decode-sixel payload)))
         (multiple-value-bind (row column) (engine-cursor-position engine)
-          (let* ((id (image-store-id store 0 0))
+          (let* ((image-rows (ceiling (cl-libsixel:sixel-image-height image)
+                                      (max 1 cell-height)))
+                 (scrolls (max 0 (- (+ row image-rows)
+                                    (1- (engine-rows engine)))))
+                 (id (image-store-id store 0 0))
                  (stored (store-image store id 0
                                       (cl-libsixel:sixel-image-width image)
                                       (cl-libsixel:sixel-image-height image)
                                       (cl-libsixel:sixel-image-rgba image))))
             (declare (ignore stored))
-            (push (make-terminal-image-placement :image-id id :row row :column column)
+            (push (make-terminal-image-placement
+                   :image-id id :row row :column column
+                   :screen (if (engine-mode engine :alternate-screen)
+                               :alternate :primary)
+                   :erase-on-write-p t)
                   (terminal-image-store-placements store))
+            (engine-feed-string engine
+                                (concatenate 'string (string #\Return)
+                                             (make-string image-rows
+                                                          :initial-element #\Linefeed)))
+            (incf (terminal-image-store-pending-scroll store) scrolls)
             (setf (terminal-image-store-dirty-p store) t))))
     (error (condition)
       (warn "Could not decode SIXEL image: ~a" condition))))

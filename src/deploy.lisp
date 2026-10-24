@@ -39,7 +39,19 @@ defining it (see scripts/build)."
 (defparameter *system-library-directories* cffi:*foreign-library-directories*)
 
 (deploy:define-hook (:boot system-library-directories (- most-positive-fixnum 9)) ()
-  (setf cffi:*foreign-library-directories* *system-library-directories*))
+  ;; WARMly-BOOT has already installed the executable, resource and library
+  ;; directories.  Keep those first: replacing the list makes every bundled
+  ;; library invisible during the foreign-library boot hook.
+  (setf cffi:*foreign-library-directories*
+        (remove-duplicates
+         (append cffi:*foreign-library-directories* *system-library-directories*)
+         :test #'equal)))
+
+;; zlib is an operating-system library (and a dependency of libpng), not an
+;; application payload.  On macOS CFFI's loose library search can otherwise
+;; mistake Homebrew's libzip for libz and Deploy copies it under the wrong
+;; identity.
+(define-optional-library "KITTY-GRAPHICS" "LIBZ" :dont-deploy t)
 
 (defun gtk-initializers ()
   (and (find-package "GLIB") (find-symbol "RUN-INITIALIZERS" "GLIB")))
