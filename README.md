@@ -105,6 +105,11 @@ and compares the resulting screens. `slt/bench` measures throughput.
 
 Choose one with `--backend NAME` or `SLT_BACKEND=NAME`.
 
+With the native macOS (`cocoa`) backend, Command+N (or **Shell ▸ New
+Window**) opens another independent terminal window. Each window has its own
+shell and remains open until it or its child process exits; slt quits after
+the last window closes.
+
 The `gl` backend uses Shirakumo's [glfw](https://codeberg.org/shirakumo/glfw)
 bindings, which ship GLFW 3.4 for Linux and macOS (the BSDs use the system's
 `libglfw`), and cl-opengl. GLFW chooses X11 or Wayland when it starts.

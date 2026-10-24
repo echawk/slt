@@ -164,7 +164,7 @@ file names when files are dropped on the window.")
     nil))
 
 (defgeneric backend-bind-commands (backend view commands)
-  (:documentation "Offer COMMANDS, an alist from a command keyword (:COPY,
+  (:documentation "Offer COMMANDS, an alist from a command keyword (:NEW-WINDOW, :COPY,
 :PASTE, :SELECT-ALL, :CLEAR-SCROLLBACK, :BIGGER, :SMALLER, :ACTUAL-SIZE,
 :RELOAD-CONFIG, :EDIT-CONFIG) to a function of no arguments, in the
 backend's application menus.  Backends without menus ignore it.")

@@ -240,6 +240,14 @@
   (is-equal '(:shift :control :meta) (decode-modifier-state #x0D))
   (is-equal '(:super) (decode-modifier-state #x40)))
 
+(deftest emulator-commands-includes-an-independent-new-window-command ()
+  (let* ((calls 0)
+         (commands (slt::emulator-commands
+                    nil (lambda () (incf calls)))))
+    (is (functionp (cdr (assoc :new-window commands))))
+    (funcall (cdr (assoc :new-window commands)))
+    (is-equal 1 calls)))
+
 (deftest tcl-bool-converts-lisp-booleans-to-tcl-integers ()
   (is-equal 1 (tcl-bool t))
   (is-equal 0 (tcl-bool nil)))

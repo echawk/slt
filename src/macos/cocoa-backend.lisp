@@ -6,7 +6,7 @@
 ;;;; frontend sees are device pixels.
 
 (defclass cocoa-backend (terminal-backend)
-  ((view :initform nil :accessor cocoa-backend-view)
+  ((views :initform '() :accessor cocoa-backend-views)
    (timer-seq :initform 0 :accessor cocoa-backend-timer-seq)
    (quit-p :initform nil :accessor cocoa-backend-quit-p)
    ;; Work posted from other threads (see BACKEND-WAKEUP), and the run
@@ -44,6 +44,8 @@
   ;; entries, indexed by tag.
   menu-target
   (menu-items (make-array 0 :adjustable t :fill-pointer t) :type vector)
+  commands
+  lisp-menu-items
   ;; The right button's menu, shown when the child does not track the mouse.
   context-menu
   (mouse-tracking nil)
@@ -201,11 +203,12 @@ middle button, which Cocoa numbers 2 among its other buttons."
 (cffi:defcallback slt-window-will-close :void ((self :pointer) (command :pointer) (notification :pointer))
   (declare (ignore command notification))
   (let ((view (cocoa-view-for self)))
-    (when (and view (not (cocoa-view-closed-p view)))
-      (setf (cocoa-view-closed-p view) t)
-      (when (cocoa-view-close-callback view)
-        (funcall (cocoa-view-close-callback view)))
-      (setf (cocoa-backend-quit-p (cocoa-view-backend view)) t))))
+    (when view
+      (unless (cocoa-view-closed-p view)
+        (setf (cocoa-view-closed-p view) t)
+        (when (cocoa-view-close-callback view)
+          (funcall (cocoa-view-close-callback view))))
+      (retire-cocoa-view view))))
 
 (cffi:defcallback slt-window-did-resize :void ((self :pointer) (command :pointer) (notification :pointer))
   (declare (ignore command notification))
@@ -222,6 +225,12 @@ middle button, which Cocoa numbers 2 among its other buttons."
 
 (defun call-cocoa-focus-callback (self focused)
   (let ((view (cocoa-view-for self)))
+    (when (and view focused (cocoa-view-commands view))
+      ;; The application menu is global, so point it at the key window.
+      (backend-bind-commands (cocoa-view-backend view) view
+                             (cocoa-view-commands view))
+      (backend-bind-menu (cocoa-view-backend view) view
+                         (cocoa-view-lisp-menu-items view)))
     (when (and view (cocoa-view-focus-callback view))
       (handler-case (funcall (cocoa-view-focus-callback view) focused)
         (error (condition)
@@ -456,9 +465,8 @@ middle button, which Cocoa numbers 2 among its other buttons."
              (loop until (cocoa-backend-quit-p backend)
                    do (cocoa-pump-events app 0.25)
                       (run-cocoa-wake-thunks backend)))
-        (let ((view (cocoa-backend-view backend)))
-          (when view
-            (destroy-cocoa-view view)))))))
+        (dolist (view (copy-list (cocoa-backend-views backend)))
+          (destroy-cocoa-view view))))))
 
 ;;; Views
 
@@ -510,6 +518,17 @@ middle button, which Cocoa numbers 2 among its other buttons."
   (ignore-errors (free-coretext-font (cocoa-view-font view)))
   (setf (cocoa-view-closed-p view) t))
 
+(defun retire-cocoa-view (view)
+  "Remove VIEW from the application and release it after AppKit finishes
+delivering its close notification."
+  (let ((backend (cocoa-view-backend view)))
+    (when (member view (cocoa-backend-views backend))
+      (setf (cocoa-backend-views backend)
+            (delete view (cocoa-backend-views backend)))
+      (backend-wakeup backend view (lambda () (destroy-cocoa-view view)))
+      (when (null (cocoa-backend-views backend))
+        (setf (cocoa-backend-quit-p backend) t)))))
+
 (defmethod backend-available-font-families ((backend cocoa-backend))
   '())
 
@@ -553,7 +572,7 @@ middle button, which Cocoa numbers 2 among its other buttons."
     (setf (metal-renderer-padding renderer) padding)
     (setf (gethash (cffi:pointer-address ns-view) *cocoa-views*) view
           (gethash (cffi:pointer-address delegate) *cocoa-views*) view
-          (cocoa-backend-view backend) view)
+          (cocoa-backend-views backend) (cons view (cocoa-backend-views backend)))
     (msg (metal-renderer-layer renderer) "setContentsScale:" :double (cocoa-view-scale view) :void)
     (msg ns-view "setLayer:" :pointer (metal-renderer-layer renderer) :void)
     (msg ns-view "setWantsLayer:" :bool t :void)
@@ -682,6 +701,7 @@ returning one (see *MENU-ITEMS*)."
   "Replace the menu bar with the standard application, Shell, Edit, View
 and Window menus, whose slt items call COMMANDS, and set the right
 button's menu."
+  (setf (cocoa-view-commands view) commands)
   (flet ((command (name title &optional (key "") (modifiers +ns-command-key-mask+))
            (let ((function (cdr (assoc name commands))))
              (and function (make-slt-menu-item view title function key modifiers))))
@@ -712,7 +732,8 @@ button's menu."
                                     nil
                                     (standard "Quit slt" (selector "terminate:") "q")))
                 (make-ns-menu "Shell"
-                              (list (standard "Close Window" (selector "performClose:") "w")))
+                              (list (command :new-window "New Window" "n")
+                                    (standard "Close Window" (selector "performClose:") "w")))
                 (make-ns-menu "Edit"
                               (list (command :copy "Copy" "c")
                                     (command :paste "Paste" "v")
@@ -739,6 +760,7 @@ button's menu."
 
 (defmethod backend-bind-menu ((backend cocoa-backend) (view cocoa-view) items)
   "Add a Lisp menu holding ITEMS to the menu bar, before the Window menu."
+  (setf (cocoa-view-lisp-menu-items view) items)
   (when items
     (let ((bar (msg (msg "NSApplication" "sharedApplication") "mainMenu")))
       (add-menu-bar-menu bar
@@ -803,10 +825,13 @@ button's menu."
   (msg (cocoa-view-window view) "makeKeyAndOrderFront:" :pointer (cffi:null-pointer) :void))
 
 (defmethod backend-request-exit ((backend cocoa-backend) (view cocoa-view))
-  (setf (cocoa-backend-quit-p backend) t)
-  (post-wakeup-event)
   (unless (cocoa-view-closed-p view)
     (setf (cocoa-view-closed-p view) t)
-    (msg (cocoa-view-window view) "close" :void)))
+    (msg (cocoa-view-window view) "close" :void))
+  ;; Closing an already-closing window reaches here from its close callback.
+  ;; The delegate retires it once that callback returns.
+  (when (null (cocoa-backend-views backend))
+    (setf (cocoa-backend-quit-p backend) t)
+    (post-wakeup-event)))
 
 (register-backend :cocoa (lambda () (make-instance 'cocoa-backend)))

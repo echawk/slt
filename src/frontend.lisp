@@ -643,11 +643,13 @@ full-screen program runs."
 alist from a keyword to a function of the emulator.  Change an entry to
 change what that menu item does.  Read when the window is created.")
 
-(defun emulator-commands (emulator)
+(defun emulator-commands (emulator &optional new-window-function)
   "*COMMANDS* in the form BACKEND-BIND-COMMANDS takes."
-  (loop for (name . function) in *commands*
-        collect (cons name (let ((function function))
-                             (lambda () (funcall function emulator))))))
+  (append (and new-window-function
+               (list (cons :new-window new-window-function)))
+          (loop for (name . function) in *commands*
+                collect (cons name (let ((function function))
+                                     (lambda () (funcall function emulator)))))))
 
 (defun command-key-handler (emulator key modifiers)
   "Shortcuts for the commands: Super with = or +, -, 0, A and K (Command on
@@ -894,105 +896,111 @@ and notice a child that exited without closing the PTY."
                           (load-config *load-user-config*))
   (when load-config
     (load-user-config))
-  (let* ((backend-instance (make-backend backend))
-         (emulator-cell (list nil)))
+  (let ((backend-instance (make-backend backend)))
     (backend-call-with-event-loop
      backend-instance
      (lambda ()
-       (let* ((resolved-font-family
-                (resolve-font-family
-                 font-family
-                 (backend-available-font-families backend-instance)))
-              (resolved-font-size (backend-resolve-font-size backend-instance
-                                                             font-size))
-              (engine-instance (make-emulator-engine engine rows columns emulator-cell))
-              (view (backend-create-view backend-instance
-                                         :rows rows
-                                         :columns columns
-                                         :font-family resolved-font-family
-                                         :font-size resolved-font-size
-                                         :cell-width cell-width
-                                         :cell-height cell-height
-                                         :title title))
-              (process nil)
-              (emulator nil))
-         (handler-case
-             (setf process
-                   (launch-shell-process shell
-                                         :term-name term-name
-                                         :rows rows
-                                         :columns columns
-                                         :login (resolve-bundle-option login-shell)
-                                         :directory (shell-working-directory directory)
-                                         :variables (append (default-environment-variables)
-                                                            *environment-variables*)
-                                         :pixel-width (* columns
-                                                         (backend-view-cell-width
-                                                          backend-instance view))
-                                         :pixel-height (* rows
-                                                          (backend-view-cell-height
-                                                           backend-instance view))))
-           (error (condition)
-             (engine-feed-string
-              engine-instance
-              (format nil "Unable to start shell PTY: ~a~c~c~c~cRunning in local echo mode.~c~c"
-                      condition #\Return #\Linefeed #\Return #\Linefeed
-                      #\Return #\Linefeed))))
-         (setf emulator (%make-terminal-emulator
-                         :engine engine-instance
-                         :grid (make-grid rows columns)
-                         :backend backend-instance
-                         :view view
-                         :rows rows
-                         :columns columns
-                         :process process
-                         :fd (and process (set-fd-nonblocking (process-fd process)))
-                         :poll-interval poll-interval
-                         :title title
-                         :font-size (abs resolved-font-size)
-                         :initial-font-size (abs resolved-font-size))
-               (car emulator-cell) emulator)
-         (when (and load-config *config-error*)
-           (report-message emulator "~a" *config-error*))
-         (render-emulator emulator :force t)
-         (backend-bind-resize backend-instance
-                              view
-                              ;; Backends pass IMMEDIATE while the user drags
-                              ;; a window edge, when timers may not run.
-                              (lambda (&optional immediate)
-                                (if immediate
-                                    (apply-resize emulator)
-                                    (schedule-resize emulator))))
-         (backend-bind-scroll backend-instance
-                              view
-                              (lambda (rows)
-                                (handle-scroll emulator rows)))
-         (backend-bind-keypress backend-instance
-                                view
-                                (lambda (char keysym state)
-                                  (handle-keypress emulator char keysym state)))
-         (backend-bind-mouse backend-instance
-                             view
-                             (lambda (action row column clicks &optional (button 1) (state 0))
-                               (handle-mouse emulator action row column clicks
-                                             button state)))
-         (backend-bind-paste backend-instance
-                             view
-                             (lambda (text)
-                               (paste-text emulator text)))
-         (backend-bind-focus backend-instance view
-                             (lambda (focused) (handle-focus emulator focused)))
-         (backend-bind-drop backend-instance view
-                            (lambda (pathnames) (drop-files emulator pathnames)))
-         (backend-bind-commands backend-instance view (emulator-commands emulator))
-         (backend-bind-menu backend-instance view (emulator-menu-items emulator))
-         (backend-on-close backend-instance
-                           view
-                           (lambda ()
-                             (destroy-emulator emulator)
-                             (backend-request-exit backend-instance view)))
-         (backend-focus backend-instance view)
-         (run-hook '*after-init-hook* emulator)
-         (when (terminal-emulator-fd emulator)
-           (start-reader-thread emulator))
-         (schedule-poll emulator))))))
+       (labels ((create-terminal ()
+                  (let* ((emulator-cell (list nil))
+                         (resolved-font-family
+                           (resolve-font-family
+                            font-family
+                            (backend-available-font-families backend-instance)))
+                         (resolved-font-size
+                           (backend-resolve-font-size backend-instance font-size))
+                         (engine-instance
+                           (make-emulator-engine engine rows columns emulator-cell))
+                         (view (backend-create-view backend-instance
+                                                    :rows rows
+                                                    :columns columns
+                                                    :font-family resolved-font-family
+                                                    :font-size resolved-font-size
+                                                    :cell-width cell-width
+                                                    :cell-height cell-height
+                                                    :title title))
+                         (process nil)
+                         (emulator nil))
+                    (handler-case
+                        (setf process
+                              (launch-shell-process
+                               shell
+                               :term-name term-name
+                               :rows rows
+                               :columns columns
+                               :login (resolve-bundle-option login-shell)
+                               :directory (shell-working-directory directory)
+                               :variables (append (default-environment-variables)
+                                                  *environment-variables*)
+                               :pixel-width (* columns
+                                               (backend-view-cell-width
+                                                backend-instance view))
+                               :pixel-height (* rows
+                                                (backend-view-cell-height
+                                                 backend-instance view))))
+                      (error (condition)
+                        (engine-feed-string
+                         engine-instance
+                         (format nil "Unable to start shell PTY: ~a~c~c~c~cRunning in local echo mode.~c~c"
+                                 condition #\Return #\Linefeed #\Return #\Linefeed
+                                 #\Return #\Linefeed))))
+                    (setf emulator (%make-terminal-emulator
+                                    :engine engine-instance
+                                    :grid (make-grid rows columns)
+                                    :backend backend-instance
+                                    :view view
+                                    :rows rows
+                                    :columns columns
+                                    :process process
+                                    :fd (and process
+                                             (set-fd-nonblocking (process-fd process)))
+                                    :poll-interval poll-interval
+                                    :title title
+                                    :font-size (abs resolved-font-size)
+                                    :initial-font-size (abs resolved-font-size))
+                          (car emulator-cell) emulator)
+                    (when (and load-config *config-error*)
+                      (report-message emulator "~a" *config-error*))
+                    (render-emulator emulator :force t)
+                    (backend-bind-resize
+                     backend-instance view
+                     ;; Backends pass IMMEDIATE while the user drags a
+                     ;; window edge, when timers may not run.
+                     (lambda (&optional immediate)
+                       (if immediate
+                           (apply-resize emulator)
+                           (schedule-resize emulator))))
+                    (backend-bind-scroll backend-instance view
+                                         (lambda (rows)
+                                           (handle-scroll emulator rows)))
+                    (backend-bind-keypress backend-instance view
+                                           (lambda (char keysym state)
+                                             (handle-keypress emulator char keysym state)))
+                    (backend-bind-mouse
+                     backend-instance view
+                     (lambda (action row column clicks &optional (button 1) (state 0))
+                       (handle-mouse emulator action row column clicks button state)))
+                    (backend-bind-paste backend-instance view
+                                        (lambda (text) (paste-text emulator text)))
+                    (backend-bind-focus backend-instance view
+                                        (lambda (focused)
+                                          (handle-focus emulator focused)))
+                    (backend-bind-drop backend-instance view
+                                       (lambda (pathnames)
+                                         (drop-files emulator pathnames)))
+                    (backend-bind-commands
+                     backend-instance view
+                     (emulator-commands emulator #'create-terminal))
+                    (backend-bind-menu backend-instance view
+                                       (emulator-menu-items emulator))
+                    (backend-on-close
+                     backend-instance view
+                     (lambda ()
+                       (destroy-emulator emulator)
+                       (backend-request-exit backend-instance view)))
+                    (backend-focus backend-instance view)
+                    (run-hook '*after-init-hook* emulator)
+                    (when (terminal-emulator-fd emulator)
+                      (start-reader-thread emulator))
+                    (schedule-poll emulator)
+                    emulator)))
+         (create-terminal))))))
