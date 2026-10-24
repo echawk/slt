@@ -48,6 +48,9 @@
       (check (= (pixel rgb width (floor cw 2) (+ ch 2))
                 (palette-ansi-rgb *palette* 1))
              "SGR 41 fills its cells with palette red")
+      (check (= (pixel rgb width (+ cw (floor cw 2)) (+ (* 3 ch) (floor ch 2)))
+                #xff0000)
+             "RGBA terminal images are composited over the grid")
       (check (find-if (lambda (y)
                         (= (pixel rgb width (+ (* 21 cw) (floor cw 2)) y)
                            (palette-foreground *palette*)))
@@ -62,6 +65,14 @@
           (lambda (emulator)
             (let ((backend (terminal-emulator-backend emulator))
                   (view (terminal-emulator-view emulator)))
+              (let ((store (terminal-emulator-image-store emulator)))
+                (store-image store 1 0 1 1
+                             (make-array 4 :element-type '(unsigned-byte 8)
+                                           :initial-contents '(255 0 0 255)))
+                (push (make-terminal-image-placement :image-id 1 :row 3 :column 1
+                                                     :columns 1 :rows 1 :z-index 1)
+                      (terminal-image-store-placements store))
+                (setf (terminal-image-store-dirty-p store) t))
               (backend-schedule backend view 1500
                                 (lambda ()
                                   (render-emulator emulator :force t)

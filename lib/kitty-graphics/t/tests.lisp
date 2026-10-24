@@ -31,4 +31,24 @@
       (is (null (graphics-command-value command #\m)))))
   (let ((response (encode-graphics-response '((#\i . "42")) "OK")))
     (is (search "_Gi=42;OK" response)))
+  (let* ((compressed (octets 120 156 227 18 145 251 15 0 1 163 1 60))
+         (command (parse-graphics-command
+                   (encode-graphics-command
+                    '((#\f . "32") (#\s . "1") (#\v . "1") (#\o . "z"))
+                    compressed))))
+    (multiple-value-bind (rgba width height) (graphics-command-rgba command)
+      (is (= 1 width))
+      (is (= 1 height))
+      (is (equalp rgba (octets 10 20 30 255)))))
+  (let* ((png (octets
+               137 80 78 71 13 10 26 10 0 0 0 13 73 72 68 82 0 0 0 1
+               0 0 0 1 8 6 0 0 0 31 21 196 137 0 0 0 13 73 68 65 84
+               120 156 99 224 18 145 251 15 0 1 164 1 60 147 139 14 183
+               0 0 0 0 73 69 78 68 174 66 96 130))
+         (command (parse-graphics-command
+                   (encode-graphics-command '((#\f . "100")) png))))
+    (multiple-value-bind (rgba width height) (graphics-command-rgba command)
+      (is (= 1 width))
+      (is (= 1 height))
+      (is (= 4 (length rgba)))))
   t)

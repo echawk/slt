@@ -1,0 +1,13 @@
+scrollback & resizing need to be much more responsive
+ - when resizing window with a program like htop open, program does not resize immediately
+
+add support for user configuration via a config file (just a source we load on boot, can run arbitrary code; similar to stumpwm's config file).
+
+support both libsixel and kitty graphics protocol;
+  - both should start out as a lib here and eventually be able to be extracted into their own
+    project, which others can then use
+  - finish Kitty animation frames/control and Unicode placeholder rendering
+  - track image placements through terminal scrolling, alternate-screen switches, and erasure
+  - match SIXEL/Kitty cursor movement and SIXEL DECSDM behavior in every engine
+
+support drag and drop in both macos & X11 at the beginning

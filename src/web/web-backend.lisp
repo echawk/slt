@@ -16,6 +16,7 @@
 ;;;;       ATTRS are the grid attribute bits; a wide glyph is its own run.
 ;;;;     {"t":"title","title":S}  {"t":"bell"}  {"t":"exit"}
 ;;;;     {"t":"mouse","tracking":B}   (whether the program wants mouse events)
+;;;;     {"t":"images","items":[...]} (RGBA image placements)
 ;;;;   client -> server
 ;;;;     {"t":"key","char":S,"keysym":S,"state":N}   (X11 keysyms/modifier bits)
 ;;;;     {"t":"paste","text":S}
@@ -184,7 +185,19 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
                        (when view
                          (web-send client (web-hello view))
                          (when (headless-view-grid view)
-                           (web-send client (web-frame (headless-view-grid view) :all t)))))))))
+                           (web-send client (web-frame (headless-view-grid view) :all t)))
+                         (when (headless-view-image-store view)
+                           (web-send client
+                                     (json-object
+                                      "t" "images"
+                                      "items"
+                                      (coerce
+                                       (mapcar #'web-image-record
+                                               (terminal-image-render-list
+                                                (headless-view-image-store view)
+                                                (headless-view-cell-width view)
+                                                (headless-view-cell-height view)))
+                                       'vector))))))))))
 
 (defun json-integer (table key &optional (default 0))
   (let ((value (gethash key table)))
@@ -239,6 +252,32 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
 (defmethod headless-present ((backend web-backend) view grid)
   (declare (ignore view))
   (web-broadcast backend (web-frame grid)))
+
+(defun web-image-record (record)
+  (destructuring-bind (placement image x y width height) record
+    (json-object
+     "id" (terminal-image-id image)
+     "x" x "y" y "w" width "h" height
+     "z" (terminal-image-placement-z-index placement)
+     "sx" (terminal-image-placement-source-x placement)
+     "sy" (terminal-image-placement-source-y placement)
+     "sw" (or (terminal-image-placement-source-width placement)
+              (- (terminal-image-width image)
+                 (terminal-image-placement-source-x placement)))
+     "sh" (or (terminal-image-placement-source-height placement)
+              (- (terminal-image-height image)
+                 (terminal-image-placement-source-y placement)))
+     "iw" (terminal-image-width image) "ih" (terminal-image-height image)
+     "rgba" (cl-base64:usb8-array-to-base64-string (terminal-image-rgba image)))))
+
+(defmethod backend-render-images :after ((backend web-backend) (view headless-view) store)
+  (let ((items (coerce
+                (mapcar #'web-image-record
+                        (terminal-image-render-list
+                         store (headless-view-cell-width view)
+                         (headless-view-cell-height view)))
+                'vector)))
+    (web-broadcast backend (json-object "t" "images" "items" items))))
 
 (defmethod backend-set-title :after ((backend web-backend) view title)
   (declare (ignore view))

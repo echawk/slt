@@ -70,6 +70,13 @@ ones, so that backends not used yet are listed too."
 (defgeneric backend-resize-view (backend view rows columns))
 (defgeneric backend-render-grid (backend view grid)
   (:documentation "Draw the rows of GRID whose dirty bit is set."))
+(defgeneric backend-render-images (backend view store)
+  (:documentation "Draw the image placements in STORE. Text and image stacking
+is described by each placement's z-index. Backends without image rendering may
+retain STORE for inspection but otherwise ignore it.")
+  (:method (backend view store)
+    (declare (ignore backend view store))
+    nil))
 (defgeneric backend-set-title (backend view title))
 (defgeneric backend-schedule (backend view delay-ms thunk))
 (defgeneric backend-cancel-scheduled (backend view token))

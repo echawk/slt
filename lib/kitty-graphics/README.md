@@ -7,8 +7,10 @@ of slt and provides:
 - parsing and encoding of APC graphics commands and responses;
 - case-sensitive control data access;
 - quota-limited base64 chunk reassembly;
-- normalization of direct 24-bit RGB and 32-bit RGBA transfers to RGBA8.
+- normalization of 24-bit RGB, 32-bit RGBA, and PNG transfers to RGBA8;
+- zlib decompression and direct, regular-file, temporary-file, and POSIX
+  shared-memory transmission media.
 
-File/shared-memory transmission, zlib, PNG decoding, image storage, placements,
-and animation policy belong to the embedding terminal and are not performed
-implicitly by this codec.
+Image storage, placements, deletion, animation, and terminal cursor policy
+belong to the embedding terminal and are not performed implicitly by this
+wire-format library.

@@ -31,6 +31,7 @@
   (title "" :type string)
   (mouse-tracking nil)
   (grid nil)
+  (image-store nil)
   (render-count 0 :type fixnum)
   resize-callback
   keypress-callback
@@ -182,6 +183,11 @@ modifier STATE, at a cell."
   (setf (headless-view-grid view) grid)
   (incf (headless-view-render-count view))
   (headless-present backend view grid)
+  view)
+
+(defmethod backend-render-images ((backend headless-backend) (view headless-view) store)
+  (declare (ignore backend))
+  (setf (headless-view-image-store view) store)
   view)
 
 (defmethod backend-set-title ((backend headless-backend) (view headless-view) title)

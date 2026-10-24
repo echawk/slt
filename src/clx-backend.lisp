@@ -39,6 +39,7 @@
   (width 0)
   (height 0)
   grid
+  image-store
   keypress-callback
   resize-callback
   scroll-callback
@@ -230,7 +231,45 @@ the regular one, and whether they are ISO 10646 encoded."
     (when grid
       (dotimes (row (grid-rows grid))
         (clx-draw-row view grid row))
-      (clx-draw-cursor view grid))))
+      (clx-draw-cursor view grid)))
+  (clx-draw-images view))
+
+(defun clx-draw-images (view)
+  (let ((store (clx-view-image-store view)))
+    (when store
+      (dolist (record (terminal-image-render-list
+                       store (clx-view-cell-width view) (clx-view-cell-height view)))
+        (destructuring-bind (placement image x y width height) record
+          (let* ((iw (terminal-image-width image)) (ih (terminal-image-height image))
+                 (rgba (terminal-image-rgba image))
+                 (sx (terminal-image-placement-source-x placement))
+                 (sy (terminal-image-placement-source-y placement))
+                 (sw (or (terminal-image-placement-source-width placement) (- iw sx)))
+                 (sh (or (terminal-image-placement-source-height placement) (- ih sy)))
+                 (background (palette-background *palette*))
+                 (pixels (make-array (list height width)
+                                     :element-type '(unsigned-byte 32))))
+            (dotimes (dy height)
+              (dotimes (dx width)
+                (let* ((source-x (+ sx (min (1- sw) (floor (* dx sw) width))))
+                       (source-y (+ sy (min (1- sh) (floor (* dy sh) height))))
+                       (index (* 4 (+ source-x (* source-y iw))))
+                       (alpha (aref rgba (+ index 3)))
+                       (inverse (- 255 alpha)))
+                  (setf (aref pixels dy dx)
+                        (logior
+                         (ash (floor (+ (* (aref rgba index) alpha)
+                                        (* (ldb (byte 8 16) background) inverse)) 255) 16)
+                         (ash (floor (+ (* (aref rgba (+ index 1)) alpha)
+                                        (* (ldb (byte 8 8) background) inverse)) 255) 8)
+                         (floor (+ (* (aref rgba (+ index 2)) alpha)
+                                   (* (ldb (byte 8 0) background) inverse)) 255))))))
+            (xlib:put-image
+             (clx-view-window view) (clx-view-gcontext view)
+             (xlib:create-image :width width :height height :depth 24
+                                :bits-per-pixel 32 :data pixels
+                                :red-mask #xff0000 :green-mask #x00ff00 :blue-mask #x0000ff)
+             :x x :y y :width width :height height)))))))
 
 ;;; Input
 
@@ -509,6 +548,13 @@ the next timer, or NIL."
                 (clx-draw-row view grid row)))
             (clx-draw-cursor view grid)))
       (xlib:display-force-output (clx-backend-display backend))))
+  view)
+
+(defmethod backend-render-images ((backend clx-backend) (view clx-view) store)
+  (setf (clx-view-image-store view) store)
+  (unless (clx-view-closed-p view)
+    (clx-draw-grid view)
+    (xlib:display-force-output (clx-backend-display backend)))
   view)
 
 (defmethod backend-set-title ((backend clx-backend) (view clx-view) title)

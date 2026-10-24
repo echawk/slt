@@ -5,6 +5,7 @@
 ;;;; from the packed instance buffer built by PACK-GRID.
 
 (defconstant +mtl-pixel-format-r8-unorm+ 10)
+(defconstant +mtl-pixel-format-rgba8-unorm+ 70)
 (defconstant +mtl-pixel-format-bgra8-unorm+ 80)
 (defconstant +mtl-primitive-type-triangle+ 3)
 (defconstant +mtl-load-action-clear+ 2)
@@ -79,14 +80,36 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
   if ((in.flags & 16u) && y >= h - 2.0 * t) color = u.cursor_color.rgb;
   return float4(color, 1.0);
 }
+
+struct ImageFragment {
+  float4 position [[position]];
+  float2 uv;
+};
+
+vertex ImageFragment image_vertex(uint vid [[vertex_id]],
+                                  const device float4 *vertices [[buffer(0)]]) {
+  ImageFragment out;
+  out.position = float4(vertices[vid].xy, 0.0, 1.0);
+  out.uv = vertices[vid].zw;
+  return out;
+}
+
+fragment float4 image_fragment(ImageFragment in [[stage_in]],
+                               texture2d<float> image [[texture(0)]]) {
+  constexpr sampler linear_sampler(coord::normalized, filter::linear,
+                                    address::clamp_to_edge);
+  return image.sample(linear_sampler, in.uv);
+}
 ")
 
 (defstruct (metal-renderer (:constructor %make-metal-renderer))
   device
   queue
   pipeline
+  image-pipeline
   layer
   (atlas-texture nil)
+  (image-textures (make-hash-table) :type hash-table)
   (atlas-texture-generation -1)
   (buffers (make-array +metal-frames-in-flight+ :initial-element nil))
   (buffer-sizes (make-array +metal-frames-in-flight+ :initial-element 0))
@@ -101,7 +124,8 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
         "unknown error"
         (ns-string->string (msg error "localizedDescription")))))
 
-(defun make-metal-pipeline (device)
+(defun make-metal-pipeline (device &key (vertex-name "cell_vertex")
+                                        (fragment-name "cell_fragment") blend)
   (cffi:with-foreign-object (error :pointer)
     (setf (cffi:mem-ref error :pointer) (cffi:null-pointer))
     (let ((library (msg device "newLibraryWithSource:options:error:"
@@ -111,13 +135,19 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
       (when (cffi:null-pointer-p library)
         (error "Metal shader compilation failed: ~a" (metal-error-string error)))
       (let* ((descriptor (msg (msg "MTLRenderPipelineDescriptor" "alloc") "init"))
-             (vertex (msg library "newFunctionWithName:" :pointer (ns-string "cell_vertex")))
-             (fragment (msg library "newFunctionWithName:" :pointer (ns-string "cell_fragment"))))
+             (vertex (msg library "newFunctionWithName:" :pointer (ns-string vertex-name)))
+             (fragment (msg library "newFunctionWithName:" :pointer (ns-string fragment-name))))
         (msg descriptor "setVertexFunction:" :pointer vertex :void)
         (msg descriptor "setFragmentFunction:" :pointer fragment :void)
-        (msg (msg (msg descriptor "colorAttachments") "objectAtIndexedSubscript:"
-                  :unsigned-long 0)
-             "setPixelFormat:" :unsigned-long +mtl-pixel-format-bgra8-unorm+ :void)
+        (let ((attachment (msg (msg descriptor "colorAttachments")
+                               "objectAtIndexedSubscript:" :unsigned-long 0)))
+          (msg attachment "setPixelFormat:" :unsigned-long +mtl-pixel-format-bgra8-unorm+ :void)
+          (when blend
+            (msg attachment "setBlendingEnabled:" :bool t :void)
+            (msg attachment "setSourceRGBBlendFactor:" :unsigned-long 4 :void)
+            (msg attachment "setDestinationRGBBlendFactor:" :unsigned-long 5 :void)
+            (msg attachment "setSourceAlphaBlendFactor:" :unsigned-long 1 :void)
+            (msg attachment "setDestinationAlphaBlendFactor:" :unsigned-long 5 :void)))
         (let ((pipeline (msg device "newRenderPipelineStateWithDescriptor:error:"
                              :pointer descriptor :pointer error)))
           (msg vertex "release" :void)
@@ -141,6 +171,9 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
       (%make-metal-renderer :device device
                             :queue (msg device "newCommandQueue")
                             :pipeline (make-metal-pipeline device)
+                            :image-pipeline (make-metal-pipeline
+                                             device :vertex-name "image_vertex"
+                                             :fragment-name "image_fragment" :blend t)
                             :layer layer))))
 
 (defun free-metal-renderer (renderer)
@@ -149,12 +182,81 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
              (msg object "release" :void))))
     (map nil #'release (metal-renderer-buffers renderer))
     (release (metal-renderer-atlas-texture renderer))
+    (maphash (lambda (id entry) (declare (ignore id)) (release (cdr entry)))
+             (metal-renderer-image-textures renderer))
     (release (metal-renderer-pipeline renderer))
+    (release (metal-renderer-image-pipeline renderer))
     (release (metal-renderer-queue renderer))
     (release (metal-renderer-layer renderer))
     (cffi:foreign-free (metal-renderer-uniforms renderer))
     (setf (metal-renderer-pipeline renderer) nil
           (metal-renderer-atlas-texture renderer) nil)))
+
+(defun metal-image-texture (renderer image)
+  (let* ((id (terminal-image-id image))
+         (entry (gethash id (metal-renderer-image-textures renderer))))
+    (if (and entry (eq image (car entry)))
+        (cdr entry)
+        (progn
+          (when entry (msg (cdr entry) "release" :void))
+          (let* ((width (terminal-image-width image))
+                 (height (terminal-image-height image))
+                 (descriptor (msg "MTLTextureDescriptor"
+                                  "texture2DDescriptorWithPixelFormat:width:height:mipmapped:"
+                                  :unsigned-long +mtl-pixel-format-rgba8-unorm+
+                                  :unsigned-long width :unsigned-long height :bool nil))
+                 (texture (msg (metal-renderer-device renderer)
+                               "newTextureWithDescriptor:" :pointer descriptor))
+                 (rgba (terminal-image-rgba image)))
+            (cffi:with-foreign-object (region :unsigned-long 6)
+              (loop for value in (list 0 0 0 width height 1)
+                    for i from 0
+                    do (setf (cffi:mem-aref region :unsigned-long i) value))
+              (sb-sys:with-pinned-objects (rgba)
+                (msg texture "replaceRegion:mipmapLevel:withBytes:bytesPerRow:"
+                     :pointer region :unsigned-long 0
+                     :pointer (sb-sys:vector-sap rgba) :unsigned-long (* width 4) :void)))
+            (setf (gethash id (metal-renderer-image-textures renderer))
+                  (cons image texture))
+            texture)))))
+
+(defun metal-prune-image-textures (renderer records)
+  (let ((live (mapcar (lambda (record) (terminal-image-id (second record))) records)))
+    (maphash (lambda (id entry)
+               (unless (member id live)
+                 (msg (cdr entry) "release" :void)
+                 (remhash id (metal-renderer-image-textures renderer))))
+             (metal-renderer-image-textures renderer))))
+
+(defun metal-encode-images (renderer encoder records viewport-width viewport-height padding)
+  (when records
+    (msg encoder "setRenderPipelineState:" :pointer
+         (metal-renderer-image-pipeline renderer) :void)
+    (dolist (record records)
+      (destructuring-bind (placement image x y width height) record
+        (let* ((iw (terminal-image-width image)) (ih (terminal-image-height image))
+               (sx (terminal-image-placement-source-x placement))
+               (sy (terminal-image-placement-source-y placement))
+               (sw (or (terminal-image-placement-source-width placement) (- iw sx)))
+               (sh (or (terminal-image-placement-source-height placement) (- ih sy)))
+               (x0 (- (* 2.0 (/ (+ padding x) viewport-width)) 1.0))
+               (x1 (- (* 2.0 (/ (+ padding x width) viewport-width)) 1.0))
+               (y0 (- 1.0 (* 2.0 (/ (+ padding y) viewport-height))))
+               (y1 (- 1.0 (* 2.0 (/ (+ padding y height) viewport-height))))
+               (u0 (/ sx iw)) (u1 (/ (+ sx sw) iw))
+               (v0 (/ sy ih)) (v1 (/ (+ sy sh) ih)))
+          (cffi:with-foreign-object (vertices :float 24)
+            (loop for value in (list x0 y0 u0 v0  x1 y0 u1 v0  x0 y1 u0 v1
+                                     x0 y1 u0 v1  x1 y0 u1 v0  x1 y1 u1 v1)
+                  for i from 0 do (setf (cffi:mem-aref vertices :float i)
+                                        (coerce value 'single-float)))
+            (msg encoder "setVertexBytes:length:atIndex:"
+                 :pointer vertices :unsigned-long (* 24 4) :unsigned-long 0 :void)
+            (msg encoder "setFragmentTexture:atIndex:"
+                 :pointer (metal-image-texture renderer image) :unsigned-long 0 :void)
+            (msg encoder "drawPrimitives:vertexStart:vertexCount:"
+                 :unsigned-long +mtl-primitive-type-triangle+
+                 :unsigned-long 0 :unsigned-long 6 :void)))))))
 
 (defun metal-set-drawable-size (renderer width height)
   (msg (metal-renderer-layer renderer) "setDrawableSize:"
@@ -228,7 +330,7 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
     u))
 
 (defun metal-encode-frame (renderer target instances columns cell-count cell-width cell-height
-                           width height atlas palette)
+                           width height atlas palette &optional image-records)
   "Encode drawing CELL-COUNT packed cells into TARGET; return the command buffer."
   (let* ((bytes (* 4 (length instances)))
          (buffer (metal-instance-buffer renderer bytes))
@@ -239,6 +341,7 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
          (uniforms (metal-write-uniforms renderer cell-width cell-height
                                          width height columns atlas palette)))
     (metal-upload-atlas renderer atlas)
+    (metal-prune-image-textures renderer image-records)
     (sb-sys:with-pinned-objects (instances)
       (%memcpy (msg buffer "contents") (sb-sys:vector-sap instances) bytes))
     (msg attachment "setTexture:" :pointer target :void)
@@ -251,6 +354,12 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
          :double 1d0 :void)
     (let* ((commands (msg (metal-renderer-queue renderer) "commandBuffer"))
            (encoder (msg commands "renderCommandEncoderWithDescriptor:" :pointer pass)))
+      (metal-encode-images renderer encoder
+                           (remove-if-not (lambda (record)
+                                            (minusp (terminal-image-placement-z-index
+                                                     (first record))))
+                                          image-records)
+                           width height (metal-renderer-padding renderer))
       (when (plusp cell-count)
         (msg encoder "setRenderPipelineState:" :pointer (metal-renderer-pipeline renderer) :void)
         (msg encoder "setVertexBuffer:offset:atIndex:"
@@ -264,12 +373,18 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
         (msg encoder "drawPrimitives:vertexStart:vertexCount:instanceCount:"
              :unsigned-long +mtl-primitive-type-triangle+
              :unsigned-long 0 :unsigned-long 6 :unsigned-long cell-count :void))
+      (metal-encode-images renderer encoder
+                           (remove-if (lambda (record)
+                                        (minusp (terminal-image-placement-z-index
+                                                 (first record))))
+                                      image-records)
+                           width height (metal-renderer-padding renderer))
       (msg encoder "endEncoding" :void)
       (incf (metal-renderer-frame renderer))
       commands)))
 
 (defun metal-draw (renderer instances columns cell-count cell-width cell-height
-                   width height atlas palette)
+                   width height atlas palette &optional image-records)
   "Draw CELL-COUNT packed cells into the next drawable of the layer."
   (with-autorelease-pool ()
     (let ((drawable (msg (metal-renderer-layer renderer) "nextDrawable")))
@@ -277,7 +392,7 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
         (let ((commands (metal-encode-frame renderer (msg drawable "texture")
                                             instances columns cell-count
                                             cell-width cell-height width height
-                                            atlas palette)))
+                                            atlas palette image-records)))
           (if (msg (metal-renderer-layer renderer) "presentsWithTransaction" :bool)
               ;; During a live resize, present in step with the window's
               ;; Core Animation transaction so frames are never stretched.
@@ -290,7 +405,7 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
                 (msg commands "commit" :void))))))))
 
 (defun metal-snapshot (renderer instances columns cell-count cell-width cell-height
-                       width height atlas palette)
+                       width height atlas palette &optional image-records)
   "Render offscreen and return the frame as a WIDTH x HEIGHT array of RGB
 octets (row-major), for tests and debugging."
   (with-autorelease-pool ()
@@ -305,7 +420,7 @@ octets (row-major), for tests and debugging."
                            :pointer descriptor))
              (commands (metal-encode-frame renderer texture instances columns cell-count
                                            cell-width cell-height width height
-                                           atlas palette))
+                                           atlas palette image-records))
              (rgb (make-array (* 3 width height) :element-type '(unsigned-byte 8))))
         (msg commands "commit" :void)
         (msg commands "waitUntilCompleted" :void)

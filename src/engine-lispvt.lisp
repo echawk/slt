@@ -21,6 +21,11 @@
 (defmethod engine-columns ((engine lispvt-engine))
   (lispvt:terminal-columns (lispvt-engine-terminal engine)))
 
+(defmethod engine-cursor-position ((engine lispvt-engine))
+  (let ((terminal (lispvt-engine-terminal engine)))
+    (values (lispvt:terminal-cursor-row terminal)
+            (lispvt:terminal-cursor-column terminal))))
+
 (defmethod engine-feed ((engine lispvt-engine) octets &key (start 0) (end (length octets)))
   (lispvt:terminal-feed (lispvt-engine-terminal engine) octets :start start :end end)
   engine)

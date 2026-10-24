@@ -142,6 +142,9 @@ base64 quartets. A protocol error resets the partial transfer."
         (let* ((continuing (graphics-decoder-first-controls decoder))
                (effective-controls (or continuing controls))
                (more (equal "1" (cdr (assoc #\m controls :test #'char=)))))
+          (when (and continuing
+                     (some (lambda (entry) (not (char= (car entry) #\m))) controls))
+            (protocol-error "Only m is valid in a continuation chunk"))
           (unless continuing
             (setf (graphics-decoder-first-controls decoder) controls))
           (incf (graphics-decoder-encoded-length decoder) (length encoded))
@@ -166,20 +169,66 @@ base64 quartets. A protocol error resets the partial transfer."
       (graphics-decoder-reset decoder)
       (error condition))))
 
-(defun graphics-command-rgba (command)
-  "Return RGBA octets, width and height for an uncompressed direct RGB command.
+(defun payload-pathname (data)
+  (let ((name (map 'string #'code-char data)))
+    (when (or (zerop (length name)) (find (code-char 0) name))
+      (protocol-error "Invalid image pathname"))
+    (pathname name)))
 
-PNG (f=100), compressed (o=z), and non-direct transmission media are retained
-by the parser but deliberately left to consumers."
+(defun read-file-range (pathname offset size delete-p)
+  (unwind-protect
+       (with-open-file (stream pathname :direction :input
+                                        :element-type '(unsigned-byte 8))
+         (let* ((length (file-length stream))
+                (count (if (plusp size) size (- length offset))))
+           (unless (and (<= 0 offset length) (<= 0 count (- length offset))
+                        (<= count (* 512 1024 1024)))
+             (protocol-error "Image file range is invalid or exceeds the safety limit"))
+           (file-position stream offset)
+           (let ((result (make-array count :element-type '(unsigned-byte 8))))
+             (unless (= count (read-sequence result stream))
+               (protocol-error "Could not read complete image file"))
+             result)))
+    (when delete-p (ignore-errors (delete-file pathname)))))
+
+(defun graphics-command-pixel-data (command)
+  "Return the transmitted image bytes after resolving medium and compression.
+
+Direct data and regular/temporary files are supported here. Shared-memory
+objects are deliberately resolved by terminal integrations because namespace
+and unlink policy are platform-specific."
+  (let* ((medium (graphics-command-value command #\t "d"))
+         (offset (graphics-command-integer command #\O 0))
+         (size (graphics-command-integer command #\S 0))
+         (data (graphics-command-data command))
+         (raw (cond ((string= medium "d") data)
+                    ((or (string= medium "f") (string= medium "t"))
+                     (read-file-range (payload-pathname data) offset size
+                                      (string= medium "t")))
+                    ((string= medium "s")
+                     (unless (<= size (* 512 1024 1024))
+                       (protocol-error "Shared-memory image exceeds the safety limit"))
+                     (read-shared-memory (map 'string #'code-char data) offset size))
+                    (t (protocol-error "Unknown transmission medium: ~a" medium)))))
+    (if (string= (graphics-command-value command #\o "") "z")
+        (let ((format (graphics-command-integer command #\f 32))
+              (width (graphics-command-integer command #\s 0))
+              (height (graphics-command-integer command #\v 0)))
+          (unless (and (member format '(24 32)) (plusp width) (plusp height))
+            (protocol-error "Compressed raw data needs f=24/32 and dimensions"))
+          (inflate-octets raw (* width height (if (= format 24) 3 4))))
+        raw)))
+
+(defun graphics-command-rgba (command)
+  "Return decoded RGBA octets, width and height for a transmitted image."
   (let ((format (graphics-command-integer command #\f 32))
-        (medium (graphics-command-value command #\t "d"))
-        (compression (graphics-command-value command #\o))
         (width (graphics-command-integer command #\s 0))
         (height (graphics-command-integer command #\v 0))
-        (data (graphics-command-data command)))
-    (unless (and (member format '(24 32)) (string= medium "d") (null compression)
-                 (plusp width) (plusp height))
-      (protocol-error "Command is not uncompressed direct RGB/RGBA data"))
+        (data (graphics-command-pixel-data command)))
+    (when (= format 100)
+      (return-from graphics-command-rgba (decode-png data)))
+    (unless (and (member format '(24 32)) (plusp width) (plusp height))
+      (protocol-error "Command needs f=24/32 with dimensions, or f=100 PNG"))
     (let ((channels (if (= format 24) 3 4)))
       (unless (= (length data) (* width height channels))
         (protocol-error "Pixel data length does not match ~dx~d f=~d" width height format))

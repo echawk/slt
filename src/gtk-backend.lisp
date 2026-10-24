@@ -21,6 +21,7 @@
   cell-width
   cell-height
   grid
+  image-store
   keypress-callback
   resize-callback
   scroll-callback
@@ -189,7 +190,46 @@ cairo_t pointer."
       (let ((layout (pango:pango-cairo-create-layout cr)))
         (dotimes (row (grid-rows grid))
           (gtk-draw-row view cr layout grid row))
-        (gtk-draw-cursor view cr grid)))))
+        (gtk-draw-cursor view cr grid)))
+    (gtk-draw-images view cr)))
+
+(defun rgba-to-cairo-argb32 (rgba)
+  ;; Cairo ARGB32 is premultiplied BGRA in memory on little-endian machines.
+  (let ((result (make-array (length rgba) :element-type '(unsigned-byte 8))))
+    (loop for i from 0 below (length rgba) by 4
+          for alpha = (aref rgba (+ i 3))
+          do (setf (aref result i) (round (* (aref rgba (+ i 2)) alpha) 255)
+                   (aref result (+ i 1)) (round (* (aref rgba (+ i 1)) alpha) 255)
+                   (aref result (+ i 2)) (round (* (aref rgba i) alpha) 255)
+                   (aref result (+ i 3)) alpha))
+    result))
+
+(defun gtk-draw-images (view cr)
+  (let ((store (gtk-view-image-store view)))
+    (when store
+      (dolist (record (terminal-image-render-list
+                       store (gtk-view-cell-width view) (gtk-view-cell-height view)))
+        (destructuring-bind (placement image x y width height) record
+          (let* ((pixels (rgba-to-cairo-argb32 (terminal-image-rgba image)))
+                 (iw (terminal-image-width image)) (ih (terminal-image-height image))
+                 (sx (terminal-image-placement-source-x placement))
+                 (sy (terminal-image-placement-source-y placement))
+                 (sw (or (terminal-image-placement-source-width placement) (- iw sx)))
+                 (sh (or (terminal-image-placement-source-height placement) (- ih sy))))
+            (cffi:with-pointer-to-vector-data (pointer pixels)
+              (let ((surface (cairo:cairo-image-surface-create-for-data
+                              pointer :argb32 iw ih (* iw 4))))
+                (unwind-protect
+                     (progn
+                       (cairo:cairo-save cr)
+                       (cairo:cairo-rectangle cr x y width height)
+                       (cairo:cairo-clip cr)
+                       (cairo:cairo-translate cr x y)
+                       (cairo:cairo-scale cr (/ width sw) (/ height sh))
+                       (cairo:cairo-set-source-surface cr surface (- sx) (- sy))
+                       (cairo:cairo-paint cr)
+                       (cairo:cairo-restore cr))
+                  (cairo:cairo-surface-destroy surface))))))))))
 
 ;;; Input
 
@@ -374,6 +414,13 @@ cairo_t pointer."
         (when (= 1 (sbit (grid-dirty grid) row))
           (gtk:gtk-widget-queue-draw-area area 0 (* row ch)
                                           (* (grid-columns grid) cw) ch)))))
+  view)
+
+(defmethod backend-render-images ((backend gtk-backend) (view gtk-view) store)
+  (declare (ignore backend))
+  (setf (gtk-view-image-store view) store)
+  (unless (gtk-view-closed-p view)
+    (gtk:gtk-widget-queue-draw (gtk-view-area view)))
   view)
 
 (defmethod backend-set-title ((backend gtk-backend) (view gtk-view) title)

@@ -12,6 +12,8 @@
             (:constructor %make-terminal-emulator))
   engine
   (grid nil :type (or null grid))
+  (image-store (make-terminal-image-store) :type terminal-image-store)
+  (graphics-parser (make-terminal-graphics-parser) :type terminal-graphics-parser)
   backend
   view
   (rows 24 :type fixnum)
@@ -289,11 +291,18 @@ the engine lock is held only for the copy."
     ;; them; a selection whose text changed no longer means anything.
     (when (grid-selection-intersects-dirty-p grid)
       (clear-selection emulator))
-    (when (find 1 (grid-dirty grid))
-      (backend-render-grid (terminal-emulator-backend emulator)
-                           (terminal-emulator-view emulator)
-                           grid)
-      (grid-clear-dirty grid))
+    (let ((grid-dirty-p (find 1 (grid-dirty grid))))
+      (when grid-dirty-p
+        (backend-render-grid (terminal-emulator-backend emulator)
+                             (terminal-emulator-view emulator)
+                             grid)
+        (grid-clear-dirty grid))
+      (let ((store (terminal-emulator-image-store emulator)))
+        (when (or grid-dirty-p (terminal-image-store-dirty-p store))
+          (backend-render-images (terminal-emulator-backend emulator)
+                                 (terminal-emulator-view emulator)
+                                 store)
+          (setf (terminal-image-store-dirty-p store) nil))))
     emulator))
 
 (defun write-input (emulator string)
@@ -779,6 +788,23 @@ the emulator when the item is chosen.  Read when the window is created.")
                      (format nil "~c[200~~~a~c[201~~" esc text esc)
                      text))))
 
+(defun feed-emulator-output (emulator octets &key (start 0) (end (length octets)))
+  "Feed child output through the terminal-graphics demultiplexer. The caller
+must hold EMULATOR's engine lock."
+  (let ((engine (terminal-emulator-engine emulator))
+        (store (terminal-emulator-image-store emulator)))
+    (terminal-graphics-feed
+     (terminal-emulator-graphics-parser emulator) octets
+     (lambda (ordinary ordinary-start ordinary-end)
+       (engine-feed engine ordinary :start ordinary-start :end ordinary-end))
+     (lambda (sixel)
+       (handle-sixel-command store sixel engine))
+     (lambda (kitty)
+       (let ((response (handle-kitty-command store kitty engine)))
+         (when response
+           (send-to-process emulator response))))
+     :start start :end end)))
+
 (defun reader-loop (emulator)
   "Body of the reader thread: wait for child output, feed it to the engine
 in chunks and request renders, until the child's side closes."
@@ -799,8 +825,8 @@ in chunks and request renders, until the child's side closes."
                  (return-from reader-loop))
                 ((zerop count) (return))
                 (t
-                 (with-engine (engine emulator)
-                   (engine-feed engine buffer :end count))
+                 (bt:with-recursive-lock-held ((terminal-emulator-lock emulator))
+                   (feed-emulator-output emulator buffer :end count))
                  (setf fed t)
                  (request-render emulator))))))))))
 

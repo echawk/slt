@@ -3,10 +3,11 @@
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.1.0"
-  :depends-on (:cl-base64)
+  :depends-on (:cl-base64 :cffi)
   :serial t
   :pathname "src/"
   :components ((:file "package")
+               (:file "native")
                (:file "protocol"))
   :in-order-to ((test-op (test-op "kitty-graphics/tests"))))
 

@@ -56,6 +56,7 @@ steps, so it uses a smaller multiplier.")
    (atlas :initform nil :accessor gl-view-atlas)
    (instances :initform nil :accessor gl-view-instances)
    (grid :initform nil :accessor gl-view-grid)
+   (image-store :initform nil :accessor gl-view-image-store)
    (scale :initform 0.0 :accessor gl-view-scale)
    (cell-width :initform 1 :accessor gl-view-cell-width)
    (cell-height :initform 1 :accessor gl-view-cell-height)
@@ -363,7 +364,11 @@ particular) trips over."
                  (gl-view-cell-height view)
                  width height
                  (gl-view-atlas view)
-                 palette))
+                 palette
+                 (and (gl-view-image-store view)
+                      (terminal-image-render-list
+                       (gl-view-image-store view)
+                       (gl-view-cell-width view) (gl-view-cell-height view)))))
       (glfw:swap-buffers view))))
 
 (defun snapshot-gl-view (view &optional pathname (palette *palette*))
@@ -377,7 +382,12 @@ height, after writing them to PATHNAME as a PPM when given."
       (let ((rgb (gl-snapshot (gl-view-renderer view) (gl-view-instances view)
                               (grid-columns grid) (* (grid-rows grid) (grid-columns grid))
                               (gl-view-cell-width view) (gl-view-cell-height view)
-                              width height (gl-view-atlas view) palette)))
+                              width height (gl-view-atlas view) palette
+                              (and (gl-view-image-store view)
+                                   (terminal-image-render-list
+                                    (gl-view-image-store view)
+                                    (gl-view-cell-width view)
+                                    (gl-view-cell-height view))))))
         (when pathname
           (write-ppm pathname rgb width height))
         (values rgb width height)))))
@@ -474,6 +484,11 @@ height, after writing them to PATHNAME as a PPM when given."
 
 (defmethod backend-render-grid ((backend gl-backend) (view gl-view) grid)
   (setf (gl-view-grid view) grid)
+  (redraw-gl-view view))
+
+(defmethod backend-render-images ((backend gl-backend) (view gl-view) store)
+  (declare (ignore backend))
+  (setf (gl-view-image-store view) store)
   (redraw-gl-view view))
 
 (defmethod backend-set-title ((backend gl-backend) (view gl-view) title)

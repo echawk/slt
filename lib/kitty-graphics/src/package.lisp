@@ -19,4 +19,5 @@
    #:graphics-decoder-max-encoded-bytes
    #:graphics-decoder-reset
    #:graphics-decoder-feed
+   #:graphics-command-pixel-data
    #:graphics-command-rgba))

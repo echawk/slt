@@ -25,6 +25,7 @@
   atlas
   (instances nil)
   (grid nil)
+  (image-store nil)
   (scale 1d0 :type double-float)
   (cell-width 1 :type fixnum)
   (cell-height 1 :type fixnum)
@@ -494,7 +495,12 @@ middle button, which Cocoa numbers 2 among its other buttons."
                     (cocoa-view-cell-height view)
                     width height
                     (cocoa-view-atlas view)
-                    palette)))))
+                    palette
+                    (and (cocoa-view-image-store view)
+                         (terminal-image-render-list
+                          (cocoa-view-image-store view)
+                          (cocoa-view-cell-width view)
+                          (cocoa-view-cell-height view))))))))
 
 (defun snapshot-cocoa-view (view pathname &optional (palette *palette*))
   "Render VIEW's current grid offscreen and write it to PATHNAME as a PPM."
@@ -506,7 +512,12 @@ middle button, which Cocoa numbers 2 among its other buttons."
                  (metal-snapshot (cocoa-view-renderer view) (cocoa-view-instances view)
                                  (grid-columns grid) (* (grid-rows grid) (grid-columns grid))
                                  (cocoa-view-cell-width view) (cocoa-view-cell-height view)
-                                 width height (cocoa-view-atlas view) palette)
+                                 width height (cocoa-view-atlas view) palette
+                                 (and (cocoa-view-image-store view)
+                                      (terminal-image-render-list
+                                       (cocoa-view-image-store view)
+                                       (cocoa-view-cell-width view)
+                                       (cocoa-view-cell-height view))))
                  width height))))
 
 (defun destroy-cocoa-view (view)
@@ -617,6 +628,11 @@ delivering its close notification."
 
 (defmethod backend-render-grid ((backend cocoa-backend) (view cocoa-view) grid)
   (setf (cocoa-view-grid view) grid)
+  (redraw-cocoa-view view))
+
+(defmethod backend-render-images ((backend cocoa-backend) (view cocoa-view) store)
+  (declare (ignore backend))
+  (setf (cocoa-view-image-store view) store)
   (redraw-cocoa-view view))
 
 (defmethod backend-set-title ((backend cocoa-backend) (view cocoa-view) title)

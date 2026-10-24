@@ -105,6 +105,22 @@ and compares the resulting screens. `slt/bench` measures throughput.
 
 Choose one with `--backend NAME` or `SLT_BACKEND=NAME`.
 
+## Terminal graphics
+
+slt recognizes SIXEL DCS sequences and Kitty graphics APC sequences before
+they reach the selected VT engine, so graphics work with every engine. SIXEL
+is decoded through `libsixel`; Kitty supports chunked direct, file, temporary
+file, and POSIX shared-memory transfers, raw RGB/RGBA and PNG images, zlib
+compression, cropping, scaling, offsets, z-order, image and placement IDs,
+image numbers, queries, and the protocol's placement-deletion selectors.
+Images are rendered by the cocoa/Metal, GL, GTK/Cairo, SDL2, CLX, Tk, web, and
+headless backends. Set `*sixel-images*` or `*kitty-graphics-images*` to `nil`
+to pass that protocol through untouched.
+
+On macOS, install the SIXEL decoder with `brew install libsixel`. The reusable
+bindings and Kitty codec live in [`lib/cl-libsixel`](lib/cl-libsixel/) and
+[`lib/kitty-graphics`](lib/kitty-graphics/).
+
 With the native macOS (`cocoa`) backend, Command+N (or **Shell ▸ New
 Window**) opens another independent terminal window. Each window has its own
 shell and remains open until it or its child process exits; slt quits after

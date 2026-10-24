@@ -30,6 +30,10 @@
 (defmethod engine-columns ((engine 3bst-engine))
   (3bst:columns (3bst-engine-term engine)))
 
+(defmethod engine-cursor-position ((engine 3bst-engine))
+  (let ((cursor (3bst::cursor (3bst-engine-term engine))))
+    (values (3bst::y cursor) (3bst::x cursor))))
+
 (defun string-control-sequence-introducer-p (char)
   (and char
        (member char (list #\P #\_ #\^

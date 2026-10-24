@@ -5,7 +5,8 @@
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.2.0"
-  :depends-on (:lispvt :babel :bordeaux-threads :cffi (:feature :sbcl :sb-posix))
+  :depends-on (:lispvt :kitty-graphics :cl-libsixel
+               :babel :bordeaux-threads :cffi (:feature :sbcl :sb-posix))
   :pathname "src/"
   :serial t
   :components ((:file "package")
@@ -15,6 +16,7 @@
                (:file "core")
                (:file "backend")
                (:file "engine")
+               (:file "images")
                (:file "engine-lispvt")
                (:file "transport")
                (:file "gpu")

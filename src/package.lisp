@@ -100,6 +100,7 @@
    #:available-backends
    #:make-backend
    #:backend-render-grid
+   #:backend-render-images
    #:default-backend
    #:backend-bind-paste
    #:backend-bind-mouse
@@ -127,6 +128,27 @@
    #:open-external
    #:*audible-bell*
    #:ring-bell
+   ;; Terminal graphics
+   #:*sixel-images*
+   #:*kitty-graphics-images*
+   #:terminal-image
+   #:terminal-image-id
+   #:terminal-image-width
+   #:terminal-image-height
+   #:terminal-image-rgba
+   #:terminal-image-placement
+   #:terminal-image-placement-image-id
+   #:terminal-image-placement-placement-id
+   #:terminal-image-placement-row
+   #:terminal-image-placement-column
+   #:terminal-image-placement-columns
+   #:terminal-image-placement-rows
+   #:terminal-image-placement-z-index
+   #:terminal-image-store
+   #:terminal-image-store-images
+   #:terminal-image-store-placements
+   #:terminal-image-store-dirty-p
+   #:terminal-image-render-list
    #:shell-quote
    #:*menu-items*
    #:scroll-viewport
@@ -150,6 +172,7 @@
    #:headless-backend
    #:headless-view
    #:headless-view-grid
+   #:headless-view-image-store
    #:headless-view-title
    #:headless-view-rows
    #:headless-view-columns

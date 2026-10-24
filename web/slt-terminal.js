@@ -77,7 +77,11 @@ const STYLE = `
   line-height: var(--slt-cell-h); background: var(--slt-bg); color: var(--slt-fg);
   cursor: text; }
 .slt-screen { position: absolute; inset: 0; white-space: pre; font-variant-ligatures: none;
-  user-select: text; }
+  user-select: text; z-index: 1; }
+.slt-images { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.slt-images-under { z-index: 0; }
+.slt-images-over { z-index: 2; }
+.slt-images canvas { position: absolute; image-rendering: auto; }
 .slt-screen ::selection { background: var(--slt-selection); }
 .slt-row { height: var(--slt-cell-h); overflow: hidden; }
 .slt-row span { display: inline-block; height: var(--slt-cell-h); vertical-align: top; }
@@ -226,6 +230,10 @@ export class SltTerminal extends EventTarget {
     style.textContent = STYLE;
     const screen = document.createElement("div");
     screen.className = "slt-screen";
+    const imagesUnder = document.createElement("div");
+    imagesUnder.className = "slt-images slt-images-under";
+    const imagesOver = document.createElement("div");
+    imagesOver.className = "slt-images slt-images-over";
     const measure = document.createElement("span");
     measure.className = "slt-measure";
     measure.textContent = "MMMMMMMMMMMMMMMMMMMM";
@@ -234,10 +242,12 @@ export class SltTerminal extends EventTarget {
     input.setAttribute("autocapitalize", "off");
     input.setAttribute("autocomplete", "off");
     input.setAttribute("spellcheck", "false");
-    root.append(style, screen, measure, input);
+    root.append(style, imagesUnder, screen, imagesOver, measure, input);
     this.container.append(root);
     this.root = root;
     this.screen = screen;
+    this.imagesUnder = imagesUnder;
+    this.imagesOver = imagesOver;
     this.measureEl = measure;
     this.input = input;
 
@@ -370,6 +380,9 @@ export class SltTerminal extends EventTarget {
         this._emit("frame");
         break;
       }
+      case "images":
+        this._drawImages(message.items || []);
+        break;
       case "title":
         this.title = message.title;
         this._emit("title", this.title);
@@ -483,6 +496,30 @@ export class SltTerminal extends EventTarget {
 
   _redrawAll() {
     for (let row = 0; row < this.rows; row++) this._drawRow(row);
+  }
+
+  _drawImages(items) {
+    this.imagesUnder.replaceChildren();
+    this.imagesOver.replaceChildren();
+    for (const item of items) {
+      const bytes = Uint8ClampedArray.from(atob(item.rgba), (c) => c.charCodeAt(0));
+      if (bytes.length !== item.iw * item.ih * 4) continue;
+      const source = document.createElement("canvas");
+      source.width = item.iw;
+      source.height = item.ih;
+      source.getContext("2d").putImageData(new ImageData(bytes, item.iw, item.ih), 0, 0);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, item.w);
+      canvas.height = Math.max(1, item.h);
+      canvas.style.left = item.x + "px";
+      canvas.style.top = item.y + "px";
+      canvas.style.width = item.w + "px";
+      canvas.style.height = item.h + "px";
+      canvas.style.zIndex = String(item.z);
+      canvas.getContext("2d").drawImage(source, item.sx, item.sy, item.sw, item.sh,
+                                        0, 0, canvas.width, canvas.height);
+      (item.z < 0 ? this.imagesUnder : this.imagesOver).append(canvas);
+    }
   }
 
   _onKeyDown(e) {

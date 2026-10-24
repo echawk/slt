@@ -87,6 +87,9 @@
 (defmethod engine-columns ((engine ghostty-engine))
   (ghostty-vt:terminal-columns (ghostty-engine-terminal engine)))
 
+(defmethod engine-cursor-position ((engine ghostty-engine))
+  (ghostty-vt:terminal-cursor (ghostty-engine-terminal engine)))
+
 (defmethod engine-feed ((engine ghostty-engine) octets &key (start 0) (end (length octets)))
   (ghostty-vt:terminal-feed (ghostty-engine-terminal engine) octets :start start :end end)
   engine)

@@ -42,6 +42,9 @@
 (defmethod engine-columns ((engine libvterm-engine))
   (libvterm:vterm-columns (libvterm-engine-vterm engine)))
 
+(defmethod engine-cursor-position ((engine libvterm-engine))
+  (libvterm:vterm-cursor (libvterm-engine-vterm engine)))
+
 (defmethod engine-feed ((engine libvterm-engine) octets &key (start 0) (end (length octets)))
   (libvterm:vterm-feed (libvterm-engine-vterm engine) octets :start start :end end)
   engine)

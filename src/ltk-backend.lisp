@@ -11,6 +11,9 @@
   cell-height
   background-items
   text-items
+  image-store
+  (image-items '())
+  (image-photos '())
   ;; The mouse button held down, the last click's time and cell, and the
   ;; clicks counted so far.
   (button nil)
@@ -204,6 +207,51 @@
                            when (= 1 (sbit (grid-dirty grid) row))
                              do (write-string (render-row-command-string view grid row)
                                               out))))
+  view)
+
+(defun ltk-clear-images (view)
+  (dolist (handle (ltk-view-image-items view))
+    (ltk:format-wish "~a delete ~a" (ltk:widget-path (ltk-view-canvas view)) handle))
+  (dolist (photo (ltk-view-image-photos view))
+    (ltk:format-wish "image delete ~a" (ltk::name photo)))
+  (setf (ltk-view-image-items view) '()
+        (ltk-view-image-photos view) '()))
+
+(defun ltk-image-pixels (placement image width height)
+  (let* ((iw (terminal-image-width image)) (ih (terminal-image-height image))
+         (rgba (terminal-image-rgba image))
+         (sx (terminal-image-placement-source-x placement))
+         (sy (terminal-image-placement-source-y placement))
+         (sw (or (terminal-image-placement-source-width placement) (- iw sx)))
+         (sh (or (terminal-image-placement-source-height placement) (- ih sy)))
+         (background (palette-background *palette*)))
+    (loop for dy below height
+          collect (loop for dx below width
+                        for source-x = (+ sx (min (1- sw) (floor (* dx sw) width)))
+                        for source-y = (+ sy (min (1- sh) (floor (* dy sh) height)))
+                        for index = (* 4 (+ source-x (* source-y iw)))
+                        for alpha = (aref rgba (+ index 3))
+                        for inverse = (- 255 alpha)
+                        collect (list
+                                 (floor (+ (* (aref rgba index) alpha)
+                                           (* (ldb (byte 8 16) background) inverse)) 255)
+                                 (floor (+ (* (aref rgba (+ index 1)) alpha)
+                                           (* (ldb (byte 8 8) background) inverse)) 255)
+                                 (floor (+ (* (aref rgba (+ index 2)) alpha)
+                                           (* (ldb (byte 8 0) background) inverse)) 255))))))
+
+(defmethod backend-render-images ((backend ltk-backend) (view ltk-view) store)
+  (declare (ignore backend))
+  (setf (ltk-view-image-store view) store)
+  (ltk-clear-images view)
+  (dolist (record (terminal-image-render-list
+                   store (ltk-view-cell-width view) (ltk-view-cell-height view)))
+    (destructuring-bind (placement image x y width height) record
+      (let ((photo (make-instance 'ltk:photo-image :width width :height height)))
+        (ltk:image-setpixel photo (ltk-image-pixels placement image width height) 0 0)
+        (push (ltk:create-image (ltk-view-canvas view) x y :image photo)
+              (ltk-view-image-items view))
+        (push photo (ltk-view-image-photos view)))))
   view)
 
 (defmethod backend-set-title ((backend ltk-backend) (view ltk-view) title)

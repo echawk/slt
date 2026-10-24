@@ -29,6 +29,11 @@ child, e.g. replies to device attribute queries.")
 
 (defgeneric engine-resize (engine rows columns))
 
+(defgeneric engine-cursor-position (engine)
+  (:documentation "Return the engine's current zero-based cursor ROW and COLUMN.")
+  (:method ((engine engine))
+    (values 0 0)))
+
 (defgeneric engine-update-grid (engine grid &key force)
   (:documentation "Copy the engine's screen into GRID, resizing GRID when its
 dimensions differ.  Set the dirty bit for every row whose contents or

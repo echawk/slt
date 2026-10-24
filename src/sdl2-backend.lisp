@@ -39,6 +39,7 @@
   cell-height
   rows
   columns
+  image-store
   (glyph-cache (make-hash-table :test #'eql))
   ;; Persistent render target holding the whole grid; only dirty rows are
   ;; redrawn into it, then it is copied to the window.
@@ -416,6 +417,50 @@ it was (re)created, in which case its contents are undefined."
                   (sdl2:rect-width rect) cell-width (sdl2:rect-height rect) 2))
         (sdl2:render-fill-rect renderer rect)))))
 
+(defun draw-sdl-images (view)
+  (let ((store (sdl2-view-image-store view))
+        (renderer (sdl2-view-renderer view)))
+    (when store
+      (dolist (record (terminal-image-render-list
+                       store (sdl2-view-cell-width view) (sdl2-view-cell-height view)))
+        (destructuring-bind (placement image x y width height) record
+          (let ((rgba (terminal-image-rgba image)))
+            (sb-sys:with-pinned-objects (rgba)
+              (let* ((surface (sdl2:create-rgb-surface-with-format-from
+                               (sb-sys:vector-sap rgba)
+                               (terminal-image-width image) (terminal-image-height image)
+                               32 (* 4 (terminal-image-width image))
+                               :format sdl2:+pixelformat-rgba32+))
+                     (texture (sdl2:create-texture-from-surface renderer surface)))
+                (unwind-protect
+                     (sdl2:with-rects
+                         ((source (terminal-image-placement-source-x placement)
+                                  (terminal-image-placement-source-y placement)
+                                  (or (terminal-image-placement-source-width placement)
+                                      (- (terminal-image-width image)
+                                         (terminal-image-placement-source-x placement)))
+                                  (or (terminal-image-placement-source-height placement)
+                                      (- (terminal-image-height image)
+                                         (terminal-image-placement-source-y placement))))
+                          (destination x y width height))
+                       (sdl2:render-copy renderer texture
+                                         :source-rect source :dest-rect destination))
+                  (sdl2:destroy-texture texture)
+                  (sdl2:free-surface surface))))))))))
+
+(defun present-sdl-view (view &optional (palette *palette*))
+  (let ((renderer (sdl2-view-renderer view)))
+    (sdl2:set-render-target renderer nil)
+    (sdl-set-color renderer (palette-background palette))
+    (sdl2:render-clear renderer)
+    (sdl2:with-rects ((dest 0 0 (sdl2-view-target-width view)
+                            (sdl2-view-target-height view)))
+      (sdl2:render-copy renderer (sdl2-view-target view)
+                        :source-rect (cffi:null-pointer)
+                        :dest-rect dest))
+    (draw-sdl-images view)
+    (sdl2:render-present renderer)))
+
 (defun render-sdl-grid (view grid &optional (palette *palette*))
   (let ((renderer (sdl2-view-renderer view)))
     (when (ensure-sdl-target view grid)
@@ -425,15 +470,7 @@ it was (re)created, in which case its contents are undefined."
       (dotimes (row (grid-rows grid))
         (when (= 1 (sbit (grid-dirty grid) row))
           (draw-sdl-row view grid row palette rect))))
-    (sdl2:set-render-target renderer nil)
-    (sdl-set-color renderer (palette-background palette))
-    (sdl2:render-clear renderer)
-    (sdl2:with-rects ((dest 0 0 (sdl2-view-target-width view)
-                            (sdl2-view-target-height view)))
-      (sdl2:render-copy renderer (sdl2-view-target view)
-                        :source-rect (cffi:null-pointer)
-                        :dest-rect dest))
-    (sdl2:render-present renderer))
+    (present-sdl-view view palette))
   view)
 
 (defun create-sdl-renderer (window)
@@ -627,6 +664,12 @@ it was (re)created, in which case its contents are undefined."
 (defmethod backend-render-grid ((backend sdl2-backend) (view sdl2-view) grid)
   (declare (ignore backend))
   (render-sdl-grid view grid))
+
+(defmethod backend-render-images ((backend sdl2-backend) (view sdl2-view) store)
+  (declare (ignore backend))
+  (setf (sdl2-view-image-store view) store)
+  (when (sdl2-view-target view)
+    (present-sdl-view view)))
 
 (defmethod backend-set-title ((backend sdl2-backend) (view sdl2-view) title)
   (declare (ignore backend))
