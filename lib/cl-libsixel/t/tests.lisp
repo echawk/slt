@@ -18,4 +18,13 @@
                (length (sixel-image-palette image))))
     (assert (equalp #(255 0 0 255) (subseq (sixel-image-palette image) 0 4)))
     (assert (= 24 (length (sixel-image-rgba image)))))
+  ;; Only the top pixel of a 1x6 raster is painted: libsixel marks the rest
+  ;; with an index past the palette, which must not be read as a color.
+  (let* ((image (decode-sixel "q\"1;1;1;6#1;2;0;100;0#1@"))
+         (clear (sixel-image-rgba image))
+         (opaque (sixel-image-rgba image :background 1)))
+    (assert (= 6 (sixel-image-height image)))
+    (assert (equalp #(0 255 0 255) (subseq clear 0 4)))
+    (assert (zerop (aref clear 23)))
+    (assert (equalp #(0 255 0 255) (subseq opaque 20 24))))
   t)

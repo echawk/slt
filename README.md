@@ -108,14 +108,27 @@ Choose one with `--backend NAME` or `SLT_BACKEND=NAME`.
 ## Terminal graphics
 
 slt recognizes SIXEL DCS sequences and Kitty graphics APC sequences before
-they reach the selected VT engine, so graphics work with every engine. SIXEL
-is decoded through `libsixel`; Kitty supports chunked direct, file, temporary
-file, and POSIX shared-memory transfers, raw RGB/RGBA and PNG images, zlib
-compression, cropping, scaling, offsets, z-order, image and placement IDs,
-image numbers, queries, and the protocol's placement-deletion selectors.
-Images are rendered by the cocoa/Metal, GL, GTK/Cairo, SDL2, CLX, Tk, web, and
-headless backends. Set `*sixel-images*` or `*kitty-graphics-images*` to `nil`
-to pass that protocol through untouched.
+they reach the selected VT engine, so graphics work with every engine.
+
+SIXEL is decoded through `libsixel`. Images are placed and move the cursor
+as in xterm, honor transparent backgrounds (`P2=1`), DECSDM (`?80`) and
+sixel-scrolls-right (`?8452`, both reportable with DECRQM), and answer
+XTSMGRAPHICS; the primary device attributes advertise sixel support. As in
+xterm and foot, text written or erased over a SIXEL image replaces it in
+those cells, and an opaque image replaces the older ones it covers.
+
+Kitty supports chunked direct, file, temporary file, and POSIX shared-memory
+transfers; RGB, RGBA, PNG and palette-indexed images; zlib compression;
+cropping, scaling (aspect-preserving), offsets, z-order, image and placement
+IDs, image numbers, queries, cursor movement, relative placements, Unicode
+placeholders, every deletion selector, and animation (frames, frame
+composition, and terminal- or client-driven playback).
+
+Placements scroll with the text, into the scrollback and within scroll
+regions, and are cleared by `ED 2`/`ED 3`, RIS and entering the alternate
+screen. Images are rendered by the cocoa/Metal, GL, GTK/Cairo, SDL2, CLX, Tk,
+web, and headless backends. Set `*sixel-images*` or `*kitty-graphics-images*`
+to `nil` to pass that protocol through untouched.
 
 On macOS, install the SIXEL decoder with `brew install libsixel`. The reusable
 bindings and Kitty codec live in [`lib/cl-libsixel`](lib/cl-libsixel/) and

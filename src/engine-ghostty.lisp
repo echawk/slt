@@ -90,12 +90,47 @@
 (defmethod engine-cursor-position ((engine ghostty-engine))
   (ghostty-vt:terminal-cursor (ghostty-engine-terminal engine)))
 
+;;; libghostty-vt has no scroll callback.  Growth of the primary screen's
+;;; scrollback during a feed is the number of rows that scrolled off it.
+;;; (Scroll regions and the alternate screen are not reported, nor scrolls
+;;; once the scrollback is full and old rows are dropped.)
+
+(defconstant +ghostty-data-scrollbar+ 9)
+(defconstant +ghostty-data-scrollback-rows+ 15)
+
+(defun ghostty-scrollback-rows (engine)
+  (cffi:with-foreign-object (rows :size)
+    (setf (cffi:mem-ref rows :size) 0)
+    (ghostty-vt.ffi:%terminal-get (ghostty-vt:terminal-handle (ghostty-engine-terminal engine))
+                                  +ghostty-data-scrollback-rows+ rows)
+    (cffi:mem-ref rows :size)))
+
+(defmethod engine-reports-scrolls-p ((engine ghostty-engine))
+  t)
+
+(defmethod engine-reports-all-scrolls-p ((engine ghostty-engine))
+  nil)
+
 (defmethod engine-feed ((engine ghostty-engine) octets &key (start 0) (end (length octets)))
-  (ghostty-vt:terminal-feed (ghostty-engine-terminal engine) octets :start start :end end)
+  (let* ((terminal (ghostty-engine-terminal engine))
+         (watch (and (engine-scroll-function engine)
+                     (eq :primary (ghostty-vt:terminal-active-screen terminal))))
+         (before (and watch (ghostty-scrollback-rows engine))))
+    (ghostty-vt:terminal-feed terminal octets :start start :end end)
+    (when (and watch (eq :primary (ghostty-vt:terminal-active-screen terminal)))
+      (let ((scrolled (- (ghostty-scrollback-rows engine) before)))
+        (when (plusp scrolled)
+          (engine-emit-scroll engine 0 (1- (engine-rows engine)) scrolled)))))
   engine)
 
 (defmethod engine-resize ((engine ghostty-engine) rows columns)
-  (ghostty-vt:terminal-resize (ghostty-engine-terminal engine) rows columns)
+  ;; Shrinking pushes rows above the cursor into the scrollback.
+  (let ((before (ghostty-scrollback-rows engine))
+        (old-rows (engine-rows engine)))
+    (ghostty-vt:terminal-resize (ghostty-engine-terminal engine) rows columns)
+    (let ((pushed (- (ghostty-scrollback-rows engine) before)))
+      (when (plusp pushed)
+        (engine-emit-scroll engine 0 (1- old-rows) pushed :primary))))
   (setf (ghostty-engine-force-next engine) t)
   engine)
 
@@ -104,6 +139,19 @@
     (%slt-ghostty-free (ghostty-engine-helper engine))
     (setf (ghostty-engine-helper engine) nil))
   (ghostty-vt:terminal-free (ghostty-engine-terminal engine)))
+
+(defmethod engine-viewport-offset ((engine ghostty-engine))
+  (if (ghostty-engine-scrolled-p engine)
+      (cffi:with-foreign-object (bar :uint64 3)
+        (dotimes (i 3) (setf (cffi:mem-aref bar :uint64 i) 0))
+        (if (zerop (ghostty-vt.ffi:%terminal-get
+                    (ghostty-vt:terminal-handle (ghostty-engine-terminal engine))
+                    +ghostty-data-scrollbar+ bar))
+            ;; Rows below the viewport: total - offset - length.
+            (max 0 (- (cffi:mem-aref bar :uint64 0) (cffi:mem-aref bar :uint64 1)
+                      (cffi:mem-aref bar :uint64 2)))
+            nil))
+      0))
 
 (defmethod engine-scroll ((engine ghostty-engine) how)
   (when (and (ghostty-engine-helper engine)

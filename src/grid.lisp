@@ -18,6 +18,10 @@
 ;;;   tag 2 : direct RGB in the low 24 bits
 
 (defconstant +color-default+ 0)
+
+;;; U+10EEEE, the Kitty graphics Unicode placeholder: renderers draw the
+;;; image in its cell instead of the glyph.
+(defconstant +image-placeholder+ #x10EEEE)
 (defconstant +color-tag-palette+ 1)
 (defconstant +color-tag-rgb+ 2)
 
@@ -223,13 +227,19 @@ are dropped, and the right halves of wide characters are skipped."
         when (= bit 1)
           collect row))
 
+(declaim (inline grid-glyph-code))
+(defun grid-glyph-code (grid index)
+  "The codepoint to draw at INDEX: image placeholders draw as blanks."
+  (let ((code (aref (grid-codes grid) index)))
+    (if (= code +image-placeholder+) 0 code)))
+
 (defun grid-cell-string (grid index)
   "The text displayed at INDEX: empty for wide spacers, a space for blanks."
   (let ((code (aref (grid-codes grid) index))
         (attrs (aref (grid-attrs grid) index)))
     (cond
       ((logtest attrs +attr-wide-spacer+) "")
-      ((or (zerop code) (logtest attrs +attr-invisible+)) " ")
+      ((or (zerop code) (= code +image-placeholder+) (logtest attrs +attr-invisible+)) " ")
       (t
        (let ((extra (gethash index (grid-combining grid))))
          (if extra

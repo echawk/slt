@@ -188,16 +188,11 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
                            (web-send client (web-frame (headless-view-grid view) :all t)))
                          (when (headless-view-image-store view)
                            (web-send client
-                                     (json-object
-                                      "t" "images"
-                                      "items"
-                                      (coerce
-                                       (mapcar #'web-image-record
-                                               (terminal-image-render-list
-                                                (headless-view-image-store view)
-                                                (headless-view-cell-width view)
-                                                (headless-view-cell-height view)))
-                                       'vector))))))))))
+                                     (web-images-message
+                                      (terminal-image-render-list
+                                       (headless-view-image-store view)
+                                       (headless-view-cell-width view)
+                                       (headless-view-cell-height view)))))))))))
 
 (defun json-integer (table key &optional (default 0))
   (let ((value (gethash key table)))
@@ -267,17 +262,32 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
      "sh" (or (terminal-image-placement-source-height placement)
               (- (terminal-image-height image)
                  (terminal-image-placement-source-y placement)))
-     "iw" (terminal-image-width image) "ih" (terminal-image-height image)
-     "rgba" (cl-base64:usb8-array-to-base64-string (terminal-image-rgba image)))))
+     "iw" (terminal-image-width image) "ih" (terminal-image-height image))))
+
+(defun web-images-message (records)
+  "An images message: each image's pixels once, under \"sources\", however
+many placements and placement fragments draw it."
+  (let ((seen '()))
+    (json-object
+     "t" "images"
+     "sources" (coerce
+                (loop for (nil image) in records
+                      unless (member (terminal-image-id image) seen)
+                        do (push (terminal-image-id image) seen)
+                        and collect (json-object
+                                     "id" (terminal-image-id image)
+                                     "iw" (terminal-image-width image)
+                                     "ih" (terminal-image-height image)
+                                     "rgba" (cl-base64:usb8-array-to-base64-string
+                                             (terminal-image-rgba image))))
+                'vector)
+     "items" (coerce (mapcar #'web-image-record records) 'vector))))
 
 (defmethod backend-render-images :after ((backend web-backend) (view headless-view) store)
-  (let ((items (coerce
-                (mapcar #'web-image-record
-                        (terminal-image-render-list
-                         store (headless-view-cell-width view)
-                         (headless-view-cell-height view)))
-                'vector)))
-    (web-broadcast backend (json-object "t" "images" "items" items))))
+  (web-broadcast backend
+                 (web-images-message
+                  (terminal-image-render-list store (headless-view-cell-width view)
+                                              (headless-view-cell-height view)))))
 
 (defmethod backend-set-title :after ((backend web-backend) view title)
   (declare (ignore view))

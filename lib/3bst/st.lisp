@@ -372,7 +372,10 @@ to DEFAULt if not already set"
    (user-object :accessor user-object :initform nil)
    ;; last printed graphic character, for REP
    (last-char :accessor last-char :initform nil)
-   (set-title :accessor on-set-title :initform nil)))
+   (set-title :accessor on-set-title :initform nil)
+   ;; Called with the term, TOP and BOTTOM rows and COUNT (positive
+   ;; upward) whenever a region of the screen scrolls.
+   (scroll :accessor on-scroll :initform nil)))
 
 (defmethod initialize-instance :after ((term term) &key)
   (setf (slot-value term 'screen)
@@ -508,6 +511,8 @@ child process"
     (loop for i from bottom downto (+ orig n)
        do (rotatef (aref screen i)
                    (aref screen (- i n))))
+    (when (and (on-scroll term) (plusp n))
+      (funcall (on-scroll term) term orig bottom (- n)))
     #++(selscroll orig n) ;; todo
     ))
 
@@ -520,6 +525,8 @@ child process"
     (loop for i from orig to (- bottom n)
        do (rotatef (aref screen i)
                    (aref screen (+ i n))))
+    (when (and (on-scroll term) (plusp n))
+      (funcall (on-scroll term) term orig bottom n))
     #++(selscroll orig (- n)) ;; todo
     ))
 
@@ -1562,6 +1569,9 @@ child process"
       ;; slide screen to keep cursor where we expect it - tscrollup
       ;; would work here, but we can optimize to memmove because we're
       ;; freeing the earlier lines
+      (when (on-scroll term)
+        (funcall (on-scroll term) term 0 (1- (rows term)) slide :primary)
+        (funcall (on-scroll term) term 0 (1- (rows term)) slide :alternate))
       (replace (screen term) (screen term) :start1 0 :start2 slide)
       (replace (alternate-screen term) (alternate-screen term)
                :start1 0 :start2 slide)

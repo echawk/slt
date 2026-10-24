@@ -78,7 +78,8 @@ a wide character."
   (on-output nil)
   (on-bell nil)
   (on-title nil)
-  (on-scrollback nil))
+  (on-scrollback nil)
+  (on-moverect nil))
 
 (setf (documentation 'vterm-on-output 'function)
       "Function of (vterm octets) called with bytes libvterm wants written to
@@ -87,7 +88,12 @@ the pty (keyboard input, DA/DSR replies...).  SETFable."
       (documentation 'vterm-on-title 'function) "Function of (vterm title-string), or NIL."
       (documentation 'vterm-on-scrollback 'function)
       "Function of (vterm codes fg bg attrs) called with the packed contents of
-a line scrolled off the top of the primary screen, or NIL.")
+a line scrolled off the top of the primary screen, or NIL."
+      (documentation 'vterm-on-moverect 'function)
+      "Function of (vterm dest-start-row dest-end-row dest-start-col dest-end-col
+src-start-row src-end-row src-start-col src-end-col), called when libvterm
+moves a rectangle of the screen (scrolling, line or character insertion and
+deletion), or NIL.  End rows and columns are exclusive.")
 
 (defmethod print-object ((vt vterm) stream)
   (print-unreadable-object (vt stream :type t :identity t)
@@ -140,8 +146,11 @@ errors are queued and re-signalled when control is back in Lisp."
 
 (cffi:defcallback cb-moverect :int ((id :int) (dsr :int) (der :int) (dsc :int) (dec :int)
                                     (ssr :int) (ser :int) (ssc :int) (sec :int))
-  (declare (ignore dsc dec ssr ser ssc sec))
-  (let ((vt (%lookup id))) (when vt (%mark-rows vt dsr der)))
+  (let ((vt (%lookup id)))
+    (when vt
+      (%mark-rows vt dsr der)
+      (let ((f (vterm-on-moverect vt)))
+        (when f (%guarded (vt) (funcall f vt dsr der dsc dec ssr ser ssc sec))))))
   1)
 
 (cffi:defcallback cb-movecursor :int ((id :int) (row :int) (col :int) (visible :int))
@@ -258,7 +267,8 @@ errors are queued and re-signalled when control is back in Lisp."
         (vterm-columns vt) cols
         (vterm-damage vt) (make-array rows :element-type 'bit :initial-element 1)))
 
-(defun make-vterm (&key (rows 24) (columns 80) on-output on-bell on-title on-scrollback)
+(defun make-vterm (&key (rows 24) (columns 80) on-output on-bell on-title on-scrollback
+                        on-moverect)
   "Create a terminal of ROWS x COLUMNS.  UTF-8 input, the alternate screen
 and full reset are enabled.  The ON-* closures may also be set later with
 the SETFable accessors of the same name.  Free with VTERM-FREE (or use
@@ -269,7 +279,8 @@ WITH-VTERM)."
   (%install-hooks)
   (let* ((id (%allocate-id))
          (vt (%make-vterm :id id :on-output on-output :on-bell on-bell
-                          :on-title on-title :on-scrollback on-scrollback)))
+                          :on-title on-title :on-scrollback on-scrollback
+                          :on-moverect on-moverect)))
     (%note-size vt rows columns)
     ;; Register before clvt_new so callbacks fired by the reset find us.
     (setf (gethash id *registry*) vt)
@@ -316,6 +327,10 @@ octets consumed."
                0
                (cffi:with-pointer-to-vector-data (ptr octets)
                  (%vterm-input-write p (cffi:inc-pointer ptr s) (- e s))))
+      ;; Merged scrolls are otherwise reported only at the next flush; a
+      ;; moverect hook wants them in step with the input.
+      (when (vterm-on-moverect vt)
+        (%vterm-screen-flush-damage (%vterm-obtain-screen p)))
       (%signal-pending vt))))
 
 (defun vterm-resize (vt rows columns)

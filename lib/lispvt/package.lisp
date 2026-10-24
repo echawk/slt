@@ -6,6 +6,7 @@
    #:terminal-feed #:terminal-feed-string #:terminal-resize #:terminal-reset
    #:terminal-rows #:terminal-columns #:terminal-title
    #:terminal-output-function #:terminal-title-function #:terminal-bell-function
+   #:terminal-scroll-function
    #:terminal-cursor-row #:terminal-cursor-column #:terminal-cursor-visible-p
    #:terminal-cursor-shape #:terminal-mode #:terminal-alternate-screen-p
    ;; Reading the screen

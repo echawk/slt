@@ -214,7 +214,7 @@ precision highp int;
 (defun gl-image-texture (renderer image)
   (let* ((id (terminal-image-id image))
          (entry (gethash id (gl-renderer-image-textures renderer))))
-    (if (and entry (eq image (car entry)))
+    (if (and entry (eq (terminal-image-rgba image) (car entry)))
         (cdr entry)
         (let ((texture (gl:gen-texture))
               (rgba (terminal-image-rgba image)))
@@ -229,7 +229,7 @@ precision highp int;
             (gl:tex-image-2d :texture-2d 0 :rgba8
                              (terminal-image-width image) (terminal-image-height image) 0
                              :rgba :unsigned-byte (sb-sys:vector-sap rgba)))
-          (setf (gethash id (gl-renderer-image-textures renderer)) (cons image texture))
+          (setf (gethash id (gl-renderer-image-textures renderer)) (cons rgba texture))
           texture))))
 
 (defun gl-prune-image-textures (renderer records)

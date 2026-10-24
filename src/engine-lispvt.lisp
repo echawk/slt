@@ -13,7 +13,15 @@
          :rows rows :columns columns
          :output-function (lambda (string) (engine-emit-output engine string))
          :title-function (lambda (title) (engine-emit-title engine title))
-         :bell-function (lambda () (engine-emit-bell engine)))))
+         :bell-function (lambda () (engine-emit-bell engine))
+         :scroll-function (lambda (top bottom count &optional screen)
+                            (engine-emit-scroll engine top bottom count screen)))))
+
+(defmethod engine-reports-scrolls-p ((engine lispvt-engine))
+  t)
+
+(defmethod engine-viewport-offset ((engine lispvt-engine))
+  (lispvt:terminal-viewport-offset (lispvt-engine-terminal engine)))
 
 (defmethod engine-rows ((engine lispvt-engine))
   (lispvt:terminal-rows (lispvt-engine-terminal engine)))

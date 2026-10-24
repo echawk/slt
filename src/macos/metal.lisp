@@ -195,7 +195,7 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
 (defun metal-image-texture (renderer image)
   (let* ((id (terminal-image-id image))
          (entry (gethash id (metal-renderer-image-textures renderer))))
-    (if (and entry (eq image (car entry)))
+    (if (and entry (eq (terminal-image-rgba image) (car entry)))
         (cdr entry)
         (progn
           (when entry (msg (cdr entry) "release" :void))
@@ -217,7 +217,7 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
                      :pointer region :unsigned-long 0
                      :pointer (sb-sys:vector-sap rgba) :unsigned-long (* width 4) :void)))
             (setf (gethash id (metal-renderer-image-textures renderer))
-                  (cons image texture))
+                  (cons rgba texture))
             texture)))))
 
 (defun metal-prune-image-textures (renderer records)

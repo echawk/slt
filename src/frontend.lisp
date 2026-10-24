@@ -57,6 +57,14 @@
        (bt:with-recursive-lock-held ((terminal-emulator-lock ,e))
          ,@body))))
 
+(defmacro graphics-guard ((what) &body body)
+  "Run BODY; report an error instead of letting it stop the terminal."
+  `(handler-case (progn ,@body)
+     ;; Not only errors: a hostile image may exhaust the heap or stack.
+     (serious-condition (condition)
+       (format *error-output* "~&slt: error ~a: ~a~%" ,what condition)
+       nil)))
+
 (defun gl-backend-usable-p ()
   "True when the gl backend loads and finds GLFW and a display."
   (and (or (uiop:getenv "DISPLAY") (uiop:getenv "WAYLAND_DISPLAY"))
@@ -293,61 +301,6 @@ it happens.  Callable from any thread."
     (dotimes (row (grid-rows grid) result)
       (setf (aref result row) (grid-row-fingerprint grid row)))))
 
-(defstruct image-grid-snapshot
-  rows columns fingerprints codes fg bg attrs)
-
-(defun snapshot-image-grid (grid)
-  (make-image-grid-snapshot
-   :rows (grid-rows grid) :columns (grid-columns grid)
-   :fingerprints (grid-fingerprints grid)
-   :codes (copy-seq (grid-codes grid))
-   :fg (copy-seq (grid-fg grid))
-   :bg (copy-seq (grid-bg grid))
-   :attrs (copy-seq (grid-attrs grid))))
-
-(defun snapshot-cell-changed-p (snapshot old-row grid new-row column)
-  (if (or (minusp old-row) (>= old-row (image-grid-snapshot-rows snapshot)))
-      t
-      (let ((old-index (+ column (* old-row (image-grid-snapshot-columns snapshot))))
-            (new-index (grid-index grid new-row column)))
-        (or (/= (aref (image-grid-snapshot-codes snapshot) old-index)
-                (aref (grid-codes grid) new-index))
-            (/= (aref (image-grid-snapshot-fg snapshot) old-index)
-                (aref (grid-fg grid) new-index))
-            (/= (aref (image-grid-snapshot-bg snapshot) old-index)
-                (aref (grid-bg grid) new-index))
-            (/= (aref (image-grid-snapshot-attrs snapshot) old-index)
-                (aref (grid-attrs grid) new-index))))))
-
-(defun erase-written-image-cells (store snapshot grid scroll cell-width cell-height)
-  "Occlude SIXEL cells whose underlying terminal cells were rewritten."
-  (let ((changed nil))
-    (dolist (placement (terminal-image-store-placements store))
-      (when (and (terminal-image-placement-erase-on-write-p placement)
-                 (eq (terminal-image-placement-screen placement)
-                     (terminal-image-store-active-screen store)))
-        (let ((image (gethash (terminal-image-placement-image-id placement)
-                              (terminal-image-store-images store))))
-          (when image
-            (multiple-value-bind (columns rows)
-                (placement-cell-size placement image cell-width cell-height)
-              (dotimes (dr rows)
-                (dotimes (dc columns)
-                  (let ((row (+ (terminal-image-placement-row placement) dr))
-                        (column (+ (terminal-image-placement-column placement) dc)))
-                    (when (and (<= 0 row) (< row (grid-rows grid))
-                               (<= 0 column) (< column (grid-columns grid))
-                               (snapshot-cell-changed-p snapshot (+ row scroll)
-                                                        grid row column))
-                      (unless (gethash (+ dc (* dr columns))
-                                       (terminal-image-placement-hidden-cells placement))
-                        (setf (gethash (+ dc (* dr columns))
-                                       (terminal-image-placement-hidden-cells placement)) t
-                              changed t))))))))))
-    (when changed
-      (setf (terminal-image-store-dirty-p store) t))
-    changed)))
-
 (defun detect-grid-scroll (before grid)
   "Infer a whole-screen scroll from row fingerprints; positive means up."
   (let* ((rows (grid-rows grid))
@@ -390,35 +343,42 @@ the engine lock is held only for the copy."
     (with-engine (engine emulator)
       (let* ((store (terminal-emulator-image-store emulator))
              (old-screen (terminal-image-store-active-screen store))
-             (before (and (terminal-image-store-placements store)
-                          (= (grid-rows grid) (engine-rows engine))
-                          (= (grid-columns grid) (engine-columns engine))
-                          (snapshot-image-grid grid))))
+             (reported-p (engine-reports-scrolls-p engine))
+             (complete-p (engine-reports-all-scrolls-p engine))
+             (same-size-p (and (= (grid-rows grid) (engine-rows engine))
+                               (= (grid-columns grid) (engine-columns engine))))
+             ;; Scrolls an engine does not report are inferred.
+             (fingerprints (and (not complete-p) same-size-p
+                                (terminal-image-store-placements store)
+                                (grid-fingerprints grid)))
+             (force (or force (shiftf (terminal-image-store-force-render-p store) nil))))
         (engine-update-grid engine grid :force force)
         (let* ((screen (if (engine-mode engine :alternate-screen)
                            :alternate :primary))
                (same-screen-p (eq screen old-screen))
-               (detected (if (and before same-screen-p)
-                             (detect-grid-scroll
-                              (image-grid-snapshot-fingerprints before) grid)
+               (detected (if (and fingerprints same-screen-p)
+                             (detect-grid-scroll fingerprints grid)
                              0))
                (pending (terminal-image-store-pending-scroll store))
-               (scroll (if (and (plusp pending) (< detected pending))
-                           pending
-                           detected)))
+               (scroll (- (if (and (plusp pending) (< detected pending)) pending detected)
+                          ;; Reported scrolls already moved the placements.
+                          (if reported-p (terminal-image-store-reported-scroll store) 0))))
           (unless same-screen-p
             (setf (terminal-image-store-active-screen store) screen
                   (terminal-image-store-dirty-p store) t))
-          (unless (zerop scroll)
+          (when (and (not complete-p) (/= scroll 0)
+                     (or (plusp scroll) (zerop (terminal-image-store-reported-scroll store))))
             (scroll-image-placements store scroll))
-          (when (and before same-screen-p)
-            (erase-written-image-cells
-             store before grid scroll
+          ;; Only the live screen shows the cells under SIXEL images.
+          (when (and same-screen-p same-size-p (eql 0 (engine-viewport-offset engine)))
+            (erase-overwritten-sixel-cells
+             store grid
              (backend-view-cell-width (terminal-emulator-backend emulator)
                                       (terminal-emulator-view emulator))
              (backend-view-cell-height (terminal-emulator-backend emulator)
                                        (terminal-emulator-view emulator))))
-          (setf (terminal-image-store-pending-scroll store) 0)))
+          (setf (terminal-image-store-pending-scroll store) 0
+                (terminal-image-store-reported-scroll store) 0)))
       (setf tracking (and (engine-mode engine :mouse-tracking) t)))
     (unless (eq tracking (terminal-emulator-mouse-tracking emulator))
       (setf (terminal-emulator-mouse-tracking emulator) tracking)
@@ -436,11 +396,21 @@ the engine lock is held only for the copy."
                              grid)
         (grid-clear-dirty grid))
       (let ((store (terminal-emulator-image-store emulator)))
-        (when (or grid-dirty-p (terminal-image-store-dirty-p store))
-          (backend-render-images (terminal-emulator-backend emulator)
-                                 (terminal-emulator-view emulator)
-                                 store)
-          (setf (terminal-image-store-dirty-p store) nil))))
+        (when (or (terminal-image-store-dirty-p store)
+                  (and grid-dirty-p (terminal-image-store-placements store)))
+          ;; Renderers get a snapshot: the reader thread keeps changing STORE.
+          (let ((display (with-engine (engine emulator)
+                           (setf (terminal-image-store-dirty-p store) nil)
+                           (terminal-image-display-store
+                            store grid
+                            (backend-view-cell-width (terminal-emulator-backend emulator)
+                                                     (terminal-emulator-view emulator))
+                            (backend-view-cell-height (terminal-emulator-backend emulator)
+                                                      (terminal-emulator-view emulator))
+                            (engine-viewport-offset engine)))))
+            (backend-render-images (terminal-emulator-backend emulator)
+                                   (terminal-emulator-view emulator)
+                                   display)))))
     emulator))
 
 (defun write-input (emulator string)
@@ -926,26 +896,56 @@ the emulator when the item is chosen.  Read when the window is created.")
                      (format nil "~c[200~~~a~c[201~~" esc text esc)
                      text))))
 
+(defun install-image-scroll-hook (emulator)
+  "Let EMULATOR's engine move image placements as it scrolls."
+  (let ((engine (terminal-emulator-engine emulator))
+        (store (terminal-emulator-image-store emulator)))
+    (setf (engine-scroll-function engine)
+          (lambda (top bottom count &optional screen)
+            ;; Runs inside the engine's parser: never unwind it.
+            (graphics-guard ("moving images")
+              (note-engine-scroll store top bottom count
+                                  (or screen
+                                      (if (engine-mode engine :alternate-screen)
+                                          :alternate :primary))))))))
+
 (defun feed-emulator-output (emulator octets &key (start 0) (end (length octets)))
   "Feed child output through the terminal-graphics demultiplexer. The caller
 must hold EMULATOR's engine lock."
   (let ((engine (terminal-emulator-engine emulator))
-        (store (terminal-emulator-image-store emulator)))
+        (store (terminal-emulator-image-store emulator))
+        (backend (terminal-emulator-backend emulator))
+        (view (terminal-emulator-view emulator)))
+    (unless (engine-scroll-function engine)
+      (install-image-scroll-hook emulator))
+    (setf (terminal-graphics-parser-erase-events-p (terminal-emulator-graphics-parser emulator))
+          (and (find-if #'sixel-placement-p (terminal-image-store-placements store)) t))
+    (setf (terminal-image-store-cell-width store) (max 1 (backend-view-cell-width backend view))
+          (terminal-image-store-cell-height store) (max 1 (backend-view-cell-height backend view))
+          (terminal-image-store-rows store) (max 1 (engine-rows engine))
+          (terminal-image-store-columns store) (max 1 (engine-columns engine)))
     (terminal-graphics-feed
      (terminal-emulator-graphics-parser emulator) octets
      (lambda (ordinary ordinary-start ordinary-end)
        (engine-feed engine ordinary :start ordinary-start :end ordinary-end))
      (lambda (sixel)
-       (handle-sixel-command
-        store sixel engine
-        :cell-height (backend-view-cell-height
-                      (terminal-emulator-backend emulator)
-                      (terminal-emulator-view emulator))))
+       (graphics-guard ("drawing a SIXEL image")
+         (handle-sixel-command store sixel engine))
+       ;; Erasures later in this same input may now hit the image.
+       (setf (terminal-graphics-parser-erase-events-p
+              (terminal-emulator-graphics-parser emulator))
+             t))
      (lambda (kitty)
-       (let ((response (handle-kitty-command store kitty engine)))
+       (let ((response (graphics-guard ("handling a Kitty graphics command")
+                         (handle-kitty-command store kitty engine))))
          (when response
            (send-to-process emulator response))))
-     :start start :end end)))
+     :start start :end end
+     :on-control (lambda (event)
+                   (let ((reply (graphics-guard ("updating images")
+                                  (handle-graphics-control store event engine))))
+                     (when reply
+                       (send-to-process emulator reply)))))))
 
 (defun reader-loop (emulator)
   "Body of the reader thread: wait for child output, feed it to the engine
@@ -998,6 +998,10 @@ and notice a child that exited without closing the PTY."
   (labels ((poll ()
              (unless (terminal-emulator-closed-p emulator)
                (drain-ui-queue emulator)
+               (when (bt:with-recursive-lock-held ((terminal-emulator-lock emulator))
+                       (advance-terminal-image-animations
+                        (terminal-emulator-image-store emulator)))
+                 (request-render emulator))
                (let ((process (terminal-emulator-process emulator)))
                  (when (and process (not (process-alive-p process))
                             (not (and (terminal-emulator-reader-thread emulator)

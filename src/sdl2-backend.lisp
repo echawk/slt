@@ -309,7 +309,7 @@ it was (re)created, in which case its contents are undefined."
           fg))
 
 (defun ensure-glyph-texture (view grid index fg attrs)
-  (let* ((code (aref (grid-codes grid) index))
+  (let* ((code (grid-glyph-code grid index))
          (combining (gethash index (grid-combining grid)))
          (cache (sdl2-view-glyph-cache view))
          (key (and (null combining) (glyph-cache-key code fg attrs))))
@@ -373,7 +373,7 @@ it was (re)created, in which case its contents are undefined."
     ;; Glyphs and decorations.
     (dotimes (column columns)
       (let* ((index (+ base column))
-             (code (aref (grid-codes grid) index))
+             (code (grid-glyph-code grid index))
              (attrs (aref (grid-attrs grid) index))
              (x (* column cell-width)))
         (multiple-value-bind (fg bg) (cell-rgb grid index palette)

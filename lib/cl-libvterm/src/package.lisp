@@ -22,6 +22,7 @@
    #:vterm-on-bell
    #:vterm-on-title
    #:vterm-on-scrollback
+   #:vterm-on-moverect
    ;; state
    #:vterm-cursor
    #:vterm-title

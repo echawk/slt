@@ -381,7 +381,7 @@ export class SltTerminal extends EventTarget {
         break;
       }
       case "images":
-        this._drawImages(message.items || []);
+        this._drawImages(message.sources || [], message.items || []);
         break;
       case "title":
         this.title = message.title;
@@ -498,16 +498,23 @@ export class SltTerminal extends EventTarget {
     for (let row = 0; row < this.rows; row++) this._drawRow(row);
   }
 
-  _drawImages(items) {
+  _drawImages(sources, items) {
     this.imagesUnder.replaceChildren();
     this.imagesOver.replaceChildren();
-    for (const item of items) {
-      const bytes = Uint8ClampedArray.from(atob(item.rgba), (c) => c.charCodeAt(0));
-      if (bytes.length !== item.iw * item.ih * 4) continue;
+    // Each image's pixels arrive once per message, shared by its placements.
+    const canvases = new Map();
+    for (const image of sources) {
+      const bytes = Uint8ClampedArray.from(atob(image.rgba), (c) => c.charCodeAt(0));
+      if (bytes.length !== image.iw * image.ih * 4) continue;
       const source = document.createElement("canvas");
-      source.width = item.iw;
-      source.height = item.ih;
-      source.getContext("2d").putImageData(new ImageData(bytes, item.iw, item.ih), 0, 0);
+      source.width = image.iw;
+      source.height = image.ih;
+      source.getContext("2d").putImageData(new ImageData(bytes, image.iw, image.ih), 0, 0);
+      canvases.set(image.id, source);
+    }
+    for (const item of items) {
+      const source = canvases.get(item.id);
+      if (!source) continue;
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, item.w);
       canvas.height = Math.max(1, item.h);

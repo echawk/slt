@@ -120,7 +120,7 @@
     (let ((column 0))
       (loop while (< column columns)
             do (let* ((index (grid-index grid row column))
-                      (code (aref codes index))
+                      (code (grid-glyph-code grid index))
                       (cell-attrs (aref attrs index))
                       (fg (gtk-cell-colors grid index))
                       (style (logand cell-attrs (logior +attr-bold+ +attr-italic+

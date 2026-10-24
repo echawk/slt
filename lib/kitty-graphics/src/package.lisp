@@ -3,6 +3,8 @@
   (:export
    #:graphics-protocol-error
    #:graphics-protocol-error-message
+   #:graphics-protocol-error-code
+   #:protocol-error-with-code
    #:graphics-command
    #:graphics-command-p
    #:graphics-command-controls
@@ -19,5 +21,7 @@
    #:graphics-decoder-max-encoded-bytes
    #:graphics-decoder-reset
    #:graphics-decoder-feed
+   #:graphics-decoder-pending-p
+   #:graphics-decoder-abort
    #:graphics-command-pixel-data
    #:graphics-command-rgba))

@@ -281,7 +281,8 @@
       (is-equal 1 (terminal-image-placement-column placement)))
     (let ((grid (make-grid 3 10)))
       (engine-update-grid engine grid :force t)
-      (is-equal "AB" (grid-row-text grid 0)))))
+      ;; The cursor moved past the one-cell image (C=0).
+      (is-equal "A B" (grid-row-text grid 0)))))
 
 (deftest graphics-stream-parser-decodes-sixel-and-preserves-surrounding-text ()
   (when (cl-libsixel:libsixel-available-p)
@@ -301,8 +302,9 @@
         (is-equal 1 (terminal-image-placement-column placement)))
       (let ((grid (make-grid 8 10)))
         (engine-update-grid engine grid :force t)
-        (is-equal "X" (grid-row-text grid 0))
-        (is-equal "Y" (grid-row-text grid 1))))))
+        ;; Like xterm, a one-row image leaves the cursor at its left
+        ;; column on its last row.
+        (is-equal "XY" (grid-row-text grid 0))))))
 
 (deftest sixel-at-bottom-scrolls-inline-with-terminal-content ()
   (when (cl-libsixel:libsixel-available-p)
@@ -310,7 +312,8 @@
            (grid (make-grid 4 10))
            (store (slt::make-terminal-image-store))
            (esc (string (code-char 27)))
-           (sixel (concatenate 'string esc "Pq#0;2;100;0;0#0~" esc "\\")))
+           ;; 20 pixels high: two 16-pixel rows.
+           (sixel (concatenate 'string esc "Pq\"1;1;1;20#0;2;100;0;0#0~" esc "\\")))
       (engine-feed-string engine
                           (format nil "zero~c~cone~c~ctwo~c~cthree"
                                   #\Return #\Linefeed #\Return #\Linefeed
@@ -328,7 +331,7 @@
                        (first (terminal-image-store-placements store))))
           (multiple-value-bind (row column) (slt::engine-cursor-position engine)
             (is-equal 3 row)
-            (is-equal 0 column)))))))
+            (is-equal 5 column)))))))
 
 (deftest unchanged-grid-does-not-drift-image-placements ()
   (let ((grid (make-grid 4 10)))
@@ -342,7 +345,6 @@
 
 (deftest sixel-cells-are-erased-by-later-terminal-writes ()
   (let* ((grid (make-grid 2 4))
-         (snapshot (slt::snapshot-image-grid grid))
          (store (slt::make-terminal-image-store))
          (rgba (make-array (* 16 16 4) :element-type '(unsigned-byte 8)
                                          :initial-element 255))
@@ -351,8 +353,12 @@
                      :erase-on-write-p t)))
     (slt::store-image store 1 0 16 16 rgba)
     (push placement (terminal-image-store-placements store))
+    ;; The first look records the cells under the image ...
+    (slt::erase-overwritten-sixel-cells store grid 8 16)
+    (is (zerop (hash-table-count (slt::terminal-image-placement-hidden-cells placement))))
+    ;; ... and text written there later replaces the image.
     (setf (aref (grid-codes grid) (grid-index grid 0 0)) (char-code #\X))
-    (slt::erase-written-image-cells store snapshot grid 0 8 16)
+    (slt::erase-overwritten-sixel-cells store grid 8 16)
     (is (gethash 0 (slt::terminal-image-placement-hidden-cells placement)))
     (let ((records (terminal-image-render-list store 8 16)))
       (is-equal 1 (length records))
@@ -378,12 +384,13 @@
                                           :initial-element 255))
            (placement (slt::make-terminal-image-placement
                        :image-id 1 :row 0 :column 0 :columns 1 :rows 1
-                       :erase-on-write-p t)))
+                       :erase-on-write-p t :baseline (vector (list 0 0 0 0)))))
       (slt::store-image store 1 0 8 16 rgba)
       (push placement (terminal-image-store-placements store))
       (feed engine "X")
       (render-emulator emulator)
-      (is (gethash 0 (slt::terminal-image-placement-hidden-cells placement)))
+      ;; Wholly erased: the placement and its image are gone.
+      (is (null (terminal-image-store-placements store)))
       (is (null (terminal-image-render-list store 8 16))))))
 
 (deftest render-emulator-hides-primary-images-during-alternate-screen-programs ()
@@ -447,10 +454,11 @@
     (destructuring-bind (placement rendered-image x y width height)
         (first (terminal-image-render-list store 8 16))
       (declare (ignore placement rendered-image))
+      ;; A 20x10 source letterboxed into 3x2 cells of 8x16.
       (is-equal 49 x)
-      (is-equal 82 y)
+      (is-equal 92 y)
       (is-equal 24 width)
-      (is-equal 32 height))))
+      (is-equal 12 height))))
 
 (deftest kitty-uppercase-delete-frees-unplaced-image-data ()
   (let* ((engine (make-engine :lispvt :rows 2 :columns 10))
@@ -479,6 +487,436 @@
       (engine-update-grid engine grid :force t)
       (is-equal "Z" (grid-row-text grid 0)))
     (is-equal 0 (hash-table-count (terminal-image-store-images store)))))
+
+(defun graphics-session (&key (rows 4) (columns 10))
+  "An engine and image store wired as the frontend wires them, and a
+function feeding strings through the graphics parser that returns the
+replies sent to the child."
+  (let* ((engine (make-engine :lispvt :rows rows :columns columns))
+         (store (slt::make-terminal-image-store))
+         (parser (slt::make-terminal-graphics-parser)))
+    (setf (slt::terminal-image-store-rows store) rows
+          (slt::terminal-image-store-columns store) columns
+          (slt::terminal-image-store-cell-width store) 8
+          (slt::terminal-image-store-cell-height store) 16
+          (engine-scroll-function engine)
+          (lambda (top bottom count)
+            (slt::note-engine-scroll store top bottom count
+                                     (if (engine-mode engine :alternate-screen)
+                                         :alternate :primary))))
+    (values engine store
+            (lambda (&rest chunks)
+              (let ((replies '()))
+                (dolist (chunk chunks)
+                  (slt::terminal-graphics-feed
+                   parser (slt::string->octets chunk)
+                   (lambda (bytes start end) (engine-feed engine bytes :start start :end end))
+                   (lambda (payload) (slt::handle-sixel-command store payload engine))
+                   (lambda (payload)
+                     (let ((reply (slt::handle-kitty-command store payload engine)))
+                       (when reply (push reply replies))))
+                   :on-control (lambda (event)
+                                 (let ((reply (slt::handle-graphics-control store event engine)))
+                                   (when reply (push reply replies))))))
+                (nreverse replies))))))
+
+(defun kitty (controls &optional data)
+  (kitty-graphics:encode-graphics-command
+   controls (and data (make-array (length data) :element-type '(unsigned-byte 8)
+                                                :initial-contents data))))
+
+(defun session-row-text (engine row)
+  (let ((grid (make-grid (engine-rows engine) (engine-columns engine))))
+    (engine-update-grid engine grid :force t)
+    (grid-row-text grid row)))
+
+(deftest graphics-parser-leaves-utf-8-continuation-bytes-alone ()
+  ;; U+1F600 is F0 9F 98 80: 9F is APC as a raw C1 byte, but not in UTF-8.
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (funcall feed (format nil "a~cb~cc" (code-char #x1F600) (code-char #x9C)))
+    (is-equal (format nil "a~cb~cc" (code-char #x1F600) (code-char #x9C))
+              (session-row-text engine 0))
+    (is (null (terminal-image-store-placements store)))))
+
+(deftest dcs-with-intermediates-is-not-sixel ()
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (let ((esc (code-char 27)))
+      ;; DECRQSS (DCS $ q) and XTGETTCAP (DCS + q) reach the engine.
+      (funcall feed (format nil "~cP$qm~c\\~cP+q544e~c\\Z" esc esc esc esc))
+      (is (zerop (hash-table-count (terminal-image-store-images store))))
+      (is-equal "Z" (session-row-text engine 0)))))
+
+(deftest kitty-replies-need-an-id-and-honor-quiet ()
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (declare (ignore engine store))
+    (is (null (funcall feed (kitty '((#\a . "T") (#\f . "24") (#\s . "1") (#\v . "1"))
+                                   '(1 2 3)))))
+    (is (search "i=5;OK" (first (funcall feed (kitty '((#\a . "t") (#\f . "24") (#\s . "1")
+                                                       (#\v . "1") (#\i . "5"))
+                                                     '(1 2 3))))))
+    (is (null (funcall feed (kitty '((#\a . "p") (#\i . "5") (#\q . "1"))))))
+    (is (search "ENOENT" (first (funcall feed (kitty '((#\a . "p") (#\i . "6")))))))
+    (is (null (funcall feed (kitty '((#\a . "p") (#\i . "6") (#\q . "2"))))))
+    (is (search "EINVAL" (first (funcall feed (kitty '((#\a . "p") (#\i . "5")
+                                                       (#\I . "5")))))))))
+
+(deftest kitty-image-numbers-get-fresh-ids ()
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (declare (ignore engine))
+    (let ((reply (first (funcall feed (kitty '((#\a . "t") (#\f . "24") (#\s . "1")
+                                               (#\v . "1") (#\I . "13"))
+                                             '(1 2 3))))))
+      (is (search ",I=13;OK" reply))
+      (is (gethash (gethash 13 (slt::terminal-image-store-numbers store))
+                   (terminal-image-store-images store))))))
+
+(deftest kitty-cursor-moves-after-placements-unless-c-1 ()
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (declare (ignore store))
+    ;; 16x20 pixels: 2 columns and 2 rows of 8x16 cells.
+    (funcall feed (kitty '((#\a . "t") (#\f . "32") (#\s . "16") (#\v . "20") (#\i . "1"))
+                         (make-list (* 16 20 4) :initial-element 255)))
+    (funcall feed (kitty '((#\a . "p") (#\i . "1"))))
+    (multiple-value-bind (row column) (slt::engine-cursor-position engine)
+      (is-equal 1 row)
+      (is-equal 2 column))
+    (funcall feed (kitty '((#\a . "p") (#\i . "1") (#\C . "1"))))
+    (multiple-value-bind (row column) (slt::engine-cursor-position engine)
+      (is-equal 1 row)
+      (is-equal 2 column))))
+
+(deftest kitty-delete-by-id-range ()
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (declare (ignore engine))
+    (dolist (id '("3" "4" "9"))
+      (funcall feed (kitty `((#\a . "T") (#\f . "24") (#\s . "1") (#\v . "1")
+                             (#\i . ,id) (#\C . "1"))
+                           '(1 2 3))))
+    (funcall feed (kitty '((#\a . "d") (#\d . "R") (#\x . "3") (#\y . "5"))))
+    (is (null (gethash 3 (terminal-image-store-images store))))
+    (is (null (gethash 4 (terminal-image-store-images store))))
+    (is (gethash 9 (terminal-image-store-images store)))))
+
+(deftest kitty-relative-placements-follow-their-parent ()
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (declare (ignore engine))
+    (funcall feed (kitty '((#\a . "t") (#\f . "24") (#\s . "1") (#\v . "1") (#\i . "1"))
+                         '(1 2 3)))
+    (funcall feed (kitty '((#\a . "p") (#\i . "1") (#\p . "1") (#\C . "1"))))
+    (is (search "ENOPARENT"
+                (first (funcall feed (kitty '((#\a . "p") (#\i . "1") (#\p . "2")
+                                              (#\P . "1") (#\Q . "9")))))))
+    (funcall feed (kitty '((#\a . "p") (#\i . "1") (#\p . "2") (#\P . "1") (#\Q . "1")
+                           (#\H . "3") (#\V . "1"))))
+    (let ((child (slt::find-placement store 1 2)))
+      (multiple-value-bind (row column) (slt::placement-origin store child)
+        (is-equal 1 row)
+        (is-equal 3 column)))
+    ;; Moving the parent moves the child; deleting it deletes the child.
+    (funcall feed (format nil "~c[2;5H" (code-char 27))
+             (kitty '((#\a . "p") (#\i . "1") (#\p . "1") (#\C . "1"))))
+    (multiple-value-bind (row column)
+        (slt::placement-origin store (slt::find-placement store 1 2))
+      (is-equal 2 row)
+      (is-equal 7 column))
+    (funcall feed (kitty '((#\a . "d") (#\d . "i") (#\i . "1") (#\p . "1"))))
+    (is (null (terminal-image-store-placements store)))))
+
+(deftest kitty-animation-frames-advance-on-their-gaps ()
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (declare (ignore engine))
+    (funcall feed (kitty '((#\a . "T") (#\f . "32") (#\s . "1") (#\v . "1") (#\i . "2")
+                           (#\C . "1"))
+                         '(255 0 0 255)))
+    (funcall feed (kitty '((#\a . "f") (#\f . "32") (#\i . "2") (#\z . "100"))
+                         '(0 255 0 255)))
+    (funcall feed (kitty '((#\a . "a") (#\i . "2") (#\r . "1") (#\z . "50"))))
+    (let ((image (gethash 2 (terminal-image-store-images store))))
+      (is-equal 2 (length (slt::terminal-image-frames image)))
+      (is-equal '(255 0 0 255) (coerce (terminal-image-rgba image) 'list))
+      (funcall feed (kitty '((#\a . "a") (#\i . "2") (#\s . "3"))))
+      (let ((start (slt::terminal-image-frame-deadline image)))
+        (is (slt::advance-terminal-image-animations store (+ start 1)))
+        (is-equal '(0 255 0 255) (coerce (terminal-image-rgba image) 'list))
+        (is (slt::advance-terminal-image-animations store (+ start 101)))
+        (is-equal '(255 0 0 255) (coerce (terminal-image-rgba image) 'list)))
+      ;; Client-driven: a=a,c=N shows frame N.
+      (funcall feed (kitty '((#\a . "a") (#\i . "2") (#\s . "1") (#\c . "2"))))
+      (is-equal '(0 255 0 255) (coerce (terminal-image-rgba image) 'list))
+      ;; Composition: frame 1 replaces frame 2.
+      (funcall feed (kitty '((#\a . "c") (#\i . "2") (#\r . "1") (#\c . "2") (#\C . "1"))))
+      (is-equal '(255 0 0 255) (coerce (terminal-image-rgba image) 'list)))))
+
+(deftest kitty-unicode-placeholders-display-virtual-placements ()
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (funcall feed (kitty '((#\a . "T") (#\U . "1") (#\f . "32") (#\s . "16") (#\v . "32")
+                           (#\i . "42") (#\c . "2") (#\r . "2") (#\q . "2"))
+                         (make-list (* 16 32 4) :initial-element 255)))
+    (is (null (terminal-image-render-list store 8 16)))
+    ;; Row 0 and 1, columns inferred from the cell to the left.
+    (funcall feed (format nil "~c[38;5;42m~c~c~c~c~c[39m~c~c"
+                          (code-char 27) (code-char #x10EEEE) (code-char #x305)
+                          (code-char #x10EEEE) (code-char #x10EEEE) (code-char 27)
+                          #\Return #\Linefeed)
+             (format nil "~c[38;5;42m~c~c~c~c[39m"
+                     (code-char 27) (code-char #x10EEEE) (code-char #x30D)
+                     (code-char #x10EEEE) (code-char 27)))
+    (let ((grid (make-grid 4 10)))
+      (engine-update-grid engine grid :force t)
+      (let ((records (terminal-image-render-list
+                      (terminal-image-display-store store grid 8 16 0) 8 16)))
+        ;; The image fills its 2x2 cells; the third cell of row 0 lies
+        ;; past the placement and shows nothing.
+        (is-equal 4 (length records))
+        (is (every (lambda (record) (= 42 (terminal-image-id (second record)))) records))
+        (is (equalp (gethash '(42 . 0) (slt::terminal-image-store-virtual-origins store))
+                    '(0 . 0)))))))
+
+(deftest engine-scrolls-move-image-placements ()
+  (multiple-value-bind (engine store feed) (graphics-session :rows 4)
+    (funcall feed (format nil "~c[3;1H" (code-char 27))
+             (kitty '((#\a . "T") (#\f . "24") (#\s . "1") (#\v . "1") (#\i . "1") (#\C . "1"))
+                    '(1 2 3)))
+    (funcall feed (format nil "~c[4;1H~%~%" (code-char 27)))
+    (is-equal 0 (terminal-image-placement-row (first (terminal-image-store-placements store))))
+    ;; A scroll region the image lies outside of leaves it alone.
+    (funcall feed (format nil "~c[3;4r~c[4;1H~%" (code-char 27) (code-char 27)))
+    (is-equal 0 (terminal-image-placement-row (first (terminal-image-store-placements store))))
+    (is (engine-reports-scrolls-p engine))))
+
+(deftest engines-report-their-scrolls ()
+  (dolist (name '(:lispvt :3bst :libvterm))
+    (when (ignore-errors (slt::engine-available-p name))
+      (let ((engine (make-engine name :rows 3 :columns 10))
+            (calls '()))
+        (setf (engine-scroll-function engine)
+              (lambda (top bottom count) (push (list top bottom count) calls)))
+        (engine-feed-string engine (format nil "a~%b~%c~%d"))
+        (is (engine-reports-scrolls-p engine))
+        (is-equal 1 (reduce #'+ calls :key #'third))
+        (is (every (lambda (call) (and (= 0 (first call)) (= 2 (second call)))) calls))
+        (engine-close engine)))))
+
+(deftest clear-screen-reset-and-alternate-screen-clear-images ()
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (declare (ignore engine))
+    (flet ((place ()
+             (funcall feed (kitty '((#\a . "T") (#\f . "24") (#\s . "1") (#\v . "1")
+                                    (#\i . "1") (#\C . "1"))
+                                  '(1 2 3))))
+           (count-placements () (length (terminal-image-store-placements store))))
+      (place)
+      (funcall feed (format nil "~c[2J" (code-char 27)))
+      (is-equal 0 (count-placements))
+      (place)
+      (funcall feed (format nil "~cc" (code-char 27)))
+      (is-equal 0 (count-placements))
+      (funcall feed (format nil "~c[?1049h" (code-char 27)))
+      (place)
+      (is-equal :alternate (slt::terminal-image-placement-screen
+                            (first (terminal-image-store-placements store))))
+      (funcall feed (format nil "~c[?1049l~c[?1049h" (code-char 27) (code-char 27)))
+      (is-equal 0 (count-placements)))))
+
+(deftest sixel-modes-are-reported-and-decsdm-draws-at-the-origin ()
+  (when (cl-libsixel:libsixel-available-p)
+    (multiple-value-bind (engine store feed) (graphics-session)
+      (let ((esc (code-char 27)))
+        (is (search "?80;2$y" (first (funcall feed (format nil "~c[?80$p" esc)))))
+        (is (search "?1;0;256S" (first (funcall feed (format nil "~c[?1;1S" esc)))))
+        (is (search "?62;4" (first (funcall feed (format nil "~c[c" esc)))))
+        (funcall feed (format nil "~c[?80h~c[3;5H~cP0;1q#0;2;100;0;0#0@~c\\" esc esc esc esc))
+        (is (search "?80;1$y" (first (funcall feed (format nil "~c[?80$p" esc)))))
+        (let ((placement (first (terminal-image-store-placements store))))
+          (is-equal 0 (terminal-image-placement-row placement))
+          (is-equal 0 (terminal-image-placement-column placement))
+          ;; P2=1: unpainted pixels stay transparent.
+          (let ((image (gethash (terminal-image-placement-image-id placement)
+                                (terminal-image-store-images store))))
+            (is-equal 255 (aref (terminal-image-rgba image) 3))))
+        (multiple-value-bind (row column) (slt::engine-cursor-position engine)
+          (is-equal 2 row)
+          (is-equal 4 column))))))
+
+(defun mock-feed (emulator string)
+  (slt::feed-emulator-output emulator (slt::string->octets string)))
+
+(defun test-sixel (width height &key transparent)
+  "A WIDTH x HEIGHT SIXEL image, every pixel painted red."
+  (with-output-to-string (out)
+    (format out "~cP0;~d;0q\"1;1;~d;~d#1;2;100;0;0" (code-char 27) (if transparent 1 0)
+            width height)
+    (dotimes (band (ceiling height 6))
+      (format out "#1!~d~c-" width (code-char (+ 63 (if (< (* 6 (1+ band)) height)
+                                                        63
+                                                        (1- (ash 1 (- height (* 6 band)))))))))
+    (format out "~c\\" (code-char 27))))
+
+(deftest tall-sixel-scrolling-the-screen-stays-whole ()
+  (when (cl-libsixel:libsixel-available-p)
+    (multiple-value-bind (emulator) (make-mock-emulator :rows 10 :columns 20
+                                                        :cell-width 8 :cell-height 16)
+      (let ((store (slt::terminal-emulator-image-store emulator)))
+        (mock-feed emulator (format nil "~{l~a~c~c~}" (loop for i below 8 append
+                                                            (list i #\Return #\Linefeed))))
+        (render-emulator emulator)
+        ;; 8 rows high from row 8: scrolls the screen by 6.
+        (mock-feed emulator (test-sixel 40 128))
+        (mock-feed emulator (format nil "~c~c$ " #\Return #\Linefeed))
+        (render-emulator emulator)
+        (let ((placement (first (terminal-image-store-placements store))))
+          (is placement)
+          (is-equal 1 (terminal-image-placement-row placement))
+          (is (zerop (hash-table-count
+                      (slt::terminal-image-placement-hidden-cells placement))))
+          (is-equal 1 (length (terminal-image-render-list store 8 16))))))))
+
+(deftest text-written-before-a-sixel-does-not-erase-it ()
+  (when (cl-libsixel:libsixel-available-p)
+    (multiple-value-bind (emulator) (make-mock-emulator :rows 6 :columns 20
+                                                        :cell-width 8 :cell-height 16)
+      (let ((store (slt::terminal-emulator-image-store emulator)))
+        (render-emulator emulator)
+        ;; A full-screen redraw and an image over it, in one frame.
+        (mock-feed emulator (format nil "~c[Hhello world~c[H~a" (code-char 27) (code-char 27)
+                                    (test-sixel 16 32)))
+        (render-emulator emulator)
+        (let ((placement (first (terminal-image-store-placements store))))
+          (is placement)
+          (is (zerop (hash-table-count
+                      (slt::terminal-image-placement-hidden-cells placement)))))
+        ;; Later text and erasures replace the image cell by cell.
+        (mock-feed emulator (format nil "~c[1;1HZ" (code-char 27)))
+        (render-emulator emulator)
+        (is-equal 1 (hash-table-count (slt::terminal-image-placement-hidden-cells
+                                       (first (terminal-image-store-placements store)))))
+        (mock-feed emulator (format nil "~c[1;2H~c[K" (code-char 27) (code-char 27)))
+        (is-equal 2 (hash-table-count (slt::terminal-image-placement-hidden-cells
+                                       (first (terminal-image-store-placements store)))))
+        (mock-feed emulator (format nil "~c[2;1H~c[2X" (code-char 27) (code-char 27)))
+        ;; Every cell erased: the image is freed.
+        (is (null (terminal-image-store-placements store)))
+        (is (zerop (hash-table-count (terminal-image-store-images store))))))))
+
+(deftest opaque-sixel-replaces-the-sixels-it-covers ()
+  (when (cl-libsixel:libsixel-available-p)
+    (multiple-value-bind (emulator) (make-mock-emulator :rows 6 :columns 20
+                                                        :cell-width 8 :cell-height 16)
+      (let ((store (slt::terminal-emulator-image-store emulator)))
+        ;; A "video": the same spot redrawn many times keeps one image.
+        (dotimes (i 20)
+          (mock-feed emulator (format nil "~c[H~a" (code-char 27) (test-sixel 16 32))))
+        (is-equal 1 (length (terminal-image-store-placements store)))
+        (is-equal 1 (hash-table-count (terminal-image-store-images store)))
+        ;; Transparent images are drawn over, not instead of, older ones.
+        (mock-feed emulator (format nil "~c[H~a" (code-char 27)
+                                    (test-sixel 16 32 :transparent t)))
+        (is-equal 2 (length (terminal-image-store-placements store)))))))
+
+(defun random-graphics-stream (state length alphabet)
+  (let ((octets (make-array length :element-type '(unsigned-byte 8))))
+    (dotimes (i length octets)
+      (setf (aref octets i) (aref alphabet (random (length alphabet) state))))))
+
+(defun feed-in-random-chunks (state octets &key (sixel t) (kitty t))
+  "Feed OCTETS in random pieces; return the bytes passed on and the events."
+  (let* ((parser (slt::make-terminal-graphics-parser :max-control-bytes 1024))
+         (out (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
+         (events '())
+         (slt::*sixel-images* sixel)
+         (slt::*kitty-graphics-images* kitty))
+    (loop with start = 0
+          while (< start (length octets))
+          do (let ((end (min (length octets) (+ start 1 (random 7 state)))))
+               (slt::terminal-graphics-feed
+                parser octets
+                (lambda (bytes s e) (loop for i from s below e
+                                          do (vector-push-extend (aref bytes i) out)))
+                (lambda (payload) (push (list :sixel (coerce payload 'list)) events))
+                (lambda (payload) (push (list :kitty (coerce payload 'list)) events))
+                :start start :end end
+                :on-control (lambda (event) (push event events)))
+               (setf start end)))
+    (values (coerce out 'list) (nreverse events))))
+
+(deftest graphics-parser-passes-other-bytes-through-unchanged ()
+  (let ((state (sb-ext:seed-random-state 1234))
+        ;; Control-sequence material, but no SIXEL/Kitty introducers and no
+        ;; final bytes the parser answers or reports.
+        (alphabet (coerce (append (mapcar #'char-code (coerce "ab01;?$[P_\\ x" 'list))
+                                  '(27 27 27 24 26 10 13 #x90 #x9c #x9f #xc3 #xa9 #xf0))
+                          '(simple-array (unsigned-byte 8) (*)))))
+    (dotimes (trial 300)
+      (let ((octets (random-graphics-stream state (+ 1 (random 200 state)) alphabet)))
+        (dolist (enabled '(nil t))
+          (multiple-value-bind (out events)
+              (feed-in-random-chunks state octets :sixel enabled :kitty enabled)
+            ;; A stream ending inside an escape is withheld, not lost.
+            (unless (and (equal out (coerce octets 'list)) (null events))
+              (is (or (= 27 (aref octets (1- (length octets))))
+                      (and (null events)
+                           (equal out (subseq (coerce octets 'list) 0 (length out)))))))))))))
+
+(deftest graphics-parser-results-do-not-depend-on-chunking ()
+  (let* ((state (sb-ext:seed-random-state 99))
+         (esc (code-char 27))
+         (stream (slt::string->octets
+                  (format nil "a~cPq#0~c\\b~c_Gi=1;AAAA~c\\c~cP$qm~c\\~c[2J~c[?80h~c[?1049hd~cc~c_Gx~c\\e"
+                          esc esc esc esc esc esc esc esc esc esc esc esc))))
+    (multiple-value-bind (out events) (feed-in-random-chunks state stream)
+      (dotimes (trial 50)
+        (multiple-value-bind (out2 events2) (feed-in-random-chunks state stream)
+          (is (equal out out2))
+          (is (equal events events2))))
+      ;; Two Kitty commands (one malformed, for the handler to refuse) and
+      ;; one SIXEL image; DECRQSS is passed on.
+      (is-equal 3 (count-if (lambda (e) (member (first e) '(:sixel :kitty))) events)))))
+
+(deftest visible-cell-rectangles-cover-each-visible-cell-once ()
+  (let ((state (sb-ext:seed-random-state 7)))
+    (dotimes (trial 200)
+      (let* ((columns (1+ (random 9 state)))
+             (rows (1+ (random 9 state)))
+             (hidden (make-hash-table))
+             (covered (make-hash-table)))
+        (dotimes (key (* columns rows))
+          (when (< (random 1.0 state) 0.3) (setf (gethash key hidden) t)))
+        (loop for (top bottom left right) in (slt::visible-cell-rectangles hidden columns rows)
+              do (loop for dr from top below bottom
+                       do (loop for dc from left below right
+                                for key = (+ dc (* dr columns))
+                                do (is (not (gethash key hidden)))
+                                   (is (not (gethash key covered)))
+                                   (setf (gethash key covered) t))))
+        (is-equal (- (* columns rows) (hash-table-count hidden))
+                  (hash-table-count covered))))))
+
+(deftest graphics-queries-split-across-reads-are-still-answered ()
+  (let ((esc (code-char 27)))
+    (dolist (query (list (format nil "~c[c" esc) (format nil "~c[?80$p" esc)
+                         (format nil "~c[?1;1S" esc)))
+      (dotimes (split (length query))
+        (multiple-value-bind (engine store feed) (graphics-session)
+          (declare (ignore store))
+          (let ((replies (funcall feed (subseq query 0 (1+ split)) (subseq query (1+ split))
+                                  "x")))
+            (is-equal 1 (length replies))
+            ;; Nothing of the query reached the engine (or it would answer).
+            (is-equal "x" (session-row-text engine 0))))))))
+
+(deftest kitty-hostile-sizes-are-refused ()
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (declare (ignore store))
+    (is (search "EFBIG" (first (funcall feed (kitty '((#\a . "T") (#\f . "32") (#\o . "z")
+                                                     (#\s . "60000") (#\v . "60000") (#\i . "7"))
+                                                   '(120 156 3 0 0 0 0 1))))))
+    (is (search "EINVAL" (first (funcall feed (kitty '((#\a . "T") (#\f . "24") (#\s . "1")
+                                                      (#\v . "1") (#\i . "5")
+                                                      (#\r . "2000000000"))
+                                                    '(1 2 3))))))
+    (multiple-value-bind (row column) (slt::engine-cursor-position engine)
+      (is-equal 0 row)
+      (is-equal 0 column))))
 
 (deftest tcl-bool-converts-lisp-booleans-to-tcl-integers ()
   (is-equal 1 (tcl-bool t))

@@ -150,7 +150,7 @@ it on first use.  Return NIL when the atlas is full."
         (wide-bg 0))
     (dotimes (column columns t)
       (let* ((index (grid-index grid row column))
-             (code (aref (grid-codes grid) index))
+             (code (grid-glyph-code grid index))
              (attrs (aref (grid-attrs grid) index))
              (offset (* +gpu-words-per-cell+ index))
              (flags (logior (if (logtest attrs +attr-underline+) +gpu-flag-underline+ 0)

@@ -54,18 +54,46 @@
 (defun ensure-libpng ()
   (cffi:use-foreign-library libpng))
 
-(defun inflate-octets (data expected-length)
-  (ensure-libz)
-  (let ((result (make-array expected-length :element-type '(unsigned-byte 8))))
+(defconstant +safety-limit+ (* 256 1024 1024)
+  "Largest decoded image or transferred payload accepted, in octets.")
+
+(defun %inflate (data capacity)
+  "Inflate DATA into CAPACITY octets. Return the octets or :too-small."
+  (let ((result (make-array capacity :element-type '(unsigned-byte 8))))
     (cffi:with-pointer-to-vector-data (source data)
       (cffi:with-pointer-to-vector-data (destination result)
         (cffi:with-foreign-object (length :unsigned-long)
-          (setf (cffi:mem-ref length :unsigned-long) expected-length)
+          (setf (cffi:mem-ref length :unsigned-long) capacity)
           (let ((status (zlib-uncompress destination length source (length data))))
-            (unless (and (zerop status)
-                         (= expected-length (cffi:mem-ref length :unsigned-long)))
-              (protocol-error "Could not inflate image data (zlib status ~d)" status))))))
-    result))
+            (case status
+              (0 (subseq result 0 (cffi:mem-ref length :unsigned-long)))
+              ;; Z_BUF_ERROR: the output does not fit.
+              (-5 :too-small)
+              (t (protocol-error "Could not inflate image data (zlib status ~d)"
+                                 status)))))))))
+
+(defun inflate-octets (data expected-length)
+  "Inflate DATA, which must expand to exactly EXPECTED-LENGTH octets."
+  (ensure-libz)
+  (let ((result (%inflate data expected-length)))
+    (cond ((eq result :too-small)
+           (protocol-error "Inflated image data exceeds ~d octets" expected-length))
+          ((< (length result) expected-length)
+           (protocol-error-with-code "ENODATA" "Inflated image data is shorter than ~d octets"
+                                     expected-length))
+          (t result))))
+
+(defun inflate-octets-growing (data &optional (initial 0))
+  "Inflate DATA of unknown size, doubling the buffer up to the safety limit."
+  (ensure-libz)
+  (loop for capacity = (min +safety-limit+
+                            (max 4096 initial (* 4 (length data))))
+          then (min +safety-limit+ (* 2 capacity))
+        for result = (%inflate data capacity)
+        unless (eq result :too-small)
+          return result
+        when (= capacity +safety-limit+)
+          do (protocol-error-with-code "EFBIG" "Inflated image data exceeds the safety limit")))
 
 (defun png-message (image)
   (cffi:foreign-string-to-lisp
@@ -84,8 +112,8 @@
            (let* ((width (cffi:foreign-slot-value image '(:struct png-image) 'width))
                   (height (cffi:foreign-slot-value image '(:struct png-image) 'height))
                   (size (* width height 4)))
-             (unless (and (plusp width) (plusp height) (<= size (* 512 1024 1024)))
-               (protocol-error "Refusing PNG dimensions ~dx~d" width height))
+             (unless (and (plusp width) (plusp height) (<= size +safety-limit+))
+               (protocol-error-with-code "EFBIG" "Refusing PNG dimensions ~dx~d" width height))
              ;; PNG_FORMAT_RGBA = COLOR | ALPHA.
              (setf (cffi:foreign-slot-value image '(:struct png-image) 'format) 3)
              (let ((rgba (make-array size :element-type '(unsigned-byte 8))))
@@ -96,26 +124,46 @@
                (values rgba width height))))
       (png-image-free image))))
 
+(defun shared-memory-size (fd)
+  "Size in octets of the object open on FD."
+  #+sbcl (sb-posix:stat-size (sb-posix:fstat fd))
+  #-sbcl (progn fd (protocol-error "Shared-memory transfers require S=size")))
+
 (defun read-shared-memory (name offset size)
-  (unless (and (plusp size) (plusp (length name)) (char= (char name 0) #\/))
-    (protocol-error "Shared-memory transfers require a /name and S=size"))
+  "Read SIZE octets at OFFSET of shared-memory object NAME, then unlink it.
+
+NAME is passed to shm_open and shm_unlink unmodified, so names without a
+leading slash work too. A SIZE of zero reads to the end of the object."
+  (unless (and (plusp (length name)) (not (find (code-char 0) name)))
+    (protocol-error "Invalid shared-memory object name"))
   (let ((fd (posix-shm-open name 0 0)))
     (when (minusp fd)
-      (protocol-error "Could not open shared-memory object ~s" name))
+      (protocol-error-with-code "EBADF" "Could not open shared-memory object ~s" name))
     ;; The protocol requires unlinking as soon as the object has been opened.
     (ignore-errors (posix-shm-unlink name))
     (unwind-protect
-         (let* ((page-size (posix-page-size))
-                (base-offset (* (floor offset page-size) page-size))
-                (delta (- offset base-offset))
-                (mapped-size (+ delta size))
-                (memory (posix-mmap (cffi:null-pointer) mapped-size 1 1 fd base-offset)))
-           (when (= (cffi:pointer-address memory) #.(1- (ash 1 64)))
-             (protocol-error "Could not map shared-memory object ~s" name))
-           (unwind-protect
-                (let ((result (make-array size :element-type '(unsigned-byte 8))))
-                  (dotimes (index size result)
-                    (setf (aref result index)
-                          (cffi:mem-aref memory :uint8 (+ delta index)))))
-             (posix-munmap memory mapped-size)))
+         (let* ((object-size (if (plusp size)
+                                 #+sbcl (ignore-errors (shared-memory-size fd))
+                                 #-sbcl nil
+                                 (shared-memory-size fd)))
+                (size (if (plusp size) size (- object-size offset))))
+           (when (and object-size (< object-size (+ offset (max size 0))))
+             (protocol-error-with-code "ENODATA" "Shared-memory object ~s is too small" name))
+           (unless (plusp size)
+             (protocol-error-with-code "ENODATA" "Shared-memory object ~s has no data" name))
+           (when (> size +safety-limit+)
+             (protocol-error-with-code "EFBIG" "Shared-memory image exceeds the safety limit"))
+           (let* ((page-size (posix-page-size))
+                  (base-offset (* (floor offset page-size) page-size))
+                  (delta (- offset base-offset))
+                  (mapped-size (+ delta size))
+                  (memory (posix-mmap (cffi:null-pointer) mapped-size 1 1 fd base-offset)))
+             (when (= (cffi:pointer-address memory) #.(1- (ash 1 64)))
+               (protocol-error-with-code "EBADF" "Could not map shared-memory object ~s" name))
+             (unwind-protect
+                  (let ((result (make-array size :element-type '(unsigned-byte 8))))
+                    (dotimes (index size result)
+                      (setf (aref result index)
+                            (cffi:mem-aref memory :uint8 (+ delta index)))))
+               (posix-munmap memory mapped-size))))
       (posix-close fd))))

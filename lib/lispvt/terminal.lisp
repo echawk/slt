@@ -73,6 +73,10 @@
   (output-function nil)
   (title-function nil)
   (bell-function nil)
+  ;; Called with TOP, BOTTOM and COUNT whenever rows TOP..BOTTOM of the
+  ;; current screen move: COUNT is positive for upward scrolls.  Resizing
+  ;; also passes the screen, :PRIMARY or :ALTERNATE.
+  (scroll-function nil)
   (title "" :type string))
 
 (defun default-tabs (columns)
@@ -82,11 +86,12 @@
     tabs))
 
 (defun make-terminal (&key (rows 24) (columns 80) (scrollback 10000)
-                        output-function title-function bell-function)
+                        output-function title-function bell-function scroll-function)
   "A terminal of ROWS x COLUMNS keeping up to SCROLLBACK lines of history.
 OUTPUT-FUNCTION is called with strings to send back to the application
-(replies to queries), TITLE-FUNCTION with a new window title, and
-BELL-FUNCTION with no arguments."
+(replies to queries), TITLE-FUNCTION with a new window title,
+BELL-FUNCTION with no arguments, and SCROLL-FUNCTION with the TOP and
+BOTTOM rows and COUNT (positive upward) of every scroll."
   (let* ((primary (make-screen rows columns scrollback))
          (term (%make-terminal :rows rows :columns columns :scrollback scrollback
                                :primary primary
@@ -94,7 +99,8 @@ BELL-FUNCTION with no arguments."
                                :screen primary
                                :output-function output-function
                                :title-function title-function
-                               :bell-function bell-function)))
+                               :bell-function bell-function
+                               :scroll-function scroll-function)))
     (reset-state term)
     term))
 
@@ -196,6 +202,13 @@ BELL-FUNCTION with no arguments."
 
 ;;; Scrolling
 
+(defun note-scroll (term top bottom count &optional screen)
+  (let ((function (terminal-scroll-function term)))
+    (when (and function (/= count 0))
+      (if screen
+          (funcall function top bottom count screen)
+          (funcall function top bottom count)))))
+
 (defun scroll-up (term top bottom count &optional history)
   "Scroll rows TOP..BOTTOM up by COUNT.  With HISTORY, lines leaving the top
 of the primary screen go to scrollback."
@@ -218,6 +231,7 @@ of the primary screen go to scrollback."
                                (make-line columns)))
                          line)))
           (setf (svref lines bottom) (clear-line fresh bg)))))
+    (note-scroll term top bottom count)
     (when (and keep (plusp (terminal-viewport-offset term)))
       (setf (terminal-viewport-offset term)
             (min (+ (terminal-viewport-offset term) count)
@@ -233,6 +247,7 @@ of the primary screen go to scrollback."
       (let ((line (svref lines bottom)))
         (replace lines lines :start1 (1+ top) :start2 top :end2 bottom)
         (setf (svref lines top) (clear-line line bg))))
+    (note-scroll term top bottom (- count))
     (mark-rows-dirty term top bottom)))
 
 (defun index (term)
@@ -1047,6 +1062,9 @@ scrollback so that the cursor stays on screen."
     (unless (and (= rows (terminal-rows term)) (= columns (terminal-columns term)))
       (let ((shift (max 0 (- (terminal-cursor-row term) (1- rows))))
             (old-tabs (terminal-tabs term)))
+        ;; Both screens shift.
+        (note-scroll term 0 (1- (terminal-rows term)) shift :primary)
+        (note-scroll term 0 (1- (terminal-rows term)) shift :alternate)
         (resize-screen (terminal-primary term) rows columns shift t)
         (resize-screen (terminal-alternate term) rows columns shift nil)
         (setf (terminal-rows term) rows

@@ -22,7 +22,14 @@
           (3bst::on-set-title term)
           (lambda (term title)
             (declare (ignore term))
-            (engine-emit-title engine title)))))
+            (engine-emit-title engine title))
+          (3bst::on-scroll term)
+          (lambda (term top bottom count &optional screen)
+            (declare (ignore term))
+            (engine-emit-scroll engine top bottom count screen)))))
+
+(defmethod engine-reports-scrolls-p ((engine 3bst-engine))
+  t)
 
 (defmethod engine-rows ((engine 3bst-engine))
   (3bst:rows (3bst-engine-term engine)))

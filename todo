@@ -6,8 +6,18 @@ add support for user configuration via a config file (just a source we load on b
 support both libsixel and kitty graphics protocol;
   - both should start out as a lib here and eventually be able to be extracted into their own
     project, which others can then use
-  - finish Kitty animation frames/control and Unicode placeholder rendering
-  - track image placements through terminal scrolling, alternate-screen switches, and erasure
-  - match SIXEL/Kitty cursor movement and SIXEL DECSDM behavior in every engine
+  - Kitty: placeholder placement ids (needs underline color in the grid); indexed-color
+    images should follow palette changes
+  - ghostty reports only scrolls that grow its scrollback; region and alternate-screen
+    scrolls are inferred from the screen
+  - 3bst stores a printed space as a blank cell, so a space written over a SIXEL
+    cell does not erase it
+  - images are decoded on the reader thread with the engine lock held (a 24 MB Kitty
+    upload holds it ~0.4 s)
+  - SIXEL: pixel aspect ratio (libsixel's decoder ignores it)
+  - images under text (negative z) only on the Metal, GL and web backends
 
 support drag and drop in both macos & X11 at the beginning
+
+rename `backend` to frontend; idk why it is a `gui backend` as opposed to a `gui frontend`
+engine can stay the same name though.

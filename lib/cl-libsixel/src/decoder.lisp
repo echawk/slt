@@ -114,14 +114,25 @@ image size; it defaults to 4096 by 4096."
               (%allocator-free allocator palette)))
           (%allocator-unref allocator))))))
 
-(defun sixel-image-rgba (image)
-  "Expand IMAGE's indexed pixels into an RGBA octet vector."
+(defun sixel-image-rgba (image &key (background :transparent))
+  "Expand IMAGE's indexed pixels into an RGBA octet vector.
+
+libsixel leaves pixels the image never paints at an index past the palette.
+BACKGROUND decides their color: :TRANSPARENT (the default, as for P2=1), or
+a palette index, which SIXEL's opaque background modes use (register 0)."
   (let* ((pixels (sixel-image-pixels image))
          (palette (sixel-image-palette image))
+         (colors (sixel-image-color-count image))
+         (fill (and (integerp background) (< -1 background colors) background))
          (result (make-array (* 4 (length pixels))
                              :element-type '(unsigned-byte 8))))
     (dotimes (index (length pixels) result)
-      (let ((source (* 4 (aref pixels index)))
+      (let ((color (aref pixels index))
             (target (* 4 index)))
-        (replace result palette :start1 target :end1 (+ target 4)
-                                :start2 source :end2 (+ source 4))))))
+        (cond
+          ((< color colors)
+           (replace result palette :start1 target :end1 (+ target 4)
+                                   :start2 (* 4 color)))
+          (fill
+           (replace result palette :start1 target :end1 (+ target 4)
+                                   :start2 (* 4 fill))))))))

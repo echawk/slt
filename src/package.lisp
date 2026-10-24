@@ -41,6 +41,7 @@
    #:grid-cursor-visible-p
    #:grid-cursor-shape
    #:grid-cell-string
+   #:grid-glyph-code
    #:grid-row-text
    #:grid-text
    #:grid-range-text
@@ -89,6 +90,11 @@
    #:engine-emit-output
    #:engine-emit-title
    #:engine-emit-bell
+   #:engine-emit-scroll
+   #:engine-scroll-function
+   #:engine-reports-scrolls-p
+   #:engine-viewport-offset
+   #:engine-reports-all-scrolls-p
    #:engine-output-function
    #:engine-title-function
    #:engine-bell-function
@@ -149,6 +155,9 @@
    #:terminal-image-store-placements
    #:terminal-image-store-dirty-p
    #:terminal-image-render-list
+   #:terminal-image-display-store
+   #:advance-terminal-image-animations
+   #:+image-placeholder+
    #:shell-quote
    #:*menu-items*
    #:scroll-viewport

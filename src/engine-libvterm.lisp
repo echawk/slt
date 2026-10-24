@@ -33,8 +33,18 @@
                     (engine-emit-bell engine))
          :on-title (lambda (vt title)
                      (declare (ignore vt))
-                     (engine-emit-title engine title))))
+                     (engine-emit-title engine title))
+         ;; Full-width row moves are scrolls (and line insertion/deletion).
+         :on-moverect (lambda (vt dsr der dsc dec ssr ser ssc sec)
+                        (when (and (zerop dsc) (zerop ssc) (= dec sec)
+                                   (= dec (libvterm:vterm-columns vt))
+                                   (/= dsr ssr))
+                          (engine-emit-scroll engine (min dsr ssr) (1- (max der ser))
+                                              (- ssr dsr))))))
   (allocate-libvterm-rows engine columns))
+
+(defmethod engine-reports-scrolls-p ((engine libvterm-engine))
+  t)
 
 (defmethod engine-rows ((engine libvterm-engine))
   (libvterm:vterm-rows (libvterm-engine-vterm engine)))
@@ -50,7 +60,17 @@
   engine)
 
 (defmethod engine-resize ((engine libvterm-engine) rows columns)
-  (libvterm:vterm-resize (libvterm-engine-vterm engine) rows columns)
+  ;; Shrinking pushes the rows above the cursor into the scrollback.
+  (let* ((vt (libvterm-engine-vterm engine))
+         (old-rows (libvterm:vterm-rows vt))
+         (pushed 0))
+    (setf (libvterm:vterm-on-scrollback vt) (lambda (&rest line)
+                                              (declare (ignore line))
+                                              (incf pushed)))
+    (unwind-protect (libvterm:vterm-resize vt rows columns)
+      (setf (libvterm:vterm-on-scrollback vt) nil))
+    (when (plusp pushed)
+      (engine-emit-scroll engine 0 (1- old-rows) pushed :primary)))
   (allocate-libvterm-rows engine columns)
   engine)
 

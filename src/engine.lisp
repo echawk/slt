@@ -19,7 +19,32 @@ child, e.g. replies to device attribute queries.")
    (bell-function
     :initarg :bell-function
     :initform nil
-    :accessor engine-bell-function)))
+    :accessor engine-bell-function)
+   (scroll-function
+    :initarg :scroll-function
+    :initform nil
+    :accessor engine-scroll-function
+    :documentation "Called during ENGINE-FEED or ENGINE-RESIZE with TOP,
+BOTTOM, COUNT and optionally SCREEN (:PRIMARY or :ALTERNATE, the current
+screen when omitted) when rows TOP..BOTTOM (inclusive) move up COUNT rows
+(down when negative), by engines whose ENGINE-REPORTS-SCROLLS-P is true.")))
+
+(defgeneric engine-reports-scrolls-p (engine)
+  (:documentation "True when ENGINE calls its scroll function for every scroll.")
+  (:method ((engine engine))
+    nil))
+
+(defgeneric engine-reports-all-scrolls-p (engine)
+  (:documentation "True when the scroll reports are complete; otherwise the
+frontend also infers scrolls from the screen contents.")
+  (:method ((engine engine))
+    (engine-reports-scrolls-p engine)))
+
+(defgeneric engine-viewport-offset (engine)
+  (:documentation "Rows of scrollback shown above the screen: 0 when following
+the live screen, NIL when scrolled back by an unknown amount.")
+  (:method ((engine engine))
+    0))
 
 (defgeneric engine-rows (engine))
 (defgeneric engine-columns (engine))
@@ -90,6 +115,13 @@ engine supports scrollback.")
   (let ((function (engine-title-function engine)))
     (when function
       (funcall function title))))
+
+(defun engine-emit-scroll (engine top bottom count &optional screen)
+  (let ((function (engine-scroll-function engine)))
+    (when function
+      (if screen
+          (funcall function top bottom count screen)
+          (funcall function top bottom count)))))
 
 (defun engine-emit-bell (engine)
   (let ((function (engine-bell-function engine)))

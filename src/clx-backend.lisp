@@ -177,7 +177,7 @@ the regular one, and whether they are ISO 10646 encoded."
     (let ((column 0))
       (loop while (< column columns)
             do (let* ((index (grid-index grid row column))
-                      (code (aref codes index))
+                      (code (grid-glyph-code grid index))
                       (cell-attrs (aref attrs index))
                       (fg (clx-cell-colors grid index))
                       (style (logand cell-attrs +clx-style-attrs+))
