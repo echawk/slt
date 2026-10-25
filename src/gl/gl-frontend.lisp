@@ -39,9 +39,26 @@ steps, so it uses a smaller multiplier.")
 (defun gl-libraries-available-p ()
   "True when GLFW and the glyph rasterizer's libraries load."
   (ignore-errors
-   (cffi:load-foreign-library '%glfw:libglfw)
+   (cffi:load-foreign-library '%glfw::glfw)
    #-darwin (load-freetype)
    t))
+
+;;; GLFW 3.2 and 3.3 calls and window hints cl-glfw3 does not bind.
+
+(cffi:defcfun ("glfwWaitEventsTimeout" %glfw-wait-events-timeout) :void (timeout :double))
+(cffi:defcfun ("glfwGetKeyName" %glfw-get-key-name) :string (key :int) (scan-code :int))
+(cffi:defcfun ("glfwFocusWindow" %glfw-focus-window) :void (window :pointer))
+(cffi:defcfun ("glfwWindowHint" %glfw-window-hint) :void (hint :int) (value :int))
+(cffi:defcfun ("glfwSetDropCallback" %glfw-set-drop-callback) :pointer
+  (window :pointer) (callback :pointer))
+(cffi:defcfun ("glfwSetWindowContentScaleCallback" %glfw-set-window-content-scale-callback)
+    :pointer
+  (window :pointer) (callback :pointer))
+
+(defconstant +glfw-context-creation-api+ #x0002200B)
+(defconstant +glfw-egl-context-api+ #x00036002)
+(defconstant +glfw-scale-to-monitor+ #x0002200C)
+(defconstant +glfw-key-unknown+ -1)
 
 (defclass gl-frontend (terminal-frontend)
   ((view :initform nil :accessor gl-frontend-view)
@@ -51,8 +68,9 @@ steps, so it uses a smaller multiplier.")
    (wake-lock :initform (bt:make-lock "slt gl wakeup") :reader gl-frontend-wake-lock)
    (wake-thunks :initform '() :accessor gl-frontend-wake-thunks)))
 
-(defclass gl-view (glfw:window)
-  ((frontend :initarg :frontend :reader gl-view-frontend)
+(defclass gl-view ()
+  ((pointer :initform nil :accessor gl-view-pointer)
+   (frontend :initarg :frontend :reader gl-view-frontend)
    (api :initarg :api :reader gl-view-api)
    (renderer :initform nil :accessor gl-view-renderer)
    (font :initform nil :accessor gl-view-font)
@@ -94,6 +112,23 @@ GLFW's C frames on error."
        (error (condition)
          (format *error-output* "~&slt: ~a~%" condition)))))
 
+;;; GLFW calls back with the window's pointer.
+
+(defvar *gl-views* (make-hash-table)
+  "Open views by the address of their GLFW window.")
+
+(defmacro define-gl-callback (name (view &rest arguments) &body body)
+  "Define the GLFW window callback NAME, running BODY for the open VIEW
+whose window it is.  ARGUMENTS follow the window, as in DEFCALLBACK."
+  (let ((window (gensym "WINDOW"))
+        (declarations (loop while (and (consp (first body)) (eq (first (first body)) 'declare))
+                            collect (pop body))))
+    `(%glfw:define-glfw-callback ,name ((,window :pointer) ,@arguments)
+       ,@declarations
+       (let ((,view (gethash (cffi:pointer-address ,window) *gl-views*)))
+         (when ,view
+           (with-live-view (,view) ,@body))))))
+
 ;;; Fonts: CoreText on macOS, FreeType elsewhere.  Sizes are pixels.
 
 (defun open-glyph-font (family pixel-size)
@@ -129,7 +164,7 @@ GLFW's C frames on error."
                 (gl-view-instances view) nil))))))
 
 (defun gl-view-content-scale (view)
-  (let ((scale (second (glfw:content-scale view))))
+  (let ((scale (second (glfw:get-window-content-scale (gl-view-pointer view)))))
     (if (plusp scale) scale 1.0)))
 
 ;;; Keyboard
@@ -140,27 +175,27 @@ GLFW's C frames on error."
           (if (member :alt modifiers) +mod1-mask+ 0)
           (if (member :super modifiers) +mod4-mask+ 0)))
 
-(defun gl-printable-key-code (key)
-  "The code of KEY when it is a printable key (space through grave accent)."
-  (let ((code (cffi:foreign-enum-value '%glfw:key key :errorp nil)))
-    (and code (<= 32 code 96) code)))
+(defun gl-printable-key-code (code)
+  "CODE when it is a printable key's (space through grave accent)."
+  (and (<= 32 code 96) code))
 
-(defun gl-key-text (key code scan-code modifiers)
-  "The character a printable KEY produces with Control or Meta held, from
-the keyboard layout where GLFW knows it."
-  (let ((name (or (ignore-errors (glfw:key-name scan-code))
-                  (and (not (eq key :space)) (ignore-errors (glfw:key-name key)))
+(defun gl-key-text (code scan-code modifiers)
+  "The character the printable key CODE produces with Control or Meta held,
+from the keyboard layout where GLFW knows it."
+  (let ((name (or (%glfw-get-key-name +glfw-key-unknown+ scan-code)
+                  (and (/= code 32) (%glfw-get-key-name code 0))
                   (string (char-downcase (code-char code))))))
     (if (and (member :shift modifiers) (= 1 (length name)) (alpha-char-p (char name 0)))
         (string-upcase name)
         name)))
 
-(defun gl-key-data (key scan-code modifiers)
-  "The (CHAR KEYSYM STATE) to send for a key press, or NIL to leave it to
-the character callback."
+(defun gl-key-data (key-code scan-code modifiers)
+  "The (CHAR KEYSYM STATE) to send for a press of the key KEY-CODE, or NIL
+to leave it to the character callback."
   (let ((state (glfw-modifiers->state modifiers))
-        (keysym (cdr (assoc key *glfw-key-keysyms*)))
-        (code (gl-printable-key-code key))
+        (keysym (cdr (assoc (cffi:foreign-enum-keyword '%glfw::key key-code :errorp nil)
+                            *glfw-key-keysyms*)))
+        (code (gl-printable-key-code key-code))
         ;; With Option as Meta, macOS's composed character is not wanted.
         ;; Elsewhere Alt+key still produces the plain character, which the
         ;; character callback sends with Meta.
@@ -169,7 +204,7 @@ the character callback."
       (keysym (list "" keysym state))
       ;; Super combinations go to the emulator for its shortcuts.
       ((and code (or (member :control modifiers) (member :super modifiers) meta))
-       (let ((text (gl-key-text key code scan-code modifiers)))
+       (let ((text (gl-key-text code scan-code modifiers)))
          ;; Shift is reflected in the character.
          (list text text (logand state (lognot +shift-mask+)))))
       (t nil))))
@@ -178,33 +213,33 @@ the character callback."
   (when (gl-view-keypress-callback view)
     (apply (gl-view-keypress-callback view) (append data (list event)))))
 
-(defmethod glfw:key-changed ((view gl-view) key scan-code action modifiers)
-  (with-live-view (view)
-    (if (eq action :release)
-        ;; Releases have no character event: name the key from the layout.
-        (let ((data (or (gl-key-data key scan-code modifiers)
-                        (let ((code (gl-printable-key-code key)))
-                          (and code
-                               (let ((text (gl-key-text key code scan-code modifiers)))
-                                 (list text text (logand (glfw-modifiers->state modifiers)
-                                                         (lognot +shift-mask+)))))))))
+(define-gl-callback gl-key-changed (view (key :int) (scan-code :int)
+                                         (action %glfw::key-action)
+                                         (modifiers %glfw::mod-keys))
+  (if (eq action :release)
+      ;; Releases have no character event: name the key from the layout.
+      (let ((data (or (gl-key-data key scan-code modifiers)
+                      (let ((code (gl-printable-key-code key)))
+                        (and code
+                             (let ((text (gl-key-text code scan-code modifiers)))
+                               (list text text (logand (glfw-modifiers->state modifiers)
+                                                       (lognot +shift-mask+)))))))))
+        (when data
+          (deliver-gl-key view data :release)))
+      (progn
+        (setf (gl-view-key-modifiers view) modifiers
+              (gl-view-suppress-char view) nil
+              (gl-view-key-event view) action)
+        (let ((data (gl-key-data key scan-code modifiers)))
           (when data
-            (deliver-gl-key view data :release)))
-        (progn
-          (setf (gl-view-key-modifiers view) modifiers
-                (gl-view-suppress-char view) nil
-                (gl-view-key-event view) action)
-          (let ((data (gl-key-data key scan-code modifiers)))
-            (when data
-              (setf (gl-view-suppress-char view) t)
-              (deliver-gl-key view data action)))))))
+            (setf (gl-view-suppress-char view) t)
+            (deliver-gl-key view data action))))))
 
-(defmethod glfw:char-entered ((view gl-view) code-point)
-  (with-live-view (view)
-    (unless (gl-view-suppress-char view)
-      (let ((text (string (code-char code-point)))
-            (state (if (member :alt (gl-view-key-modifiers view)) +mod1-mask+ 0)))
-        (deliver-gl-key view (list text text state) (gl-view-key-event view))))))
+(define-gl-callback gl-char-entered (view (code-point :unsigned-int))
+  (unless (gl-view-suppress-char view)
+    (let ((text (string (code-char code-point)))
+          (state (if (member :alt (gl-view-key-modifiers view)) +mod1-mask+ 0)))
+      (deliver-gl-key view (list text text state) (gl-view-key-event view)))))
 
 ;;; Mouse
 
@@ -213,7 +248,8 @@ the character callback."
 
 (defun gl-pointer-cell (view x y)
   "The (ROW COLUMN) under window coordinates X, Y."
-  (let ((scale (/ (first (glfw:framebuffer-size view)) (max 1 (glfw:width view)))))
+  (let ((scale (/ (first (glfw:get-framebuffer-size (gl-view-pointer view)))
+                 (max 1 (first (glfw:get-window-size (gl-view-pointer view)))))))
     (list (floor (* y scale) (gl-view-cell-height view))
           (floor (* x scale) (gl-view-cell-width view)))))
 
@@ -237,72 +273,88 @@ one quickly at the same cell."
     (funcall (gl-view-mouse-callback view) action (first cell) (second cell) clicks
              button state)))
 
-(defmethod glfw:mouse-button-changed ((view gl-view) button action modifiers)
-  (let ((number (case button (:left 1) (:middle 2) (:right 3))))
+(define-gl-callback gl-mouse-button-changed (view (button :int)
+                                                 (action %glfw::key-action)
+                                                 (modifiers %glfw::mod-keys))
+  ;; GLFW numbers the left, right and middle buttons 0, 1 and 2.
+  (let ((number (case button (0 1) (2 2) (1 3))))
     (when number
-      (with-live-view (view)
-        (let ((cell (apply #'gl-pointer-cell view (glfw:cursor-location view)))
-              (state (glfw-modifiers->state modifiers)))
-          (case action
-            (:press
-             (setf (gl-view-button view) number)
-             (deliver-gl-mouse view :press cell (count-gl-click view cell) number state))
-            (:release
-             (setf (gl-view-button view) nil)
-             (deliver-gl-mouse view :release cell (gl-view-click-count view)
-                               number state))))))))
+      (let ((cell (apply #'gl-pointer-cell view
+                         (glfw:get-cursor-position (gl-view-pointer view))))
+            (state (glfw-modifiers->state modifiers)))
+        (case action
+          (:press
+           (setf (gl-view-button view) number)
+           (deliver-gl-mouse view :press cell (count-gl-click view cell) number state))
+          (:release
+           (setf (gl-view-button view) nil)
+           (deliver-gl-mouse view :release cell (gl-view-click-count view)
+                             number state)))))))
 
-(defmethod glfw:mouse-moved ((view gl-view) x y)
-  (with-live-view (view)
-    (let ((button (gl-view-button view)))
-      (deliver-gl-mouse view (if button :drag :motion) (gl-pointer-cell view x y)
-                        (gl-view-click-count view) button
-                        0))))
+(define-gl-callback gl-mouse-moved (view (x :double) (y :double))
+  (let ((button (gl-view-button view)))
+    (deliver-gl-mouse view (if button :drag :motion) (gl-pointer-cell view x y)
+                      (gl-view-click-count view) button
+                      0)))
 
 ;;; Other window events
 
-(defmethod glfw:mouse-scrolled ((view gl-view) xoffset yoffset)
+(define-gl-callback gl-mouse-scrolled (view (xoffset :double) (yoffset :double))
   (declare (ignore xoffset))
-  (with-live-view (view)
-    (when (gl-view-scroll-callback view)
-      (let* ((rows (+ (gl-view-scroll-remainder view) (* yoffset *gl-scroll-rows*)))
-             (whole (truncate rows)))
-        (setf (gl-view-scroll-remainder view) (- rows whole))
-        (unless (zerop whole)
-          ;; Scrolling content down (positive offset) moves back in history.
-          (funcall (gl-view-scroll-callback view) (- whole)))))))
+  (when (gl-view-scroll-callback view)
+    (let* ((rows (+ (gl-view-scroll-remainder view) (* yoffset *gl-scroll-rows*)))
+           (whole (truncate rows)))
+      (setf (gl-view-scroll-remainder view) (- rows whole))
+      (unless (zerop whole)
+        ;; Scrolling content down (positive offset) moves back in history.
+        (funcall (gl-view-scroll-callback view) (- whole))))))
 
-(defmethod glfw:framebuffer-resized ((view gl-view) width height)
+(define-gl-callback gl-framebuffer-resized (view (width :int) (height :int))
   (declare (ignore width height))
-  (with-live-view (view)
-    (when (gl-view-resize-callback view)
-      ;; Resize at once: on macOS GLFW calls this from inside AppKit's
-      ;; live-resize loop, where timers do not run.  Then run work the
-      ;; reader thread posted, so the program's redraw shows while dragging.
-      (funcall (gl-view-resize-callback view) t)
-      (run-gl-wake-thunks (gl-view-frontend view)))
-    (redraw-gl-view view)))
+  (when (gl-view-resize-callback view)
+    ;; Resize at once: on macOS GLFW calls this from inside AppKit's
+    ;; live-resize loop, where timers do not run.  Then run work the
+    ;; reader thread posted, so the program's redraw shows while dragging.
+    (funcall (gl-view-resize-callback view) t)
+    (run-gl-wake-thunks (gl-view-frontend view)))
+  (redraw-gl-view view))
 
-(defmethod glfw:window-refreshed ((view gl-view))
-  (with-live-view (view)
-    (redraw-gl-view view)))
+(define-gl-callback gl-window-refreshed (view)
+  (redraw-gl-view view))
 
-(defmethod glfw:window-content-scale-changed ((view gl-view) xscale yscale)
+(define-gl-callback gl-window-content-scale-changed (view (xscale :float) (yscale :float))
   (declare (ignore xscale))
-  (with-live-view (view)
-    ;; The window moved to a display with another scale: re-rasterize.
-    (unless (= yscale (gl-view-scale view))
-      (gl-view-set-font view yscale)
-      (when (gl-view-resize-callback view)
-        (funcall (gl-view-resize-callback view) t))
-      (redraw-gl-view view))))
+  ;; The window moved to a display with another scale: re-rasterize.
+  (unless (= yscale (gl-view-scale view))
+    (gl-view-set-font view yscale)
+    (when (gl-view-resize-callback view)
+      (funcall (gl-view-resize-callback view) t))
+    (redraw-gl-view view)))
 
-(defmethod glfw:window-closed ((view gl-view))
-  (with-live-view (view)
-    (setf (gl-view-closed-p view) t)
-    (when (gl-view-close-callback view)
-      (funcall (gl-view-close-callback view)))
-    (setf (gl-frontend-quit-p (gl-view-frontend view)) t)))
+(define-gl-callback gl-window-closed (view)
+  (setf (gl-view-closed-p view) t)
+  (when (gl-view-close-callback view)
+    (funcall (gl-view-close-callback view)))
+  (setf (gl-frontend-quit-p (gl-view-frontend view)) t))
+
+(define-gl-callback gl-file-dropped (view (count :int) (paths :pointer))
+  (when (and (plusp count) (gl-view-drop-callback view))
+    (funcall (gl-view-drop-callback view)
+             (loop for i below count collect (cffi:mem-aref paths :string i)))))
+
+(defun bind-gl-callbacks (view)
+  (let ((window (gl-view-pointer view)))
+    (glfw:set-key-callback 'gl-key-changed window)
+    (glfw:set-char-callback 'gl-char-entered window)
+    (glfw:set-mouse-button-callback 'gl-mouse-button-changed window)
+    (glfw:set-cursor-position-callback 'gl-mouse-moved window)
+    (glfw:set-scroll-callback 'gl-mouse-scrolled window)
+    (glfw:set-framebuffer-size-callback 'gl-framebuffer-resized window)
+    (glfw:set-window-refresh-callback 'gl-window-refreshed window)
+    (glfw:set-window-close-callback 'gl-window-closed window)
+    (%glfw-set-window-content-scale-callback
+     window (cffi:callback gl-window-content-scale-changed))
+    (%glfw-set-drop-callback window (cffi:callback gl-file-dropped))))
 
 ;;; Event loop
 
@@ -339,15 +391,26 @@ one quickly at the same cell."
                   internal-time-units-per-second))
         0.25)))
 
+(%glfw:define-glfw-callback gl-glfw-error ((code :int) (message :string))
+  ;; Report rather than signal: an error must not unwind through GLFW.
+  (format *error-output* "~&slt: GLFW error ~x: ~a~%" code message))
+
+(defun wait-gl-events (timeout)
+  "Handle window events, waiting up to TIMEOUT seconds for the first."
+  (if (plusp timeout)
+      (%glfw-wait-events-timeout (coerce timeout 'double-float))
+      (%glfw:poll-events)))
+
 (defun call-with-glfw (thunk)
   "Run THUNK with GLFW initialized and cl-opengl resolving entry points
 through GLFW.  Masks float traps, which platform code (AppKit in
 particular) trips over."
   (float-features:with-float-traps-masked t
-    (glfw:init)
+    (%glfw:set-error-callback (cffi:callback gl-glfw-error))
+    (glfw:initialize)
     (let ((cl-opengl-bindings:*gl-get-proc-address* #'%glfw:get-proc-address))
       (unwind-protect (funcall thunk)
-        (glfw:shutdown)))))
+        (glfw:terminate)))))
 
 (defmethod frontend-call-with-event-loop ((frontend gl-frontend) thunk)
   (call-with-glfw
@@ -356,7 +419,7 @@ particular) trips over."
           (progn
             (funcall thunk)
             (loop until (gl-frontend-quit-p frontend)
-                  do (glfw:poll-events :timeout (min 0.25 (gl-next-timeout frontend)))
+                  do (wait-gl-events (min 0.25 (gl-next-timeout frontend)))
                      (run-gl-wake-thunks frontend)
                      (run-gl-timers frontend)))
        (let ((view (gl-frontend-view frontend)))
@@ -366,12 +429,12 @@ particular) trips over."
 ;;; Views
 
 (defun gl-view-pixel-size (view)
-  (values-list (glfw:framebuffer-size view)))
+  (values-list (glfw:get-framebuffer-size (gl-view-pointer view))))
 
 (defun redraw-gl-view (view &optional (palette (view-palette view)))
   (let ((grid (gl-view-grid view)))
     (when (and grid (not (gl-view-closed-p view)))
-      (glfw:make-current view)
+      (glfw:make-context-current (gl-view-pointer view))
       (setf (gl-view-instances view)
             (pack-grid grid (gl-view-atlas view) palette (gl-view-instances view)))
       (multiple-value-bind (width height) (gl-view-pixel-size view)
@@ -388,13 +451,13 @@ particular) trips over."
                       (terminal-image-render-list
                        (gl-view-image-store view)
                        (gl-view-cell-width view) (gl-view-cell-height view)))))
-      (glfw:swap-buffers view))))
+      (glfw:swap-buffers (gl-view-pointer view)))))
 
 (defun snapshot-gl-view (view &optional pathname (palette (view-palette view)))
   "Render VIEW's current grid offscreen.  Return the RGB octets, width and
 height, after writing them to PATHNAME as a PPM when given."
   (let ((grid (gl-view-grid view)))
-    (glfw:make-current view)
+    (glfw:make-context-current (gl-view-pointer view))
     (multiple-value-bind (width height) (gl-view-pixel-size view)
       (setf (gl-view-instances view)
             (pack-grid grid (gl-view-atlas view) palette (gl-view-instances view)))
@@ -412,14 +475,22 @@ height, after writing them to PATHNAME as a PPM when given."
         (values rgb width height)))))
 
 (defun gl-api-hints (api)
-  (append
-   (ecase api
-     (:gl '(:client-api :opengl-api :context-version-major 3 :context-version-minor 3
-            :opengl-profile :opengl-core-profile :opengl-forward-compat t))
-     (:gles '(:client-api :opengl-es-api :context-version-major 3 :context-version-minor 0)))
-   ;; macOS has only NSGL; everywhere else, EGL rather than GLX.
-   (unless (uiop:os-macosx-p)
-     '(:context-creation-api :egl-context-api))))
+  (ecase api
+    (:gl '(:client-api :opengl-api :context-version-major 3 :context-version-minor 3
+           :opengl-profile :opengl-core-profile :opengl-forward-compat t))
+    (:gles '(:client-api :opengl-es-api :context-version-major 3 :context-version-minor 0))))
+
+(defun create-gl-window (width height title api)
+  "Create a GLFW window with an API context, current on this thread."
+  ;; Hints cl-glfw3's CREATE-WINDOW does not know stay set for it.  Window
+  ;; sizes are in screen coordinates; let GLFW scale them and the
+  ;; framebuffer.  macOS has only NSGL; everywhere else, EGL rather than GLX.
+  (%glfw-window-hint +glfw-scale-to-monitor+ 1)
+  (unless (uiop:os-macosx-p)
+    (%glfw-window-hint +glfw-context-creation-api+ +glfw-egl-context-api+))
+  (apply #'glfw:create-window :width width :height height :title title
+                              :visible *gl-window-visible*
+                              (gl-api-hints api)))
 
 (defun make-gl-view (frontend width height title font-options scale)
   "Create the window with the first API in *GL-API* that works."
@@ -428,23 +499,18 @@ height, after writing them to PATHNAME as a PPM when given."
                  (:gl '(:gl))
                  (:gles '(:gles)))
                (error "No OpenGL 3.3 or OpenGL ES 3.0 context could be created."))
-    (let ((view (handler-case
-                    (apply #'make-instance 'gl-view
-                           ;; Lets the wrapper tell our initargs from hints.
-                           :allow-other-keys t
-                           :frontend frontend :api api :font-options font-options
-                           :width width :height height :title title
-                           :visible *gl-window-visible*
-                           ;; Window sizes are in screen coordinates; let
-                           ;; GLFW scale them and the framebuffer.
-                           :scale-to-monitor t
-                           (gl-api-hints api))
-                  (error (condition)
-                    (format *error-output* "~&slt: no ~a context: ~a~%" api condition)
-                    nil))))
-      (when view
-        (setf (gl-view-scale view) scale)
-        (return view)))))
+    (let ((window (handler-case (create-gl-window width height title api)
+                    (error (condition)
+                      (format *error-output* "~&slt: no ~a context: ~a~%" api condition)
+                      nil))))
+      (when window
+        (let ((view (make-instance 'gl-view :frontend frontend :api api
+                                            :font-options font-options)))
+          (setf (gl-view-pointer view) window
+                (gl-view-scale view) scale
+                (gethash (cffi:pointer-address window) *gl-views*) view)
+          (bind-gl-callbacks view)
+          (return view))))))
 
 (defmethod frontend-available-font-families ((frontend gl-frontend))
   #+darwin '()
@@ -457,8 +523,10 @@ height, after writing them to PATHNAME as a PPM when given."
                                 &key rows columns font-family font-size
                                   cell-width cell-height title)
   (let* ((options (list font-family font-size cell-width cell-height))
-         (scale (let ((monitor (glfw:primary-monitor)))
-                  (if monitor (max 1.0 (second (glfw:content-scale monitor))) 1.0)))
+         (scale (let ((monitor (glfw:get-primary-monitor)))
+                  (if (cffi:null-pointer-p monitor)
+                      1.0
+                      (max 1.0 (second (glfw:get-monitor-content-scale monitor))))))
          ;; Measure at the primary display's scale to size the window.
          (font (open-glyph-font font-family (* font-size scale)))
          (cw (or (and cell-width (round (* cell-width scale)))
@@ -470,19 +538,21 @@ height, after writing them to PATHNAME as a PPM when given."
                              (max 1 (round (* rows ch) scale))
                              (or title "slt") options scale)))
     (close-glyph-font font)
-    (glfw:make-current view)
-    (setf (glfw:swap-interval view) (if *gl-vsync* 1 0)
-          (gl-view-renderer view) (make-gl-renderer (gl-view-api view))
+    (glfw:make-context-current (gl-view-pointer view))
+    (%glfw:swap-interval (if *gl-vsync* 1 0))
+    (setf (gl-view-renderer view) (make-gl-renderer (gl-view-api view))
           (gl-frontend-view frontend) view)
     ;; The window may have opened on a display with another scale.
     (gl-view-set-font view (gl-view-content-scale view))
     view))
 
 (defun destroy-gl-view (view)
-  (when (glfw:pointer view)
-    (glfw:make-current view)
-    (ignore-errors (free-gl-renderer (gl-view-renderer view)))
-    (glfw:destroy view))
+  (let ((window (shiftf (gl-view-pointer view) nil)))
+    (when window
+      (glfw:make-context-current window)
+      (ignore-errors (free-gl-renderer (gl-view-renderer view)))
+      (remhash (cffi:pointer-address window) *gl-views*)
+      (glfw:destroy-window window)))
   (when (gl-view-font view)
     (ignore-errors (close-glyph-font (gl-view-font view)))
     (setf (gl-view-font view) nil))
@@ -512,7 +582,7 @@ height, after writing them to PATHNAME as a PPM when given."
 
 (defmethod frontend-set-title ((frontend gl-frontend) (view gl-view) title)
   (unless (gl-view-closed-p view)
-    (setf (glfw:title view) title)))
+    (glfw:set-window-title title (gl-view-pointer view))))
 
 (defmethod frontend-schedule ((frontend gl-frontend) (view gl-view) delay-ms thunk)
   (let ((token (incf (gl-frontend-timer-seq frontend))))
@@ -536,11 +606,6 @@ height, after writing them to PATHNAME as a PPM when given."
 (defmethod frontend-bind-drop ((frontend gl-frontend) (view gl-view) callback)
   (setf (gl-view-drop-callback view) callback))
 
-(defmethod glfw:file-dropped ((view gl-view) paths)
-  (with-live-view (view)
-    (when (and paths (gl-view-drop-callback view))
-      (funcall (gl-view-drop-callback view) paths))))
-
 (defmethod frontend-bind-scroll ((frontend gl-frontend) (view gl-view) callback)
   (setf (gl-view-scroll-callback view) callback))
 
@@ -548,18 +613,18 @@ height, after writing them to PATHNAME as a PPM when given."
   (setf (gl-view-mouse-callback view) callback))
 
 (defmethod frontend-clipboard-text ((frontend gl-frontend) (view gl-view))
-  (glfw:clipboard-string view))
+  (glfw:get-clipboard-string (gl-view-pointer view)))
 
 (defmethod frontend-set-clipboard-text ((frontend gl-frontend) (view gl-view) text)
-  (setf (glfw:clipboard-string view) text))
+  (glfw:set-clipboard-string text (gl-view-pointer view)))
 
 (defmethod frontend-on-close ((frontend gl-frontend) (view gl-view) callback)
   (setf (gl-view-close-callback view) callback))
 
 (defmethod frontend-focus ((frontend gl-frontend) (view gl-view))
   (when *gl-window-visible*
-    (glfw:show view)
-    (glfw:focus view)))
+    (glfw:show-window (gl-view-pointer view))
+    (%glfw-focus-window (gl-view-pointer view))))
 
 (defmethod frontend-request-exit ((frontend gl-frontend) (view gl-view))
   (setf (gl-frontend-quit-p frontend) t)

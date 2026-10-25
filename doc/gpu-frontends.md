@@ -5,7 +5,7 @@ slt has two GPU frontends that share everything above the graphics API:
 | frontend | window | renderer | glyphs |
 |---|---|---|---|
 | `cocoa` (`src/macos`) | AppKit | Metal | CoreText |
-| `gl` (`src/gl`) | GLFW 3.4: X11 or Wayland, also macOS | OpenGL 3.3 core or OpenGL ES 3.0 | FreeType with font-discovery; CoreText on macOS |
+| `gl` (`src/gl`) | GLFW 3.3 or later: X11 or Wayland, also macOS | OpenGL 3.3 core or OpenGL ES 3.0 | FreeType with font-discovery; CoreText on macOS |
 
 ## What is shared
 
@@ -98,9 +98,12 @@ OpenGL ES 3.0 through EGL (`*gl-api*` forces either). cl-opengl resolves
 entry points through `glfwGetProcAddress`, which works for GLX, EGL and CGL
 alike.
 
-Shirakumo's [glfw](https://codeberg.org/shirakumo/glfw) bindings ship GLFW
-3.4 binaries for Linux (amd64, arm64) and macOS. The BSDs load the system's
-`libglfw`.
+[cl-glfw3](https://github.com/AlexCharlton/cl-glfw3) loads the system's
+`libglfw`, which is built for its C library (musl or glibc), so the frontend
+needs GLFW 3.3 or later installed. A few calls and window hints the frontend
+uses are missing from cl-glfw3 (`glfwWaitEventsTimeout`, `glfwGetKeyName`,
+the drop and content-scale callbacks, EGL context creation, scaling to the
+monitor); `src/gl/gl-frontend.lisp` defines them itself.
 
 ## Glyphs on Linux and the BSDs
 
@@ -137,8 +140,8 @@ as a string.
    in CI.
 2. HarfBuzz shaping for combining marks, a color atlas for emoji, subpixel
    positioning, and ligatures if wanted.
-3. Check the Linux build (`make` includes `slt/gl` there): Deploy carries
-   `libglfw`, while FreeType and fontconfig stay system libraries.
+3. Check the Linux build (`make` includes `slt/gl` there): GLFW, FreeType
+   and fontconfig stay system libraries.
 4. Vulkan, if profiling or MoltenVK parity justifies it. It adds a lot of
    setup (instance, device, swapchain, recreation on resize) for little gain
    on a workload this small. The same GLSL compiles to SPIR-V, and the

@@ -184,9 +184,9 @@ Window**) opens another independent terminal window. Each window has its own
 shell and remains open until it or its child process exits; slt quits after
 the last window closes.
 
-The `gl` frontend uses Shirakumo's [glfw](https://codeberg.org/shirakumo/glfw)
-bindings, which ship GLFW 3.4 for Linux and macOS (the BSDs use the system's
-`libglfw`), and cl-opengl. GLFW chooses X11 or Wayland when it starts.
+The `gl` frontend uses [cl-glfw3](https://github.com/AlexCharlton/cl-glfw3)
+with the system's GLFW (3.3 or later; Homebrew's `glfw` on macOS), and
+cl-opengl. GLFW chooses X11 or Wayland when it starts.
 `make gl-test` renders styled text in a hidden window and checks the pixels.
 [doc/gpu-frontends.md](doc/gpu-frontends.md) describes the design and what
 Vulkan would add.

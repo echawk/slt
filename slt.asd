@@ -125,8 +125,8 @@ servers appear when those are loaded."
                (:file "cocoa-frontend")))
 
 (asdf:defsystem #:slt/gl
-  :description "GLFW + OpenGL 3.3 / OpenGL ES 3.0 frontend: X11 and Wayland on Linux and the BSDs, and macOS."
-  :depends-on (:slt/core :glfw :cl-opengl :float-features
+  :description "GLFW + OpenGL 3.3 / OpenGL ES 3.0 frontend: X11 and Wayland on Linux and the BSDs, and macOS.  Needs the system's GLFW 3.3 or later."
+  :depends-on (:slt/core :cl-glfw3 :cl-opengl :float-features
                ;; Glyphs: CoreText on macOS, font-discovery and FreeType elsewhere.
                (:feature :darwin :slt/cocoa)
                (:feature (:not :darwin) :font-discovery))

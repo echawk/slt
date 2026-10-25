@@ -22,6 +22,10 @@ defining it (see scripts/build)."
                 "CORE-TEXT-FRAMEWORK" "CORE-GRAPHICS-FRAMEWORK"))
   (define-optional-library "SLT" name :dont-deploy t))
 
+;;; The gl frontend loads the system's GLFW, built for its C library (musl
+;;; or glibc) and window systems.
+(define-optional-library "%CL-GLFW3" "GLFW" :dont-deploy t)
+
 ;;; The gtk frontend: GTK and the libraries under it belong to the system
 ;;; (they need their own data files and modules), and cl-cffi-gtk runs
 ;;; gtk_init from SBCL's init hooks, which run before Deploy reopens

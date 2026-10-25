@@ -33,9 +33,9 @@
          (ch (gl-view-cell-height view)))
     (multiple-value-bind (rgb width height)
         (snapshot-gl-view view (merge-pathnames "snapshot.ppm" *output*))
-      (format t "~&framebuffer ~dx~d, cell ~dx~d, grid ~dx~d, platform ~a, GL ~a~%"
+      (format t "~&framebuffer ~dx~d, cell ~dx~d, grid ~dx~d, GLFW ~a, GL ~a~%"
               width height cw ch (grid-columns grid) (grid-rows grid)
-              (glfw:platform) (gl:get-string :version))
+              (%glfw:get-version-string) (gl:get-string :version))
       (check (= (pixel rgb width (1- width) (1- height)) (palette-background *palette*))
              "the bottom-right corner is the background")
       (check (> (loop for y below ch
