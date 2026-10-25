@@ -35,7 +35,9 @@
   keypress-callback
   close-callback
   focused-p
-  exit-requested-p)
+  exit-requested-p
+  last-grid
+  (smooth-offset 0))
 
 (defmethod slt::frontend-call-with-event-loop ((frontend mock-frontend) thunk)
   (declare (ignore frontend))
@@ -72,8 +74,12 @@
 
 (defmethod slt::frontend-render-grid ((frontend mock-frontend) (view mock-view) grid)
   (declare (ignore frontend))
-  (setf (mock-view-rendered-rows view) (grid-dirty-rows grid))
+  (setf (mock-view-rendered-rows view) (grid-dirty-rows grid)
+        (mock-view-last-grid view) grid)
   view)
+
+(defmethod slt::frontend-set-smooth-offset ((frontend mock-frontend) (view mock-view) pixels)
+  (setf (mock-view-smooth-offset view) pixels))
 
 (defmethod slt::frontend-set-title ((frontend mock-frontend) (view mock-view) title)
   (declare (ignore frontend))
@@ -1176,6 +1182,48 @@ emulator wrote back since the last call."
       (is (slt::jump-to-prompt emulator :up :failed t))
       (is-equal (- (second (slt::prompt-mark-rows emulator)))
                 (engine-viewport-offset (slt::terminal-emulator-engine emulator))))))))
+
+(deftest smooth-scrolling-stops-between-rows-and-settles-on-one ()
+  (with-control-emulator (emulator send replies :rows 4)
+    (setf (slt::terminal-emulator-smooth-p emulator) t)
+    (send (format nil "~{line ~d~^~c~c~}" (loop for i below 12 append (list i #\Return #\Linefeed))))
+    (render-emulator emulator)
+    (let ((engine (slt::terminal-emulator-engine emulator))
+          (view (slt::terminal-emulator-view emulator)))
+      (flet ((scroll (pixels &optional ending)
+               (slt::handle-pixel-scroll emulator pixels ending)
+               (render-emulator emulator))
+             (shown () (grid-text (mock-view-last-grid view))))
+        ;; 10 pixels back (cells are 16 high): the row above shows on top.
+        (scroll 10)
+        (is-equal 0 (engine-viewport-offset engine))
+        (is-equal 10 (mock-view-smooth-offset view))
+        (is-equal '("line 8" "line 9" "line 10" "line 11" "") (shown))
+        ;; 30 more: two whole rows and 8 pixels.
+        (scroll 30)
+        (is-equal 2 (engine-viewport-offset engine))
+        (is-equal 8 (mock-view-smooth-offset view))
+        (is-equal "line 6" (first (shown)))
+        ;; The gesture ends half way: the view slides on to the next row.
+        (scroll 0 t)
+        (loop repeat 30 while (slt::terminal-emulator-smooth-target emulator)
+              do (render-emulator emulator))
+        (is-equal 3 (engine-viewport-offset engine))
+        (is-equal 0 (mock-view-smooth-offset view))
+        (is-equal '("line 6" "line 7" "line 8" "line 9") (shown))
+        ;; Past the live screen and the top of the scrollback it stops.
+        (scroll -1000)
+        (is-equal 0 (engine-viewport-offset engine))
+        (is (zerop (slt::terminal-emulator-smooth-offset emulator)))
+        (scroll 10000)
+        (is (zerop (slt::terminal-emulator-smooth-offset emulator)))
+        (is-equal "line 0" (first (shown)))
+        ;; Typing returns to the live screen on a whole row.
+        (scroll -5)
+        (slt::scroll-viewport emulator :bottom)
+        (render-emulator emulator)
+        (is (zerop (slt::terminal-emulator-smooth-offset emulator)))
+        (is-equal 4 (length (shown)))))))
 
 (deftest osc-8-hyperlinks-open-while-their-text-remains ()
   (with-control-emulator (emulator send replies)

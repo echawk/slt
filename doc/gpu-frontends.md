@@ -58,6 +58,19 @@ Per frame, the OpenGL renderer:
   `glTexSubImage2D`, into an `R8` texture read with `texelFetch`;
 - issues one `glDrawArraysInstanced`.
 
+The Metal frontend draws from a `CADisplayLink` (macOS 14 and later): renders
+requested between refreshes (`frontend-request-frame`) run just before the
+next one, and the grid and images a frame changes are drawn together, so
+there is one present per refresh at the display's own cadence. The link is
+paused while nothing changes. Elsewhere renders are paced by a timer
+(`*frame-interval-ms*`); GL and SDL2 present with vsync, which paces them.
+
+For smooth scrolling (`smooth-scroll.lisp`) the emulator hands the frontend
+a grid with one extra row, the scrollback row above the view, and a pixel
+offset (`frontend-set-smooth-offset`). The Metal renderer moves the cells
+and images down by it and clips them to the grid's rows in the fragment
+shaders.
+
 A persistently mapped ring of buffers with fences, like the Metal frontend's
 three frames in flight, would save a copy. It is not worth it yet: a 200 × 60
 screen is 192 KB per frame.

@@ -26,6 +26,9 @@ struct Uniforms {
   uint atlas_columns;
   float2 padding;
   float4 cursor_color;
+  // The rows of the drawable the grid may cover, top and bottom.
+  float2 clip;
+  float2 unused;
 };
 
 struct Fragment {
@@ -75,6 +78,7 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
                               texture2d<float> atlas [[texture(0)]],
                               constant Uniforms &u [[buffer(0)]],
                               constant uint &layer [[buffer(1)]]) {
+  if (in.position.y < u.clip.x || in.position.y >= u.clip.y) discard_fragment();
   if (layer == 0u) return float4(in.bg, in.bg_alpha);
   constexpr sampler nearest(coord::pixel, filter::nearest, address::clamp_to_edge);
   float ink = in.slot == 0u ? 0.0 : atlas.sample(nearest, in.atlas_px).r;
@@ -122,7 +126,9 @@ vertex ImageFragment image_vertex(uint vid [[vertex_id]],
 }
 
 fragment float4 image_fragment(ImageFragment in [[stage_in]],
-                               texture2d<float> image [[texture(0)]]) {
+                               texture2d<float> image [[texture(0)]],
+                               constant Uniforms &u [[buffer(0)]]) {
+  if (in.position.y < u.clip.x || in.position.y >= u.clip.y) discard_fragment();
   constexpr sampler linear_sampler(coord::normalized, filter::linear,
                                     address::clamp_to_edge);
   return image.sample(linear_sampler, in.uv);
@@ -143,7 +149,12 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
   (frame 0 :type fixnum)
   ;; Device pixels between the drawable's top left corner and the grid.
   (padding 0 :type fixnum)
-  (uniforms (cffi:foreign-alloc :uint8 :count 48)))
+  ;; Smooth scrolling: pixels the cells and the images are drawn lower, and
+  ;; the rows of the grid shown (the cells drawn may include one above).
+  (offset-y 0 :type fixnum)
+  (image-offset-y 0 :type fixnum)
+  (visible-rows nil)
+  (uniforms (cffi:foreign-alloc :uint8 :count 64)))
 
 (defun metal-error-string (error-pointer)
   (let ((error (cffi:mem-ref error-pointer :pointer)))
@@ -259,6 +270,8 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
   (when records
     (msg encoder "setRenderPipelineState:" :pointer
          (metal-renderer-image-pipeline renderer) :void)
+    (msg encoder "setFragmentBytes:length:atIndex:"
+         :pointer (metal-renderer-uniforms renderer) :unsigned-long 64 :unsigned-long 0 :void)
     (dolist (record records)
       (destructuring-bind (placement image x y width height) record
         (let* ((iw (terminal-image-width image)) (ih (terminal-image-height image))
@@ -268,6 +281,7 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
                (sh (or (terminal-image-placement-source-height placement) (- ih sy)))
                (x0 (- (* 2.0 (/ (+ padding x) viewport-width)) 1.0))
                (x1 (- (* 2.0 (/ (+ padding x width) viewport-width)) 1.0))
+               (y (+ y (metal-renderer-image-offset-y renderer)))
                (y0 (- 1.0 (* 2.0 (/ (+ padding y) viewport-height))))
                (y1 (- 1.0 (* 2.0 (/ (+ padding y height) viewport-height))))
                (u0 (/ sx iw)) (u1 (/ (+ sx sw) iw))
@@ -349,11 +363,22 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
           (cffi:mem-aref u :uint32 4) columns
           (cffi:mem-aref u :uint32 5) (glyph-atlas-slots-per-row atlas)
           (cffi:mem-aref u :float 6) (coerce (metal-renderer-padding renderer) 'single-float)
-          (cffi:mem-aref u :float 7) (coerce (metal-renderer-padding renderer) 'single-float)
+          (cffi:mem-aref u :float 7) (coerce (+ (metal-renderer-padding renderer)
+                                                (metal-renderer-offset-y renderer))
+                                             'single-float)
           (cffi:mem-aref u :float 8) (/ (ldb (byte 8 16) cursor) 255.0)
           (cffi:mem-aref u :float 9) (/ (ldb (byte 8 8) cursor) 255.0)
           (cffi:mem-aref u :float 10) (/ (ldb (byte 8 0) cursor) 255.0)
-          (cffi:mem-aref u :float 11) 1.0)
+          (cffi:mem-aref u :float 11) 1.0
+          (cffi:mem-aref u :float 12) (coerce (metal-renderer-padding renderer) 'single-float)
+          (cffi:mem-aref u :float 13)
+          (coerce (if (metal-renderer-visible-rows renderer)
+                      (+ (metal-renderer-padding renderer)
+                         (* (metal-renderer-visible-rows renderer) cell-height))
+                      height)
+                  'single-float)
+          (cffi:mem-aref u :float 14) 0.0
+          (cffi:mem-aref u :float 15) 0.0)
     u))
 
 (defun metal-encode-frame (renderer target instances columns cell-count cell-width cell-height
@@ -391,9 +416,9 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
                      (msg encoder "setVertexBuffer:offset:atIndex:"
                           :pointer buffer :unsigned-long 0 :unsigned-long 0 :void)
                      (msg encoder "setVertexBytes:length:atIndex:"
-                          :pointer uniforms :unsigned-long 48 :unsigned-long 1 :void)
+                          :pointer uniforms :unsigned-long 64 :unsigned-long 1 :void)
                      (msg encoder "setFragmentBytes:length:atIndex:"
-                          :pointer uniforms :unsigned-long 48 :unsigned-long 0 :void)
+                          :pointer uniforms :unsigned-long 64 :unsigned-long 0 :void)
                      (msg encoder "setFragmentBytes:length:atIndex:"
                           :pointer layer-bytes :unsigned-long 4 :unsigned-long 1 :void)
                      (msg encoder "setFragmentTexture:atIndex:"

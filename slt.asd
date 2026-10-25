@@ -23,6 +23,7 @@
                (:file "gpu")
                (:file "emulator")
                (:file "controls")
+               (:file "smooth-scroll")
                (:file "headless-frontend")))
 
 (asdf:defsystem #:slt

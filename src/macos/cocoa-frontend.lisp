@@ -53,6 +53,16 @@
   (closed-p nil)
   ;; Fractional rows from trackpad scrolling, carried between events.
   (scroll-remainder 0d0 :type double-float)
+  ;; Smooth scrolling: the callback for trackpad pixels, and the pixels the
+  ;; grid is drawn lower (FRONTEND-SET-SMOOTH-OFFSET).
+  pixel-scroll-callback
+  (smooth-offset 0 :type fixnum)
+  ;; A CADisplayLink calling back before each refresh of the window's
+  ;; display, paused while nothing waits for it; the work it is to run,
+  ;; and whether the grid or images changed since the last draw.
+  display-link
+  (frame-thunks '() :type list)
+  (needs-draw-p nil)
   (live-resize-p nil))
 
 ;;; Objective-C objects call back into Lisp through these addresses.
@@ -103,6 +113,41 @@ expects, or NIL for keys the terminal should not see."
        (list text text (logand state (lognot +shift-mask+))))
       (t nil))))
 
+(defun run-cocoa-frame (view)
+  "Run VIEW's frame work (renders), draw once, and let the display link
+sleep when nothing is left."
+  (let ((thunks (shiftf (cocoa-view-frame-thunks view) '())))
+    (dolist (thunk (nreverse thunks))
+      (call-from-run-loop thunk))
+    (when (cocoa-view-needs-draw-p view)
+      (call-from-run-loop (lambda () (redraw-cocoa-view view))))
+    (let ((link (cocoa-view-display-link view)))
+      (when (and link (null (cocoa-view-frame-thunks view)) (not (cocoa-view-needs-draw-p view)))
+        (msg link "setPaused:" :bool t :void)))))
+
+(cffi:defcallback slt-view-display-link-fired :void
+    ((self :pointer) (command :pointer) (link :pointer))
+  (declare (ignore command))
+  (let ((view (cocoa-view-for self)))
+    (if (or (null view) (cocoa-view-closed-p view))
+        (msg link "setPaused:" :bool t :void)
+        (run-cocoa-frame view))))
+
+(defun make-cocoa-display-link (ns-view)
+  "A paused display link for NS-VIEW, or NIL before macOS 14."
+  (when (msg ns-view "respondsToSelector:"
+             :pointer (selector "displayLinkWithTarget:selector:") :bool)
+    (let ((link (msg ns-view "displayLinkWithTarget:selector:"
+                     :pointer ns-view :pointer (selector "sltDisplayLinkFired:"))))
+      (unless (cffi:null-pointer-p link)
+        (msg link "retain" :void)
+        (msg link "setPaused:" :bool t :void)
+        (msg link "addToRunLoop:forMode:"
+             :pointer (msg "NSRunLoop" "mainRunLoop")
+             :pointer (foreign-global "kCFRunLoopCommonModes")
+             :void)
+        link))))
+
 (cffi:defcallback slt-view-accepts-first-responder :bool ((self :pointer) (command :pointer))
   (declare (ignore self command))
   t)
@@ -144,9 +189,27 @@ event (:PRESS, :REPEAT or :RELEASE)."
         (deliver-cocoa-key self (list "" keysym (ns-modifiers->state flags))
                            (if (logtest flags mask) :press :release))))))
 
+(defconstant +ns-event-phase-ended+ 8)
+(defconstant +ns-event-phase-cancelled+ 16)
+
+(defun ns-event-gesture-ended-p (event)
+  "True for the last event of a scroll gesture, or of its momentum."
+  (let ((phase (msg event "phase" :unsigned-long))
+        (momentum (msg event "momentumPhase" :unsigned-long)))
+    (flet ((ended-p (value)
+             (logtest value (logior +ns-event-phase-ended+ +ns-event-phase-cancelled+))))
+      (or (ended-p momentum) (and (zerop momentum) (ended-p phase))))))
+
 (cffi:defcallback slt-view-scroll-wheel :void ((self :pointer) (command :pointer) (event :pointer))
   (declare (ignore command))
   (let ((view (cocoa-view-for self)))
+    (when (and view (cocoa-view-pixel-scroll-callback view)
+               (msg event "hasPreciseScrollingDeltas" :bool))
+      ;; Points to device pixels; scrolling content down moves back.
+      (funcall (cocoa-view-pixel-scroll-callback view)
+               (* (msg event "scrollingDeltaY" :double) (cocoa-view-scale view))
+               (ns-event-gesture-ended-p event))
+      (return-from slt-view-scroll-wheel))
     (when (and view (cocoa-view-scroll-callback view))
       (let* ((delta (msg event "scrollingDeltaY" :double))
              (precise (msg event "hasPreciseScrollingDeltas" :bool))
@@ -169,10 +232,12 @@ event (:PRESS, :REPEAT or :RELEASE)."
           (declare (ignore left bottom width))
           (let ((scale (cocoa-view-scale view))
                 (padding (cocoa-view-padding view)))
-            ;; Window coordinates start at the bottom left.
+            ;; Window coordinates start at the bottom left.  Between rows
+            ;; (smooth scrolling) the grid is drawn lower.
             (funcall (cocoa-view-mouse-callback view)
                      action
-                     (floor (- (* (- height y) scale) padding) (cocoa-view-cell-height view))
+                     (max 0 (floor (- (* (- height y) scale) padding (cocoa-view-smooth-offset view))
+                                   (cocoa-view-cell-height view)))
                      (floor (- (* x scale) padding) (cocoa-view-cell-width view))
                      (if (eq action :motion) 0 (msg event "clickCount" :long))
                      button
@@ -333,6 +398,7 @@ middle button, which Cocoa numbers 2 among its other buttons."
   (define-objc-subclass "SLTTerminalView" "NSView"
                         '(("acceptsFirstResponder" slt-view-accepts-first-responder "B@:")
                           ("keyDown:" slt-view-key-down "v@:@")
+                          ("sltDisplayLinkFired:" slt-view-display-link-fired "v@:@")
                           ("keyUp:" slt-view-key-up "v@:@")
                           ("flagsChanged:" slt-view-flags-changed "v@:@")
                           ("scrollWheel:" slt-view-scroll-wheel "v@:@")
@@ -491,7 +557,10 @@ middle button, which Cocoa numbers 2 among its other buttons."
       (unwind-protect
            (progn
              (funcall thunk)
-             (msg app "activateIgnoringOtherApps:" :bool t :void)
+             ;; activateIgnoringOtherApps: does nothing since macOS 14.
+             (if (msg app "respondsToSelector:" :pointer (selector "activate") :bool)
+                 (msg app "activate" :void)
+                 (msg app "activateIgnoringOtherApps:" :bool t :void))
              (loop until (cocoa-frontend-quit-p frontend)
                    do (cocoa-pump-events app 0.25)
                       (run-cocoa-wake-thunks frontend)))
@@ -511,8 +580,18 @@ middle button, which Cocoa numbers 2 among its other buttons."
     (metal-set-drawable-size (cocoa-view-renderer view) width height)))
 
 (defun redraw-cocoa-view (view &optional (palette (view-palette view)))
-  (let ((grid (cocoa-view-grid view)))
+  (setf (cocoa-view-needs-draw-p view) nil)
+  (let ((grid (cocoa-view-grid view))
+        (renderer (cocoa-view-renderer view)))
     (when (and grid (not (cocoa-view-closed-p view)))
+      ;; Between rows the grid has the row above the view first, drawn so
+      ;; that only OFFSET pixels of it show.
+      (let ((offset (cocoa-view-smooth-offset view)))
+        (setf (metal-renderer-offset-y renderer)
+              (if (plusp offset) (- offset (cocoa-view-cell-height view)) 0)
+              (metal-renderer-image-offset-y renderer) offset
+              (metal-renderer-visible-rows renderer)
+              (if (plusp offset) (1- (grid-rows grid)) (grid-rows grid))))
       (setf (cocoa-view-instances view)
             (pack-grid grid (cocoa-view-atlas view) palette (cocoa-view-instances view)))
       (multiple-value-bind (width height) (cocoa-view-pixel-size view)
@@ -550,6 +629,10 @@ middle button, which Cocoa numbers 2 among its other buttons."
                  width height))))
 
 (defun destroy-cocoa-view (view)
+  (let ((link (shiftf (cocoa-view-display-link view) nil)))
+    (when link
+      (msg link "invalidate" :void)
+      (msg link "release" :void)))
   (remhash (cffi:pointer-address (cocoa-view-ns-view view)) *cocoa-views*)
   (when (cocoa-view-menu-target view)
     (remhash (cffi:pointer-address (cocoa-view-menu-target view)) *cocoa-views*))
@@ -637,6 +720,7 @@ delivering its close notification."
                        :pointer (foreign-global "NSPasteboardTypeFileURL"))
          :void)
     (update-cocoa-drawable-size view)
+    (setf (cocoa-view-display-link view) (make-cocoa-display-link ns-view))
     view))
 
 (defmethod frontend-view-cell-width ((frontend cocoa-frontend) (view cocoa-view))
@@ -655,14 +739,47 @@ delivering its close notification."
   (update-cocoa-drawable-size view)
   view)
 
+(defun cocoa-view-changed (view)
+  "Draw VIEW, once per refresh with a display link: the grid and images a
+frame changes are then drawn together."
+  (if (cocoa-view-display-link view)
+      (progn
+        (setf (cocoa-view-needs-draw-p view) t)
+        (msg (cocoa-view-display-link view) "setPaused:" :bool nil :void))
+      (redraw-cocoa-view view)))
+
 (defmethod frontend-render-grid ((frontend cocoa-frontend) (view cocoa-view) grid)
   (setf (cocoa-view-grid view) grid)
-  (redraw-cocoa-view view))
+  (cocoa-view-changed view))
 
 (defmethod frontend-render-images ((frontend cocoa-frontend) (view cocoa-view) store)
   (declare (ignore frontend))
   (setf (cocoa-view-image-store view) store)
-  (redraw-cocoa-view view))
+  (cocoa-view-changed view))
+
+(defvar *display-link-timeout-ms* 100
+  "How long requested frames wait for the display link before a timer runs
+them: the link does not fire while the window is off screen.")
+
+(defmethod frontend-request-frame ((frontend cocoa-frontend) (view cocoa-view) thunk)
+  (let ((link (cocoa-view-display-link view)))
+    (when (and link (not (cocoa-view-closed-p view)))
+      (when (null (cocoa-view-frame-thunks view))
+        (frontend-schedule frontend view *display-link-timeout-ms*
+                           (lambda ()
+                             (when (and (cocoa-view-frame-thunks view)
+                                        (not (cocoa-view-closed-p view)))
+                               (run-cocoa-frame view)))))
+      (push thunk (cocoa-view-frame-thunks view))
+      (msg link "setPaused:" :bool nil :void)
+      t)))
+
+(defmethod frontend-bind-pixel-scroll ((frontend cocoa-frontend) (view cocoa-view) callback)
+  (setf (cocoa-view-pixel-scroll-callback view) callback)
+  t)
+
+(defmethod frontend-set-smooth-offset ((frontend cocoa-frontend) (view cocoa-view) pixels)
+  (setf (cocoa-view-smooth-offset view) pixels))
 
 (defmethod frontend-set-title ((frontend cocoa-frontend) (view cocoa-view) title)
   (with-autorelease-pool ()

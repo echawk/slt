@@ -97,6 +97,10 @@
                          :long-name "login"
                          :description "Start the shell as a login shell (macOS).")
     (clingon:make-option :flag
+                         :key :smooth-scroll
+                         :long-name "smooth-scroll"
+                         :description "Scroll the scrollback pixel by pixel with a trackpad (also SLT_SMOOTH_SCROLL=1).")
+    (clingon:make-option :flag
                          :key :no-config
                          :long-name "no-config"
                          :description "Do not load the user init file.")
@@ -186,6 +190,8 @@
            (repl-server (clingon:getopt command :repl-server nil)))
        (when (clingon:getopt command :config nil)
          (setf *config-file* (clingon:getopt command :config nil)))
+       (when (clingon:getopt command :smooth-scroll nil)
+         (setf *smooth-scrolling* t))
        (when (repl-server-loaded-p)
          ;; Set globally so the menu and key binding use them too.
          (setf (symbol-value '*repl-server-port*)

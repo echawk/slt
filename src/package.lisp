@@ -123,6 +123,10 @@
    #:frontend-bind-commands
    #:frontend-bind-focus
    #:frontend-bind-drop
+   #:frontend-request-frame
+   #:frontend-bind-pixel-scroll
+   #:frontend-set-smooth-offset
+   #:*smooth-scrolling*
    #:frontend-set-font-size
    #:frontend-bell
    #:*window-padding*

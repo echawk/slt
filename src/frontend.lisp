@@ -79,6 +79,32 @@ retain STORE for inspection but otherwise ignore it.")
     nil))
 (defgeneric frontend-set-title (frontend view title))
 (defgeneric frontend-schedule (frontend view delay-ms thunk))
+
+(defgeneric frontend-request-frame (frontend view thunk)
+  (:documentation "Arrange for THUNK to run on the UI thread in step with the
+display, just before its next refresh, and return true.  Frontends that
+cannot return NIL, and renders are then paced by a timer.")
+  (:method (frontend view thunk)
+    (declare (ignore frontend view thunk))
+    nil))
+
+(defgeneric frontend-bind-pixel-scroll (frontend view callback)
+  (:documentation "Arrange for CALLBACK to be called with (PIXELS ENDING-P)
+for precise (trackpad) scrolling instead of the scroll callback: PIXELS in
+device pixels, positive toward the scrollback, and ENDING-P true when a
+gesture or its momentum ends.  Return true when the frontend can, and can
+then draw a grid at a pixel offset (FRONTEND-SET-SMOOTH-OFFSET).")
+  (:method (frontend view callback)
+    (declare (ignore frontend view callback))
+    nil))
+
+(defgeneric frontend-set-smooth-offset (frontend view pixels)
+  (:documentation "Draw the grids that follow PIXELS (device pixels, 0 up
+to a cell height) lower.  While PIXELS is not zero they have one more row
+than the view, the row above it, which shows above the first row.")
+  (:method (frontend view pixels)
+    (declare (ignore frontend view pixels))
+    nil))
 (defgeneric frontend-cancel-scheduled (frontend view token))
 (defgeneric frontend-bind-resize (frontend view callback))
 (defgeneric frontend-bind-keypress (frontend view callback))

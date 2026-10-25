@@ -39,6 +39,15 @@
   ;; (ROW FIRST LAST): the cells of the hyperlink under the pointer, drawn
   ;; underlined.
   (hover-link nil)
+  ;; Smooth scrolling (see smooth-scroll.lisp): whether the frontend does
+  ;; it, the pixels the view is between rows, the row offset it is sliding
+  ;; to, rows still to pass on to programs, and the grids it draws with.
+  (smooth-p nil)
+  (smooth-offset 0 :type real)
+  (smooth-target nil)
+  (smooth-remainder 0 :type real)
+  (smooth-overhang nil)
+  (smooth-grid nil)
   frontend
   view
   (rows 24 :type fixnum)
@@ -302,7 +311,8 @@ it happens.  Callable from any thread."
     (invoke-on-ui emulator (lambda () (render-paced emulator)))))
 
 (defun render-paced (emulator)
-  "Render now, or after *FRAME-INTERVAL-MS* since the previous frame."
+  "Render just before the display's next refresh, on frontends that can
+tell; elsewhere now, or after *FRAME-INTERVAL-MS* since the previous frame."
   (let* ((now (get-internal-real-time))
          (synchronized (synchronized-wait-ms emulator))
          (wait-ms (max (- *frame-interval-ms*
@@ -320,11 +330,15 @@ it happens.  Callable from any thread."
                    (setf (terminal-emulator-last-render-time emulator) (get-internal-real-time))
                    (unless (terminal-emulator-closed-p emulator)
                      (render-emulator emulator))))))
-      (if (plusp wait-ms)
-          (frontend-schedule (terminal-emulator-frontend emulator)
+      (cond
+        ((frontend-request-frame (terminal-emulator-frontend emulator)
+                                 (terminal-emulator-view emulator)
+                                 #'render))
+        ((plusp wait-ms)
+         (frontend-schedule (terminal-emulator-frontend emulator)
                             (terminal-emulator-view emulator)
-                            wait-ms #'render)
-          (render)))))
+                            wait-ms #'render))
+        (t (render))))))
 
 (defun fit-grid-to-size (width height cell-width cell-height)
   (values (max 1 (floor width (max 1 cell-width)))
@@ -387,7 +401,9 @@ it happens.  Callable from any thread."
   "Copy the engine's changes into the grid and draw them.  UI thread only;
 the engine lock is held only for the copy."
   (let ((grid (terminal-emulator-grid emulator))
+        (display nil)
         (tracking nil))
+    (step-smooth-snap emulator)
     (with-engine (engine emulator)
       (let* ((store (terminal-emulator-image-store emulator))
              (old-screen (terminal-image-store-active-screen store))
@@ -438,12 +454,11 @@ the engine lock is held only for the copy."
     (when (grid-selection-intersects-dirty-p grid)
       (clear-selection emulator))
     (with-engine (engine emulator)
-      (apply-link-hover emulator engine grid))
+      (apply-link-hover emulator engine grid)
+      (setf display (smooth-display-grid emulator engine grid)))
     (let ((grid-dirty-p (find 1 (grid-dirty grid))))
       (when grid-dirty-p
-        (frontend-render-grid (terminal-emulator-frontend emulator)
-                             (terminal-emulator-view emulator)
-                             grid)
+        (render-display-grid emulator display)
         (grid-clear-dirty grid))
       (let ((store (terminal-emulator-image-store emulator)))
         (when (or (terminal-image-store-dirty-p store)
@@ -502,6 +517,7 @@ the engine lock is held only for the copy."
 
 (defun resize-emulator (emulator rows columns)
   (clear-selection emulator)
+  (reset-smooth-offset emulator)
   (setf (terminal-emulator-rows emulator) rows
         (terminal-emulator-columns emulator) columns)
   (with-engine (engine emulator)
@@ -554,6 +570,7 @@ scrollback."
                (:page-up (- (max 1 (1- (terminal-emulator-rows emulator)))))
                (:page-down (max 1 (1- (terminal-emulator-rows emulator))))
                (t how))))
+    (reset-smooth-offset emulator)
     (when (with-engine (engine emulator)
             (engine-scroll engine how))
       (request-render emulator)
@@ -641,13 +658,26 @@ part of a word, so that paths and URLs are selected whole.")
 (defvar *copy-on-select* nil
   "When true, finishing a mouse selection copies it to the clipboard.")
 
+(defun render-display-grid (emulator display)
+  "Hand DISPLAY (the grid, or the smooth-scrolling one) to the frontend."
+  (when (terminal-emulator-smooth-p emulator)
+    (frontend-set-smooth-offset (terminal-emulator-frontend emulator)
+                                (terminal-emulator-view emulator)
+                                (if (eq display (terminal-emulator-grid emulator))
+                                    0
+                                    (round (terminal-emulator-smooth-offset emulator)))))
+  (frontend-render-grid (terminal-emulator-frontend emulator)
+                        (terminal-emulator-view emulator)
+                        display))
+
 (defun render-selection (emulator)
   "Redraw the rows whose selection changed, without consulting the engine."
   (let ((grid (terminal-emulator-grid emulator)))
     (when (find 1 (grid-dirty grid))
-      (frontend-render-grid (terminal-emulator-frontend emulator)
-                           (terminal-emulator-view emulator)
-                           grid)
+      (if (zerop (terminal-emulator-smooth-offset emulator))
+          (render-display-grid emulator grid)
+          ;; The smooth-scrolling grid holds the old selection.
+          (render-emulator emulator))
       (grid-clear-dirty grid))))
 
 (defun clear-selection (emulator)
@@ -1248,6 +1278,13 @@ and notice a child that exited without closing the PTY."
                     (frontend-bind-scroll frontend-instance view
                                          (lambda (rows)
                                            (handle-scroll emulator rows)))
+                    (when (smooth-scrolling-requested-p)
+                      (setf (terminal-emulator-smooth-p emulator)
+                            (and (frontend-bind-pixel-scroll
+                                  frontend-instance view
+                                  (lambda (pixels ending-p)
+                                    (handle-pixel-scroll emulator pixels ending-p)))
+                                 t)))
                     (frontend-bind-keypress frontend-instance view
                                            (lambda (char keysym state &optional (event :press))
                                              (handle-keypress emulator char keysym state

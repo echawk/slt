@@ -78,6 +78,15 @@ Scrollback (ghostty, lispvt): use the mouse wheel or trackpad, Shift+PageUp/Page
 and Shift+Home/End. Typing returns to the live screen. On the alternate
 screen (vim, less), the wheel sends arrow keys instead.
 
+Smooth scrolling (cocoa, optional): with `--smooth-scroll`,
+`SLT_SMOOTH_SCROLL=1` or `(setf slt:*smooth-scrolling* t)` in the init file,
+a trackpad moves the scrollback pixel by pixel, and the view settles on a
+whole row when the gesture ends. Programs on the alternate screen or that
+track the mouse still get whole rows.
+
+On macOS 14 and later the cocoa frontend draws in step with the display (a
+`CADisplayLink`, idle when nothing changes), once per refresh.
+
 Selection and the clipboard (cocoa, gl and web frontends): drag to select,
 double-click for a word (paths and URLs count as one) and triple-click for a
 line. Copy with Command+C on macOS (Super+C elsewhere) or Control+Shift+C,
