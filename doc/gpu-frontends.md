@@ -63,7 +63,7 @@ requested between refreshes (`frontend-request-frame`) run just before the
 next one, and the grid and images a frame changes are drawn together, so
 there is one present per refresh at the display's own cadence. The link is
 paused while nothing changes. Elsewhere renders are paced by a timer
-(`*frame-interval-ms*`); GL and SDL2 present with vsync, which paces them.
+(`*frame-interval-ms*`); GL presents with vsync, which paces it.
 
 For smooth scrolling (`smooth-scroll.lisp`) the emulator hands the frontend
 a grid with one extra row, the scrollback row above the view, and a pixel

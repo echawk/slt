@@ -58,7 +58,6 @@ REPL: everything is resolved from `ocicl.csv`, `ocicl/` and `lib/`.
 | `ghostty` | Ghostty's libghostty-vt, via cl-ghostty-vt; fastest, with scrollback | built by `make` (downloads Zig) |
 | `lispvt` | pure Lisp, with scrollback; NEON-scanned on arm64 when SBCL has sb-simd (`lib/lispvt`, standalone) | none |
 | `libvterm` | libvterm 0.3.3, the library Neovim uses (`lib/cl-libvterm`) | built by `make` |
-| `3bst` | pure Lisp; a fork of 3b's port of st (`lib/3bst`) | none |
 
 By default slt uses the first engine in this order that is available.
 
@@ -69,10 +68,10 @@ native libraries live in their own `slt/NAME` systems, which load on first use.
 Output is parsed on a reader thread, and the UI draws at most once per frame,
 so heavy output never waits on rendering. Ghostty copies only changed rows
 into the grid through a small C helper (`src/native/slt-ghostty.c`), which is
-compiled on first use. On a 23 MB `cat`, ghostty manages about 140 MB/s,
-libvterm about 12 MB/s and 3bst about 2.6 MB/s. In the `slt/bench` throughput
-benchmark lispvt keeps pace with ghostty: faster on full-screen redraws,
-somewhat slower on plain scrolling text.
+compiled on first use. On a 23 MB `cat`, ghostty manages about 140 MB/s
+and libvterm about 12 MB/s. In the `slt/bench` throughput benchmark lispvt
+keeps pace with ghostty: faster on full-screen redraws, somewhat slower on
+plain scrolling text.
 
 Scrollback (ghostty, lispvt): use the mouse wheel or trackpad, Shift+PageUp/PageDown,
 and Shift+Home/End. Typing returns to the live screen. On the alternate
@@ -108,7 +107,6 @@ and compares the resulting screens. `slt/bench` measures throughput.
 | `gl` | Linux/BSD default: GLFW window (X11 or Wayland), OpenGL 3.3 or OpenGL ES 3.0, FreeType glyphs found through font-discovery; also runs on macOS with CoreText glyphs |
 | `gtk` | GTK 3 window drawn with Cairo and Pango, via [cl-cffi-gtk](https://github.com/crategus/cl-cffi-gtk) (`slt/gtk`; needs GTK 3) |
 | `ltk` | Tk; portable fallback (needs `wish`) where `gl` cannot run |
-| `sdl2` | SDL2 renderer (`slt/sdl2`; needs SDL2, SDL2_ttf and SDL2_image) |
 | `web` | serves a browser terminal; see [web/README.md](web/README.md) |
 | `headless` | no UI; for tests, scripting and remote frontends |
 
@@ -166,12 +164,11 @@ composition, and terminal- or client-driven playback). Placeholder cells
 pick their placement by underline color, palette-indexed images follow
 palette changes (OSC 4), and images with negative z are drawn under the
 text: below cell backgrounds that are not the default for z under
--1073741824, above them otherwise. (The SDL2 frontend draws every
-negative-z image below the backgrounds.)
+-1073741824, above them otherwise.
 
 Placements scroll with the text, into the scrollback and within scroll
 regions, and are cleared by `ED 2`/`ED 3`, RIS and entering the alternate
-screen. Images are rendered by the cocoa/Metal, GL, GTK/Cairo, SDL2, CLX, Tk,
+screen. Images are rendered by the cocoa/Metal, GL, GTK/Cairo, CLX, Tk,
 web, and headless frontends. Set `*sixel-images*` or `*kitty-graphics-images*`
 to `nil` to pass that protocol through untouched.
 
@@ -263,8 +260,8 @@ Edit commands unless the program tracks the mouse. On the other frontends
 `*commands*` maps each menu command to the function it calls.
 
 Command-click (Super-click) opens the link under the pointer
-(`*url-schemes*`). Files dropped on the window (cocoa, gl, gtk, clx and
-sdl2) are pasted as shell-quoted names. The bell beeps (`*audible-bell*`) and bounces the Dock icon while
+(`*url-schemes*`). Files dropped on the window (cocoa, gl, gtk and clx) are
+pasted as shell-quoted names. The bell beeps (`*audible-bell*`) and bounces the Dock icon while
 slt is in the background (`*bell-hook*` holds `ring-bell`). Programs that
 ask for focus events (mode 1004) get them. `*window-padding*` sets the
 space around the grid in points.
@@ -299,6 +296,4 @@ On macOS, the build also:
   binaries whose signatures are missing or invalid. To distribute outside
   your own machines, sign with a Developer ID and notarize.
 
-The SDL2 frontend is left out because Homebrew's SDL2 brings a chain of
-further libraries (`make FRONTENDS=sdl2` builds it in). LTK is always in, but
-needs `wish` on the target machine.
+LTK is always in, but needs `wish` on the target machine.

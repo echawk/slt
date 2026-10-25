@@ -5,8 +5,5 @@ graphics and escape sequences: known limits
     scrolls are inferred from the screen.  libghostty-vt's tracked grid refs follow
     index scrolls but not RI/IL/DL/SD, and a discarded row's ref lands ambiguously on
     a live row, so they cannot replace the inference
-  - SDL2 draws every negative-z image below the cell backgrounds (one cached grid
-    texture; a middle layer needs a second texture with alpha)
   - ltk draws no underlines and reports key presses only
-  - underline styles and colors: libvterm has no underline color or dotted/dashed,
-    3bst only plain underlines
+  - underline styles and colors: libvterm has no underline color or dotted/dashed

@@ -1,7 +1,7 @@
 # slt -- build with `make`, run with `bin/slt`, install with `make install`.
 #
 #   make                          build bin/: the executable and its libraries
-#   make run ARGS='--engine 3bst' build, then run bin/slt with ARGS
+#   make run ARGS='--engine lispvt' build, then run bin/slt with ARGS
 #   make check                    unit tests and engine conformance
 #   make install                  install into $(DESTDIR)$(PREFIX)
 #   make lean [install]           bin/ with only this system's GUI frontend and
@@ -33,7 +33,7 @@ SBCL  ?= sbcl
 OCICL ?= ocicl
 export SBCL
 
-# Native engines to build in; the pure-Lisp lispvt is always included (3bst too, via BASE).
+# Native engines to build in; the pure-Lisp lispvt is always included.
 # ghostty downloads Zig and Ghostty to build; libvterm needs only a C compiler.
 ENGINES ?= ghostty libvterm
 
@@ -45,9 +45,8 @@ else
 FRONTENDS ?= gl
 endif
 
-# The slt system: the ltk and web frontends, the REPL servers and the 3bst
-# engine.  bin/slt is the command line over slt/core plus BASE, ENGINES and
-# FRONTENDS.
+# The slt system: the ltk and web frontends and the REPL servers.  bin/slt
+# is the command line over slt/core plus BASE, ENGINES and FRONTENDS.
 BASE ?= slt
 
 # LEAN=1: only the native GUI frontend (cocoa on macOS, gl elsewhere) and the
@@ -133,7 +132,6 @@ test: ocicl/.stamp $(STAMPS)
 # Runs the same byte streams through every engine that loads.
 conformance: ocicl/.stamp $(STAMPS)
 	$(LISP) --eval '(asdf:load-system :slt/conformance)' \
-		--eval '(asdf:load-system :slt/3bst)' \
 		--eval '(ignore-errors (asdf:load-system :slt/libvterm))' \
 		--eval '(ignore-errors (asdf:load-system :slt/ghostty))' \
 		--eval '(uiop:quit (if (slt/conformance:conformance-main) 0 1))'

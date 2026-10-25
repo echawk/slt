@@ -31,7 +31,7 @@
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.2.0"
-  :depends-on (:slt/core :slt/cli :slt/3bst :slt/web :slt/ltk
+  :depends-on (:slt/core :slt/cli :slt/web :slt/ltk
                ;; REPL servers, with the contribs their clients ask for.
                :swank/exts :slynk/arglists :slynk/fancy-inspector
                :slynk/package-fu :slynk/mrepl :slynk/trace-dialog
@@ -67,20 +67,8 @@ servers appear when those are loaded."
   :pathname "src/"
   :components ((:file "clx-frontend")))
 
-(asdf:defsystem #:slt/3bst
-  :description "3bst engine for slt: pure Lisp, a fork of 3b's port of st."
-  :depends-on (:slt/core :3bst)
-  :pathname "src/"
-  :components ((:file "engine-3bst")))
-
-(asdf:defsystem #:slt/sdl2
-  :description "SDL2 frontend (needs SDL2, SDL2_ttf and SDL2_image installed)."
-  :depends-on (:slt/core :sdl2 :sdl2-ttf :sdl2-image)
-  :pathname "src/"
-  :components ((:file "sdl2-frontend")))
-
 (asdf:defsystem #:slt/tests
-  :depends-on (:slt :slt/sdl2 :slt/conformance)
+  :depends-on (:slt :slt/conformance)
   :pathname "t/"
   :serial t
   :components ((:file "tests"))
@@ -147,7 +135,7 @@ servers appear when those are loaded."
   :description "The distributed executable: bin/slt plus its native
 libraries, built with Deploy by 'make' (scripts/build).  This is the
 command line over slt/core; the build first loads slt (ltk and web
-frontends, REPL servers, 3bst) unless LEAN, plus the optional engines and
+frontends, REPL servers) unless LEAN, plus the optional engines and
 frontends."
   :defsystem-depends-on (:deploy)
   :build-operation "deploy-console-op"

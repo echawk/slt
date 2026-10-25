@@ -91,6 +91,6 @@
                                   (destroy-emulator emulator)
                                   (frontend-request-exit frontend view))))))
 
-(launch-terminal :frontend :clx :engine (or (uiop:getenv "SLT_ENGINE") :3bst)
+(launch-terminal :frontend :clx :engine (or (uiop:getenv "SLT_ENGINE") :lispvt)
                  :shell *script* :rows 10 :columns 50 :load-config nil)
 (uiop:quit (if *failures* 1 0))

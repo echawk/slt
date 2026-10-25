@@ -185,7 +185,7 @@
   (:row 0 "abcd")
   (:row 1 "中"))
 
-(define-vt-case combining-character (:known-failures (:3bst)) ("e" (:bytes #xCC #x81) "x")
+(define-vt-case combining-character () ("e" (:bytes #xCC #x81) "x")
   (:row 0 #.(format nil "e~cx" (code-char #x301)))
   (:cursor 0 2))
 
@@ -213,7 +213,7 @@
   (:fg 0 0 :default)
   (:bg 0 0 :default))
 
-(define-vt-case sgr-explicit-default-palette-entries (:known-failures (:3bst))
+(define-vt-case sgr-explicit-default-palette-entries ()
     (:csi "37;40mA")
   (:fg 0 0 (:palette 7))
   (:bg 0 0 (:palette 0)))
@@ -234,7 +234,7 @@
 (define-vt-case sgr-attribute-resets () (:csi "1;3;4;7;9m" :csi "22;23;24;27;29mA")
   (:attrs 0 0 ()))
 
-(define-vt-case sgr-double-underline (:known-failures (:3bst)) (:csi "21mA")
+(define-vt-case sgr-double-underline () (:csi "21mA")
   (:attrs 0 0 (:double-underline)))
 
 (define-vt-case sgr-0-resets-everything () (:csi "1;4;31;42m" :csi "mA")

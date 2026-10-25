@@ -2,7 +2,7 @@
 
 ;;;; An engine is the VT state machine: it consumes the child's output,
 ;;;; maintains the screen, and copies it into a GRID for rendering.
-;;;; Engines are interchangeable (3bst, libvterm, libghostty-vt, ...) and
+;;;; Engines are interchangeable (lispvt, libvterm, libghostty-vt) and
 ;;;; are exercised against each other by the conformance suite.
 
 (defclass engine ()
@@ -140,7 +140,7 @@ engine supports scrollback.")
   "The engine used when none is requested; NIL picks the first entry of
 *ENGINE-PREFERENCE* that is available.")
 
-(defvar *engine-preference* '(:ghostty :lispvt :libvterm :3bst)
+(defvar *engine-preference* '(:ghostty :lispvt :libvterm)
   "Engines tried, fastest first, when *DEFAULT-ENGINE* is NIL.")
 
 (defun register-engine (name constructor)

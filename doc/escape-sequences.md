@@ -8,7 +8,7 @@ modes and many extensions from xterm, kitty, iTerm2 and others.
 
 slt divides this work in two:
 
-- **The engine** (ghostty, lispvt, libvterm or 3bst) is the VT emulator: the
+- **The engine** (ghostty, lispvt or libvterm) is the VT emulator: the
   screen, cursor, scrolling, SGR attributes, DEC modes, DA/DSR replies and
   the title (OSC 0/2). Each engine implements this on its own. `make
   conformance` runs the same byte streams through every engine and compares
@@ -141,7 +141,6 @@ ltk draws:
 |---|---|---|
 | lispvt, ghostty | all | yes |
 | libvterm | single, double, curly | no |
-| 3bst | single | no |
 
 ## The web frontend's colors
 

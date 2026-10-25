@@ -5,7 +5,6 @@
                 #:normalize-event-state
                 #:render-text-command
                 #:replace-environment-variable
-                #:strip-unsupported-control-strings
                 #:tcl-bool
                 #:terminal-process-environment)
   (:export #:run-tests))
@@ -133,7 +132,7 @@
               expected-value
               actual-value))))
 
-(defun make-test-engine (&key (rows 3) (columns 6) (engine :3bst))
+(defun make-test-engine (&key (rows 3) (columns 6) (engine :lispvt))
   (make-engine engine :rows rows :columns columns))
 
 (defun feed (engine &rest parts)
@@ -157,7 +156,7 @@
                                 (window-height 60)
                                 (cell-width 10)
                                 (cell-height 20)
-                                (engine :3bst))
+                                (engine :lispvt))
   (let* ((frontend (make-instance 'mock-frontend))
          (view (make-mock-view :cell-width cell-width
                                :cell-height cell-height
@@ -429,7 +428,7 @@
       (is (null (terminal-image-render-list store 8 16))))))
 
 (deftest printed-spaces-erase-sixel-cells-on-every-engine ()
-  (dolist (name '(:3bst :lispvt :libvterm))
+  (dolist (name '(:lispvt :libvterm))
     (when (ignore-errors (slt::engine-available-p name))
       (multiple-value-bind (emulator engine)
           (make-mock-emulator :rows 2 :columns 4 :cell-width 8 :cell-height 16 :engine name)
@@ -797,7 +796,7 @@ replies sent to the child."
     (is (engine-reports-scrolls-p engine))))
 
 (deftest engines-report-their-scrolls ()
-  (dolist (name '(:lispvt :3bst :libvterm))
+  (dolist (name '(:lispvt :libvterm))
     (when (ignore-errors (slt::engine-available-p name))
       (let ((engine (make-engine name :rows 3 :columns 10))
             (calls '()))
@@ -1407,105 +1406,14 @@ emulator wrote back since the last call."
             (terminal-process-environment :term-name nil
                                           :base-environment '("HOME=/tmp"))))
 
-(deftest frontend-registry-exposes-the-ltk-and-sdl2-frontends ()
+(deftest frontend-registry-exposes-the-ltk-frontend ()
   (is (member :ltk (available-frontends)))
-  (is (member :sdl2 (available-frontends)))
   (is (typep (make-frontend :ltk) 'slt::terminal-frontend))
-  (is (typep (make-frontend :sdl2) 'slt::terminal-frontend))
-  (is (typep (make-frontend "sdl2") 'slt::terminal-frontend)))
+  (is (typep (make-frontend "ltk") 'slt::terminal-frontend)))
 
 (deftest hex->rgb-and-rgb->hex-round-trip ()
   (is-equal #xA1B2C3 (hex->rgb "#A1B2C3"))
   (is-equal "#A1B2C3" (rgb->hex #xA1B2C3)))
-
-(deftest sdl-modifiers->state-translates-common-sdl-keywords ()
-  (is-equal #x4D
-            (slt::sdl-modifiers->state '(:lshift :rctrl :alt :lgui))))
-
-(deftest normalize-sdl-key-name-maps-special-keys-and-letter-case ()
-  (is-equal "BackSpace"
-            (slt::normalize-sdl-key-name "Backspace" :shiftp nil))
-  (is-equal "space"
-            (slt::normalize-sdl-key-name "Space" :shiftp nil))
-  (is-equal "a"
-            (slt::normalize-sdl-key-name "A" :shiftp nil))
-  (is-equal "A"
-            (slt::normalize-sdl-key-name "A" :shiftp t)))
-
-(deftest sdl-frontend-resolves-font-size-to-positive-point-size ()
-  (let ((frontend (make-frontend :sdl2)))
-    (is-equal 15 (slt::frontend-resolve-font-size frontend nil))
-    (is-equal 13 (slt::frontend-resolve-font-size frontend -13))
-    (is-equal 11 (slt::frontend-resolve-font-size frontend 11))))
-
-(deftest sdl-frontend-main-thread-policy-matches-sbcl-on-macos ()
-  (is (slt::sdl-frontend-use-main-thread-p "SBCL" :darwin))
-  (is (slt::sdl-frontend-use-main-thread-p "SBCL" :macosx))
-  (is (not (slt::sdl-frontend-use-main-thread-p "CCL" :darwin)))
-  (is (not (slt::sdl-frontend-use-main-thread-p "SBCL" :linux))))
-
-(deftest dispatch-sdl-timer-runs-callback-once-and-clears-it ()
-  (let* ((frontend (make-instance 'slt::sdl2-frontend))
-         (calls 0))
-    (setf (gethash 7 (slt::sdl2-frontend-timers frontend))
-          (lambda ()
-            (incf calls)))
-    (slt::dispatch-sdl-timer frontend 7)
-    (slt::dispatch-sdl-timer frontend 7)
-    (is-equal 1 calls)
-    (is (null (gethash 7 (slt::sdl2-frontend-timers frontend))))))
-
-(deftest find-font-file-prefers-the-closest-family-match ()
-  (let* ((root (make-temp-directory))
-         (nested (merge-pathnames "nested/" root))
-         (fallback-font (merge-pathnames "SomeMono.ttf" root))
-         (target-font (merge-pathnames "JetBrainsMono-Regular.ttf" nested)))
-    (unwind-protect
-         (progn
-           (write-test-file fallback-font)
-           (write-test-file target-font)
-           (is-equal (truename target-font)
-                     (truename (slt::find-font-file "JetBrains Mono"
-                                                   :search-roots (list root)))))
-      (ignore-errors
-        (uiop:delete-directory-tree root :validate t :if-does-not-exist :ignore)))))
-
-(deftest resolve-sdl-font-path-uses-explicit-paths-and-search-roots ()
-  (let* ((root (make-temp-directory))
-         (fonts (merge-pathnames "fonts/" root))
-         (target-font (merge-pathnames "IosevkaTerm-Regular.otf" fonts))
-         (target-path nil))
-    (unwind-protect
-         (progn
-           (write-test-file target-font)
-           (setf target-path (namestring (truename target-font)))
-           (is-equal (truename target-font)
-                     (truename (slt::resolve-sdl-font-path target-path
-                                                           :search-roots (list root))))
-           (is-equal (truename target-font)
-                     (truename (slt::resolve-sdl-font-path "Iosevka Term"
-                                                           :search-roots (list root)))))
-      (ignore-errors
-        (uiop:delete-directory-tree root :validate t :if-does-not-exist :ignore)))))
-
-(deftest strip-unsupported-control-strings-removes-dcs-and-keeps-text ()
-  (let* ((escape (string (code-char 27)))
-         (dcs-sequence (concatenate 'string escape "Pzz" escape "\\"))
-         (c1-dcs-sequence (concatenate 'string
-                                       (string (code-char #x90))
-                                       "ignored"
-                                       (string (code-char #x9C)))))
-    (is-equal "ab"
-              (strip-unsupported-control-strings
-               (concatenate 'string "a" dcs-sequence "b")))
-    (is-equal "xy"
-              (strip-unsupported-control-strings
-               (concatenate 'string "x" c1-dcs-sequence "y")))))
-
-(deftest strip-unsupported-control-strings-keeps-plain-introducer-letters ()
-  ;; Regression: a bare P, _ or ^ used to start a control string and
-  ;; swallow the rest of the chunk.
-  (is-equal "echo Python ^_^" (strip-unsupported-control-strings "echo Python ^_^")))
 
 (deftest fit-grid-to-size-computes-terminal-dimensions-from-pixels ()
   (multiple-value-bind (columns rows)
@@ -1566,10 +1474,6 @@ emulator wrote back since the last call."
       (remove-hook 'slt::*bell-hook* #'first-hook)
       (is-equal 1 (length slt::*bell-hook*)))))
 
-(deftest engine-registry-exposes-3bst ()
-  (is (member :3bst (available-engines)))
-  (is (typep (make-engine :3bst :rows 2 :columns 2) 'engine)))
-
 (deftest engine-update-grid-copies-text-colors-and-cursor ()
   (let* ((engine (feed (make-test-engine :rows 2 :columns 6)
                        "a" :esc "[31mR" :esc "[1;7mX"))
@@ -1600,7 +1504,7 @@ emulator wrote back since the last call."
 
 (deftest engine-replies-to-device-attributes-through-output-function ()
   (let* ((replies '())
-         (engine (make-engine :3bst :rows 2 :columns 4
+         (engine (make-engine :lispvt :rows 2 :columns 4
                                     :output-function (lambda (s) (push s replies)))))
     (feed engine :esc "[c")
     (is replies)
@@ -1608,7 +1512,7 @@ emulator wrote back since the last call."
 
 (deftest engine-reports-title-changes ()
   (let* ((title nil)
-         (engine (make-engine :3bst :rows 2 :columns 4
+         (engine (make-engine :lispvt :rows 2 :columns 4
                                     :title-function (lambda (s) (setf title s)))))
     (feed engine :esc "]2;hello" (code-char 7))
     (is-equal "hello" title)))
@@ -1825,8 +1729,8 @@ emulator wrote back since the last call."
           (close input))))))
 
 (deftest parse-cli-arguments-translates-runtime-flags-into-launch-keywords ()
-  (let* ((command (parse-cli-arguments '("--frontend" "sdl2"
-                                         "--engine" "3bst"
+  (let* ((command (parse-cli-arguments '("--frontend" "gtk"
+                                         "--engine" "lispvt"
                                          "--rows" "30"
                                          "--columns" "120"
                                          "--font-family" "JetBrains Mono"
@@ -1839,8 +1743,8 @@ emulator wrote back since the last call."
                                          "--title" "scratch"
                                          "--no-config")))
          (arguments (command-launch-arguments command)))
-    (is-equal '(:frontend "sdl2"
-                :engine "3bst"
+    (is-equal '(:frontend "gtk"
+                :engine "lispvt"
                 :rows 30
                 :columns 120
                 :font-family "JetBrains Mono"
@@ -1872,10 +1776,10 @@ emulator wrote back since the last call."
          (output (with-output-to-string (stream)
                   (slt::handle-cli-command command :stream stream))))
     (is (search "ltk" output))
-    (is (search "sdl2" output))))
+    (is (search "gtk" output))))
 
-(deftest conformance-suite-passes-on-3bst ()
-  (let ((results (slt/conformance:run-conformance :engines '(:3bst))))
+(deftest conformance-suite-passes-on-lispvt ()
+  (let ((results (slt/conformance:run-conformance :engines '(:lispvt))))
     (dolist (result results)
       (is (member (third result) '(:pass :xfail))
           (format nil "~(~a~) ~(~a~): ~{~a~^; ~}"
@@ -1981,7 +1885,7 @@ emulator wrote back since the last call."
         "legacy coordinates past one octet are dropped")))
 
 (deftest engines-report-the-mouse-once-the-child-asks ()
-  (dolist (name '(:lispvt :3bst :libvterm :ghostty))
+  (dolist (name '(:lispvt :libvterm :ghostty))
     (when (slt::engine-available-p name)
       (let ((engine (make-test-engine :engine name :rows 4 :columns 10))
             (esc (code-char 27)))
