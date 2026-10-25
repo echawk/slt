@@ -1559,10 +1559,10 @@ lock."
                                (decoded (decode-sixel-payload payload)))
   "Decode and place the SIXEL image PAYLOAD (a whole DCS string).  With sixel
 scrolling (DECSDM reset) the image starts at the cursor, which then ends on
-its last text row, at its left column (or after it with ?8452), scrolling as
-needed, like xterm and foot; with DECSDM set it is drawn at the top left and
-the cursor does not move.  An opaque image replaces older SIXEL images in
-the cells it covers entirely.  DECODED is the image from DECODE-SIXEL-PAYLOAD."
+the line below the image, at its left column (or on its last text row, after
+it, with ?8452), scrolling as needed, like mlterm, konsole and libvte; with
+DECSDM set it is drawn at the top left and the cursor does not move.  An
+opaque image replaces older SIXEL images in the cells it covers entirely.  DECODED is the image from DECODE-SIXEL-PAYLOAD."
   (when (typep decoded 'condition)
     (warn "Could not decode SIXEL image: ~a" decoded)
     (return-from handle-sixel-command nil))
@@ -1581,6 +1581,7 @@ the cells it covers entirely.  DECODED is the image from DECODE-SIXEL-PAYLOAD."
             (if display-mode (values 0 0) (engine-cursor-position engine))
           (let* ((image-rows (max 1 (ceiling height cell-height)))
                  (image-columns (max 1 (ceiling width cell-width)))
+                 (next-line (if (terminal-image-store-sixel-scrolls-right store) 0 1))
                  (row-before 0)
                  (id (allocate-image-id store :internal t))
                  (stored (store-image store id 0 width height rgba :anonymous-p t))
@@ -1597,11 +1598,11 @@ the cells it covers entirely.  DECODED is the image from DECODE-SIXEL-PAYLOAD."
             (setf row-before (terminal-image-placement-row placement))
             (unless display-mode
               (incf (terminal-image-store-pending-scroll store)
-                    (max 0 (- (+ row image-rows) (engine-rows engine))))
+                    (max 0 (- (+ row image-rows next-line) (engine-rows engine))))
               (engine-feed-string
                engine
                (with-output-to-string (out)
-                 (dotimes (i (1- image-rows))
+                 (dotimes (i (+ image-rows next-line -1))
                    (format out "~cD" (code-char 27)))
                  (when (terminal-image-store-sixel-scrolls-right store)
                    (if (>= (+ column image-columns) (engine-columns engine))
@@ -1614,7 +1615,8 @@ the cells it covers entirely.  DECODED is the image from DECODE-SIXEL-PAYLOAD."
                   ;; the placement yet.
                   (scrolled (if display-mode
                                 0
-                                (max 0 (- (max 0 (- (+ row image-rows) (engine-rows engine)))
+                                (max 0 (- (max 0 (- (+ row image-rows next-line)
+                                                    (engine-rows engine)))
                                           (- row-before
                                              (terminal-image-placement-row placement)))))))
               (unless (and grid (= (grid-rows grid) (engine-rows engine))

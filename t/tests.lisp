@@ -309,9 +309,37 @@
         (is-equal 1 (terminal-image-placement-column placement)))
       (let ((grid (make-grid 8 10)))
         (engine-update-grid engine grid :force t)
-        ;; Like xterm, a one-row image leaves the cursor at its left
-        ;; column on its last row.
-        (is-equal "XY" (grid-row-text grid 0))))))
+        ;; A one-row image leaves the cursor at its left column on the
+        ;; line below.
+        (is-equal "X" (grid-row-text grid 0))
+        (is-equal " Y" (grid-row-text grid 1))))))
+
+(deftest sixel-leaves-cursor-below-image ()
+  ;; timg's animation sequence: CR plus moving up the image's rows returns
+  ;; to where the frame started.
+  (when (cl-libsixel:libsixel-available-p)
+    (let* ((engine (make-engine :lispvt :rows 8 :columns 10))
+           (store (slt::make-terminal-image-store))
+           (parser (slt::make-terminal-graphics-parser))
+           (esc (string (code-char 27)))
+           ;; 20 pixels high: two 16-pixel rows.
+           (sixel (concatenate 'string esc "Pq\"1;1;1;20#0;2;100;0;0#0~" esc "\\")))
+      (graphics-test-feed parser engine store
+                          (list (format nil "~c~cA" #\Return #\Linefeed) sixel))
+      (multiple-value-bind (row column) (slt::engine-cursor-position engine)
+        (is-equal 3 row)
+        (is-equal 1 column))
+      (graphics-test-feed parser engine store
+                          (list (format nil "~c~c[2A" #\Return (code-char 27))))
+      (multiple-value-bind (row column) (slt::engine-cursor-position engine)
+        (is-equal 1 row)
+        (is-equal 0 column))
+      ;; With ?8452 the cursor ends on the image's last row, after it.
+      (slt::handle-graphics-control store '(:mode 8452 t) engine)
+      (graphics-test-feed parser engine store (list sixel))
+      (multiple-value-bind (row column) (slt::engine-cursor-position engine)
+        (is-equal 2 row)
+        (is-equal 1 column)))))
 
 (deftest sixel-at-bottom-scrolls-inline-with-terminal-content ()
   (when (cl-libsixel:libsixel-available-p)
@@ -333,8 +361,8 @@
                (scroll (max detected (slt::terminal-image-store-pending-scroll store))))
           (slt::scroll-image-placements store scroll)
           (setf (slt::terminal-image-store-pending-scroll store) 0)
-          (is-equal 1 scroll)
-          (is-equal 2 (terminal-image-placement-row
+          (is-equal 2 scroll)
+          (is-equal 1 (terminal-image-placement-row
                        (first (terminal-image-store-placements store))))
           (multiple-value-bind (row column) (slt::engine-cursor-position engine)
             (is-equal 3 row)
@@ -858,9 +886,9 @@ replies sent to the child."
         (mock-feed emulator (format nil "~{l~a~c~c~}" (loop for i below 8 append
                                                             (list i #\Return #\Linefeed))))
         (render-emulator emulator)
-        ;; 8 rows high from row 8: scrolls the screen by 6.
+        ;; 8 rows high from row 8, cursor below it: scrolls the screen by 7.
         (mock-feed emulator (test-sixel 40 128))
-        (mock-feed emulator (format nil "~c~c$ " #\Return #\Linefeed))
+        (mock-feed emulator (format nil "~c$ " #\Return))
         (render-emulator emulator)
         (let ((placement (first (terminal-image-store-placements store))))
           (is placement)

@@ -149,10 +149,10 @@ flows, the settings and the security choices. The reusable pieces live in
 slt recognizes SIXEL DCS sequences and Kitty graphics APC sequences before
 they reach the selected VT engine, so graphics work with every engine.
 
-SIXEL is decoded through `libsixel`. Images are placed and move the cursor
-as in xterm, honor transparent backgrounds (`P2=1`), DECSDM (`?80`) and
-sixel-scrolls-right (`?8452`, both reportable with DECRQM), and answer
-XTSMGRAPHICS; the primary device attributes advertise sixel support. As in
+SIXEL is decoded through `libsixel`. An image leaves the cursor on the line
+below it, as in mlterm, konsole and libvte terminals. Images honor
+transparent backgrounds (`P2=1`), DECSDM (`?80`) and sixel-scrolls-right
+(`?8452`, both reportable with DECRQM), and slt answers XTSMGRAPHICS; the primary device attributes advertise sixel support. As in
 xterm and foot, text written or erased over a SIXEL image replaces it in
 those cells, and an opaque image replaces the older ones it covers. Pixels
 that the raster attributes declare non-square are stretched to squares.
