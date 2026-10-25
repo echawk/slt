@@ -750,6 +750,10 @@ frame changes are then drawn together."
 
 (defmethod frontend-render-grid ((frontend cocoa-frontend) (view cocoa-view) grid)
   (setf (cocoa-view-grid view) grid)
+  ;; Pack now: the emulator clears the grid's dirty rows once this
+  ;; returns, while the draw may wait for the display link.
+  (setf (cocoa-view-instances view)
+        (pack-grid grid (cocoa-view-atlas view) (view-palette view) (cocoa-view-instances view)))
   (cocoa-view-changed view))
 
 (defmethod frontend-render-images ((frontend cocoa-frontend) (view cocoa-view) store)
