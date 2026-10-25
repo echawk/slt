@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f2430"/>
+      <stop offset="1" stop-color="#0c0e13"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="16" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <pattern id="scan" width="10" height="10" patternUnits="userSpaceOnUse">
+      <rect width="10" height="4" fill="#000" opacity="0.25"/>
+    </pattern>
+    <clipPath id="c"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <g clip-path="url(#c)">
+    <g stroke="#4a5a70" stroke-width="34" stroke-linecap="round" fill="none" opacity="0.9">
+      <path d="M 280 300 Q 200 512 280 724"/>
+      <path d="M 744 300 Q 824 512 744 724"/>
+    </g>
+    <g filter="url(#glow)" stroke="#8cf5a8" stroke-width="52" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <path d="M 372 330 Q 440 320 462 388 L 590 690"/>
+      <path d="M 486 456 L 362 690"/>
+    </g>
+    <rect x="610" y="652" width="84" height="38" rx="5" fill="#8cf5a8" filter="url(#glow)"/>
+    <rect x="100" y="100" width="824" height="824" fill="url(#scan)"/>
+  </g>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="none" stroke="#2e3646" stroke-width="6"/>
+</svg>
