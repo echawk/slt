@@ -214,7 +214,8 @@ and return copies of the events."
           (setf (aref octets (random length)) (if (zerop (random 2)) 127 (random 32))))
         (let ((expected (ecma48::scan-text-scalar octets start length)))
           #+sbcl (is (= expected (ecma48::scan-text-swar octets start length)))
-          #+ecma48-neon (is (= expected (ecma48::scan-text-neon octets start length))))))))
+          #+ecma48-neon (is (= expected (ecma48::scan-text-neon octets start length)))
+          #+ecma48-sse2 (is (= expected (ecma48::scan-text-sse2 octets start length))))))))
 
 (defun run-tests ()
   (setf *failures* 0)

@@ -3,7 +3,7 @@
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.1.0"
-  ;; scan.lisp uses NEON through sb-simd on arm64 when SBCL has it.
+  ;; scan.lisp uses NEON (arm64) or SSE2 (x86-64) through sb-simd when SBCL has it.
   :serial t
   :components ((:file "package")
                (:file "scan")

@@ -56,7 +56,7 @@ REPL: everything is resolved from `ocicl.csv`, `ocicl/` and `lib/`.
 | engine | what it is | setup |
 |---|---|---|
 | `ghostty` | Ghostty's libghostty-vt, via cl-ghostty-vt; fastest, with scrollback | built by `make` (downloads Zig) |
-| `lispvt` | pure Lisp, with scrollback; NEON-scanned on arm64 when SBCL has sb-simd (`lib/lispvt`, standalone) | none |
+| `lispvt` | pure Lisp, with scrollback; scanned with NEON on arm64 and SSE2 on x86-64 when SBCL has sb-simd (`lib/lispvt`, standalone) | none |
 | `libvterm` | libvterm 0.3.3, the library Neovim uses (`lib/cl-libvterm`) | built by `make` |
 
 By default slt uses the first engine in this order that is available.
