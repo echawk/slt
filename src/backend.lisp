@@ -132,6 +132,50 @@ chosen.  Backends without menus ignore it.")
     (declare (ignore backend view items))
     nil))
 
+(defvar *view-palettes* (make-hash-table :test #'eq :weakness :key :synchronized t)
+  "Palettes of views whose colors a program changed (OSC 4, 10, 11 ...).")
+
+(defun view-palette (view)
+  "The palette VIEW is drawn with: its own, or *PALETTE*."
+  (or (and view (gethash view *view-palettes*)) *palette*))
+
+(defun (setf view-palette) (palette view)
+  (if palette
+      (setf (gethash view *view-palettes*) palette)
+      (remhash view *view-palettes*))
+  palette)
+
+(defmacro with-view-palette ((view) &body body)
+  "Run BODY with *PALETTE* bound to VIEW's palette."
+  `(let ((*palette* (view-palette ,view)))
+     ,@body))
+
+(defun applescript-string (string)
+  (with-output-to-string (out)
+    (write-char #\" out)
+    (loop for char across string
+          do (when (member char '(#\" #\\)) (write-char #\\ out))
+             (write-char (if (char< char #\Space) #\Space char) out))
+    (write-char #\" out)))
+
+(defgeneric backend-notify (backend view title body)
+  (:documentation "Show a desktop notification.  The default uses the
+platform's command: osascript on macOS, notify-send elsewhere.")
+  (:method (backend view title body)
+    (declare (ignore backend view))
+    (let ((title (or title "slt"))
+          (body (or body "")))
+      (ignore-errors
+       (if (uiop:os-macosx-p)
+           (uiop:launch-program
+            (list "osascript" "-e"
+                  (format nil "display notification ~a with title ~a"
+                          (applescript-string body) (applescript-string title)))
+            :output nil :error-output nil)
+           (when (probe-file "/usr/bin/notify-send")
+             (uiop:launch-program (list "notify-send" "--" title body)
+                                  :output nil :error-output nil)))))))
+
 (defgeneric backend-clipboard-text (backend view)
   (:documentation "The text on the system clipboard, or NIL.")
   (:method (backend view)

@@ -481,7 +481,7 @@ middle button, which Cocoa numbers 2 among its other buttons."
   (multiple-value-bind (width height) (cocoa-view-pixel-size view)
     (metal-set-drawable-size (cocoa-view-renderer view) width height)))
 
-(defun redraw-cocoa-view (view &optional (palette *palette*))
+(defun redraw-cocoa-view (view &optional (palette (view-palette view)))
   (let ((grid (cocoa-view-grid view)))
     (when (and grid (not (cocoa-view-closed-p view)))
       (setf (cocoa-view-instances view)
@@ -502,7 +502,7 @@ middle button, which Cocoa numbers 2 among its other buttons."
                           (cocoa-view-cell-width view)
                           (cocoa-view-cell-height view))))))))
 
-(defun snapshot-cocoa-view (view pathname &optional (palette *palette*))
+(defun snapshot-cocoa-view (view pathname &optional (palette (view-palette view)))
   "Render VIEW's current grid offscreen and write it to PATHNAME as a PPM."
   (let ((grid (cocoa-view-grid view)))
     (multiple-value-bind (width height) (cocoa-view-pixel-size view)

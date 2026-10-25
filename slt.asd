@@ -5,7 +5,7 @@
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.2.0"
-  :depends-on (:lispvt :kitty-graphics :cl-libsixel
+  :depends-on (:lispvt :ecma48 :kitty-graphics :cl-libsixel :kitty-keyboard :terminal-osc
                :babel :bordeaux-threads :cffi (:feature :sbcl :sb-posix))
   :pathname "src/"
   :serial t
@@ -17,10 +17,12 @@
                (:file "backend")
                (:file "engine")
                (:file "images")
+               (:file "sequences")
                (:file "engine-lispvt")
                (:file "transport")
                (:file "gpu")
                (:file "frontend")
+               (:file "controls")
                (:file "headless-backend")))
 
 (asdf:defsystem #:slt

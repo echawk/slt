@@ -105,6 +105,32 @@ and compares the resulting screens. `slt/bench` measures throughput.
 
 Choose one with `--backend NAME` or `SLT_BACKEND=NAME`.
 
+## Escape sequences
+
+The engines implement the VT core. In front of them, slt implements the
+same way for every engine:
+
+- **graphics:** SIXEL and Kitty;
+- **colors:** OSC 4/10/11/12, set and query, per window;
+- **clipboard:** OSC 52 (writing only, unless `*clipboard-access*` is
+  `:read-write`);
+- **hyperlinks:** OSC 8, opened with Command-click;
+- **working directory:** OSC 7 (new windows open there);
+- **prompt marks:** OSC 133, with Super+Up/Down or Control+Shift+Up/Down to
+  jump between prompts;
+- **desktop notifications:** OSC 9/777/99;
+- **the Kitty keyboard protocol;**
+- **synchronized output:** mode 2026;
+- **XTVERSION.**
+
+[doc/escape-sequences.md](doc/escape-sequences.md) describes how output
+flows, the settings and the security choices. The reusable pieces live in
+`lib/`:
+
+- [`ecma48`](lib/ecma48/) scans control sequences;
+- [`terminal-osc`](lib/terminal-osc/) parses OSC payloads;
+- [`kitty-keyboard`](lib/kitty-keyboard/) implements the keyboard protocol.
+
 ## Terminal graphics
 
 slt recognizes SIXEL DCS sequences and Kitty graphics APC sequences before

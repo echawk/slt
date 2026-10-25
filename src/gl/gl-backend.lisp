@@ -349,7 +349,7 @@ particular) trips over."
 (defun gl-view-pixel-size (view)
   (values-list (glfw:framebuffer-size view)))
 
-(defun redraw-gl-view (view &optional (palette *palette*))
+(defun redraw-gl-view (view &optional (palette (view-palette view)))
   (let ((grid (gl-view-grid view)))
     (when (and grid (not (gl-view-closed-p view)))
       (glfw:make-current view)
@@ -371,7 +371,7 @@ particular) trips over."
                        (gl-view-cell-width view) (gl-view-cell-height view)))))
       (glfw:swap-buffers view))))
 
-(defun snapshot-gl-view (view &optional pathname (palette *palette*))
+(defun snapshot-gl-view (view &optional pathname (palette (view-palette view)))
   "Render VIEW's current grid offscreen.  Return the RGB octets, width and
 height, after writing them to PATHNAME as a PPM when given."
   (let ((grid (gl-view-grid view)))

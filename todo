@@ -17,6 +17,14 @@ support both libsixel and kitty graphics protocol;
   - SIXEL: pixel aspect ratio (libsixel's decoder ignores it)
   - images under text (negative z) only on the Metal, GL and web backends
 
+escape sequences (doc/escape-sequences.md):
+  - backends report key presses only: the Kitty keyboard protocol cannot send release
+    events or tell repeats apart
+  - draw OSC 8 hyperlinks distinctly (underline on hover)
+  - use the other OSC 133 marks (select a command's output, jump to failed commands)
+  - styled and colored underlines (SGR 4:x, 58) in the engines and renderers
+  - the web backend should follow OSC color changes
+
 support drag and drop in both macos & X11 at the beginning
 
 rename `backend` to frontend; idk why it is a `gui backend` as opposed to a `gui frontend`

@@ -74,7 +74,7 @@
   (or (gethash rgb *hex-color-cache*)
       (setf (gethash rgb *hex-color-cache*) (rgb->hex rgb))))
 
-(defun render-row-command-string (view grid row &optional (palette *palette*))
+(defun render-row-command-string (view grid row &optional (palette (view-palette view)))
   (with-output-to-string (out)
     (dotimes (column (grid-columns grid))
       (let* ((index (grid-index grid row column))

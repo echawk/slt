@@ -111,6 +111,9 @@
    #:backend-bind-paste
    #:backend-bind-mouse
    #:backend-clipboard-text
+   #:backend-notify
+   #:view-palette
+   #:with-view-palette
    #:backend-set-clipboard-text
    #:backend-bind-scroll
    #:backend-bind-menu

@@ -448,7 +448,7 @@ it was (re)created, in which case its contents are undefined."
                   (sdl2:destroy-texture texture)
                   (sdl2:free-surface surface))))))))))
 
-(defun present-sdl-view (view &optional (palette *palette*))
+(defun present-sdl-view (view &optional (palette (view-palette view)))
   (let ((renderer (sdl2-view-renderer view)))
     (sdl2:set-render-target renderer nil)
     (sdl-set-color renderer (palette-background palette))
@@ -461,7 +461,7 @@ it was (re)created, in which case its contents are undefined."
     (draw-sdl-images view)
     (sdl2:render-present renderer)))
 
-(defun render-sdl-grid (view grid &optional (palette *palette*))
+(defun render-sdl-grid (view grid &optional (palette (view-palette view)))
   (let ((renderer (sdl2-view-renderer view)))
     (when (ensure-sdl-target view grid)
       (grid-mark-all-dirty grid))

@@ -179,7 +179,8 @@
 cairo_t pointer."
   (declare (ignore widget))
   (let ((cr (if (cffi:pointerp context) context (gobject:pointer context))))
-    (gtk-draw-grid view cr))
+    (with-view-palette (view)
+      (gtk-draw-grid view cr)))
   t)
 
 (defun gtk-draw-grid (view cr)

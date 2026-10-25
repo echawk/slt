@@ -13,7 +13,26 @@
   engine
   (grid nil :type (or null grid))
   (image-store (make-terminal-image-store) :type terminal-image-store)
-  (graphics-parser (make-terminal-graphics-parser) :type terminal-graphics-parser)
+  (stream-parser (make-terminal-stream-parser) :type terminal-stream-parser)
+  ;; State of the control functions slt implements (src/controls.lisp).
+  (keyboard (kitty-keyboard:make-keyboard-state))
+  ;; Colors a program set (OSC 4, 10 ...), or NIL for *PALETTE*.  The view
+  ;; gets a copy on the UI thread.
+  (palette nil)
+  (working-directory nil)
+  (sync-deadline nil)
+  (notifications (terminal-osc:make-notification-assembler))
+  (recent-notifications '() :type list)
+  ;; T or NIL once the backend reports focus; :UNKNOWN before.
+  (focused-p :unknown)
+  (hyperlink nil)
+  (links '() :type list)
+  (link-count 0 :type fixnum)
+  (prompt-marks '() :type list)
+  ;; Rows the primary screen has scrolled up into the scrollback so far:
+  ;; primary-screen spans and marks keep ROW + ROW-ORIGIN, which such
+  ;; scrolls leave alone.
+  (row-origin 0 :type integer)
   backend
   view
   (rows 24 :type fixnum)
@@ -263,15 +282,22 @@ it happens.  Callable from any thread."
 (defun render-paced (emulator)
   "Render now, or after *FRAME-INTERVAL-MS* since the previous frame."
   (let* ((now (get-internal-real-time))
-         (wait-ms (- *frame-interval-ms*
-                     (round (* 1000 (- now (terminal-emulator-last-render-time emulator)))
-                            internal-time-units-per-second))))
+         (synchronized (synchronized-wait-ms emulator))
+         (wait-ms (max (- *frame-interval-ms*
+                          (round (* 1000 (- now (terminal-emulator-last-render-time emulator)))
+                                 internal-time-units-per-second))
+                       ;; While a program's update is incomplete (mode 2026),
+                       ;; look again each frame: its end renders at once.
+                       (if synchronized (min synchronized 16) 0))))
     (flet ((render ()
-             (bt:with-lock-held ((terminal-emulator-ui-lock emulator))
-               (setf (terminal-emulator-render-requested emulator) nil))
-             (setf (terminal-emulator-last-render-time emulator) (get-internal-real-time))
-             (unless (terminal-emulator-closed-p emulator)
-               (render-emulator emulator))))
+             (if (synchronized-wait-ms emulator)
+                 (render-paced emulator)
+                 (progn
+                   (bt:with-lock-held ((terminal-emulator-ui-lock emulator))
+                     (setf (terminal-emulator-render-requested emulator) nil))
+                   (setf (terminal-emulator-last-render-time emulator) (get-internal-real-time))
+                   (unless (terminal-emulator-closed-p emulator)
+                     (render-emulator emulator))))))
       (if (plusp wait-ms)
           (backend-schedule (terminal-emulator-backend emulator)
                             (terminal-emulator-view emulator)
@@ -550,7 +576,10 @@ Shift+Home/End to the top or bottom.  On *KEY-HOOK*; remove it to rebind."
       (clear-selection emulator)
       (write-input emulator
                    (with-engine (engine emulator)
-                     (engine-encode-key engine key modifiers))))))
+                     (let ((kitty (kitty-key-input emulator key modifiers)))
+                       (if (eq kitty :legacy)
+                           (engine-encode-key engine key modifiers)
+                           kitty)))))))
 
 ;;; Selection and the clipboard
 
@@ -770,9 +799,16 @@ change what that menu item does.  Read when the window is created.")
 
 (defun command-key-handler (emulator key modifiers)
   "Shortcuts for the commands: Super with = or +, -, 0, A and K (Command on
-macOS), and Super+Shift+R or Control+Shift+R to reload the init file.  On
-*KEY-HOOK*; remove it to rebind.  (The cocoa backend's menus take these
-keys first.)"
+macOS), Super+Shift+R or Control+Shift+R to reload the init file, and
+Super+Up/Down or Control+Shift+Up/Down to jump between shell prompts (with
+shell integration, OSC 133).  On *KEY-HOOK*; remove it to rebind.  (The
+cocoa backend's menus take these keys first.)"
+  (when (and (member key '(:up :down))
+             (or (member :super modifiers)
+                 (and (member :control modifiers) (member :shift modifiers))))
+    (when (jump-to-prompt emulator key)
+      (request-render emulator))
+    (return-from command-key-handler t))
   (when (characterp key)
     (let ((super (member :super modifiers)))
       (cond
@@ -790,6 +826,11 @@ keys first.)"
 
 (defvar *url-schemes* '("http" "https" "ftp" "file" "mailto" "ssh" "git")
   "Schemes of the links Command-click (Super-click elsewhere) opens.")
+
+(defvar *hyperlink-schemes* '("http" "https" "mailto")
+  "Schemes of the OSC 8 hyperlinks Command-click opens.  Their targets are
+not shown, so file:, ssh: and the like, which can run programs, are left
+out.")
 
 (defun url-cell-p (grid index)
   (let ((code (aref (grid-codes grid) index)))
@@ -827,7 +868,16 @@ keys first.)"
 
 (defun open-url-at (emulator row column)
   "Open the link at ROW, COLUMN; return true if there was one."
-  (let ((url (url-at (terminal-emulator-grid emulator) row column)))
+  (let ((url (or (let ((uri (hyperlink-at emulator row column)))
+                    ;; A hyperlink's target is hidden behind its text, so
+                    ;; only harmless schemes (*HYPERLINK-SCHEMES*).
+                    (and uri (find-if (lambda (scheme)
+                                        (and (> (length uri) (length scheme))
+                                             (string-equal scheme uri :end2 (length scheme))
+                                             (char= #\: (char uri (length scheme)))))
+                                      *hyperlink-schemes*)
+                         uri))
+                  (url-at (terminal-emulator-grid emulator) row column))))
     (when url
       (open-external url)
       t)))
@@ -836,6 +886,7 @@ keys first.)"
 
 (defun handle-focus (emulator focused)
   "Tell the child about focus changes when it asked (mode 1004)."
+  (setf (terminal-emulator-focused-p emulator) (and focused t))
   (when (with-engine (engine emulator) (engine-mode engine :focus-events))
     (write-input emulator (format nil "~c[~c" (code-char 27) (if focused #\I #\O)))))
 
@@ -904,48 +955,36 @@ the emulator when the item is chosen.  Read when the window is created.")
           (lambda (top bottom count &optional screen)
             ;; Runs inside the engine's parser: never unwind it.
             (graphics-guard ("moving images")
-              (note-engine-scroll store top bottom count
-                                  (or screen
-                                      (if (engine-mode engine :alternate-screen)
-                                          :alternate :primary))))))))
+              (let ((screen (or screen (if (engine-mode engine :alternate-screen)
+                                           :alternate :primary))))
+                (note-engine-scroll store top bottom count screen)
+                (note-annotation-scroll emulator top bottom count screen
+                                        (terminal-image-store-rows store))))))))
 
 (defun feed-emulator-output (emulator octets &key (start 0) (end (length octets)))
-  "Feed child output through the terminal-graphics demultiplexer. The caller
+  "Feed child output through the control-sequence interceptor.  The caller
 must hold EMULATOR's engine lock."
-  (let ((engine (terminal-emulator-engine emulator))
-        (store (terminal-emulator-image-store emulator))
-        (backend (terminal-emulator-backend emulator))
-        (view (terminal-emulator-view emulator)))
+  (let* ((engine (terminal-emulator-engine emulator))
+         (store (terminal-emulator-image-store emulator))
+         (backend (terminal-emulator-backend emulator))
+         (view (terminal-emulator-view emulator))
+         (parser (terminal-emulator-stream-parser emulator)))
     (unless (engine-scroll-function engine)
       (install-image-scroll-hook emulator))
-    (setf (terminal-graphics-parser-erase-events-p (terminal-emulator-graphics-parser emulator))
+    (setf (terminal-stream-parser-erase-events-p parser)
           (and (find-if #'sixel-placement-p (terminal-image-store-placements store)) t))
     (setf (terminal-image-store-cell-width store) (max 1 (backend-view-cell-width backend view))
           (terminal-image-store-cell-height store) (max 1 (backend-view-cell-height backend view))
           (terminal-image-store-rows store) (max 1 (engine-rows engine))
           (terminal-image-store-columns store) (max 1 (engine-columns engine)))
-    (terminal-graphics-feed
-     (terminal-emulator-graphics-parser emulator) octets
+    (terminal-stream-feed
+     parser octets
      (lambda (ordinary ordinary-start ordinary-end)
        (engine-feed engine ordinary :start ordinary-start :end ordinary-end))
-     (lambda (sixel)
-       (graphics-guard ("drawing a SIXEL image")
-         (handle-sixel-command store sixel engine))
-       ;; Erasures later in this same input may now hit the image.
-       (setf (terminal-graphics-parser-erase-events-p
-              (terminal-emulator-graphics-parser emulator))
-             t))
-     (lambda (kitty)
-       (let ((response (graphics-guard ("handling a Kitty graphics command")
-                         (handle-kitty-command store kitty engine))))
-         (when response
-           (send-to-process emulator response))))
-     :start start :end end
-     :on-control (lambda (event)
-                   (let ((reply (graphics-guard ("updating images")
-                                  (handle-graphics-control store event engine))))
-                     (when reply
-                       (send-to-process emulator reply)))))))
+     (lambda (event)
+       (graphics-guard ("handling a control sequence")
+         (handle-stream-event emulator event)))
+     :start start :end end)))
 
 (defun reader-loop (emulator)
   "Body of the reader thread: wait for child output, feed it to the engine
@@ -1072,7 +1111,7 @@ and notice a child that exited without closing the PTY."
     (backend-call-with-event-loop
      backend-instance
      (lambda ()
-       (labels ((create-terminal ()
+       (labels ((create-terminal (&optional from-directory)
                   (let* ((emulator-cell (list nil))
                          (resolved-font-family
                            (resolve-font-family
@@ -1100,7 +1139,8 @@ and notice a child that exited without closing the PTY."
                                :rows rows
                                :columns columns
                                :login (resolve-bundle-option login-shell)
-                               :directory (shell-working-directory directory)
+                               :directory (or from-directory
+                                              (shell-working-directory directory))
                                :variables (append (default-environment-variables)
                                                   *environment-variables*)
                                :pixel-width (* columns
@@ -1161,7 +1201,18 @@ and notice a child that exited without closing the PTY."
                                          (drop-files emulator pathnames)))
                     (backend-bind-commands
                      backend-instance view
-                     (emulator-commands emulator #'create-terminal))
+                     (emulator-commands
+                      emulator
+                      ;; New windows start where this one's shell is (OSC 7).
+                      (lambda ()
+                        (create-terminal
+                         (let* ((directory (terminal-emulator-working-directory emulator))
+                                (pathname (and directory
+                                               (ignore-errors
+                                                (uiop:parse-native-namestring
+                                                 directory :ensure-directory t)))))
+                           (and pathname (uiop:directory-exists-p pathname)
+                                (uiop:native-namestring pathname)))))))
                     (backend-bind-menu backend-instance view
                                        (emulator-menu-items emulator))
                     (backend-on-close

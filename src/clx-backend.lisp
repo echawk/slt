@@ -225,14 +225,15 @@ the regular one, and whether they are ISO 10646 encoded."
 
 (defun clx-draw-grid (view)
   "Paint the whole window."
-  (clx-fill view (palette-background *palette*) 0 0
-            (max 1 (clx-view-width view)) (max 1 (clx-view-height view)))
-  (let ((grid (clx-view-grid view)))
-    (when grid
-      (dotimes (row (grid-rows grid))
-        (clx-draw-row view grid row))
-      (clx-draw-cursor view grid)))
-  (clx-draw-images view))
+  (with-view-palette (view)
+    (clx-fill view (palette-background *palette*) 0 0
+              (max 1 (clx-view-width view)) (max 1 (clx-view-height view)))
+    (let ((grid (clx-view-grid view)))
+      (when grid
+        (dotimes (row (grid-rows grid))
+          (clx-draw-row view grid row))
+        (clx-draw-cursor view grid)))
+    (clx-draw-images view)))
 
 (defun clx-draw-images (view)
   (let ((store (clx-view-image-store view)))
@@ -542,7 +543,7 @@ the next timer, or NIL."
     (unless (clx-view-closed-p view)
       (if resized
           (clx-draw-grid view)
-          (progn
+          (with-view-palette (view)
             (dotimes (row (grid-rows grid))
               (when (= 1 (sbit (grid-dirty grid) row))
                 (clx-draw-row view grid row)))
