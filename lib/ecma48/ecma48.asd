@@ -7,6 +7,7 @@ sequences in UTF-8 terminal output."
   :serial t
   :pathname "src/"
   :components ((:file "package")
+               (:file "text")
                (:file "scanner"))
   :in-order-to ((test-op (test-op "ecma48/tests"))))
 

@@ -1,4 +1,4 @@
-(pushnew :hunchentoot-no-ssl *features*) ; the web backend serves plain HTTP on localhost
+(pushnew :hunchentoot-no-ssl *features*) ; the web frontend serves plain HTTP on localhost
 
 (asdf:defsystem #:slt/core
   :description "Engine-neutral terminal core: grid, engines, hooks, PTY transport."
@@ -14,19 +14,19 @@
                (:file "utf8")
                (:file "grid")
                (:file "core")
-               (:file "backend")
+               (:file "frontend")
                (:file "engine")
                (:file "images")
                (:file "sequences")
                (:file "engine-lispvt")
                (:file "transport")
                (:file "gpu")
-               (:file "frontend")
+               (:file "emulator")
                (:file "controls")
-               (:file "headless-backend")))
+               (:file "headless-frontend")))
 
 (asdf:defsystem #:slt
-  :description "A Common Lisp terminal emulator with pluggable engines and GUI backends."
+  :description "A Common Lisp terminal emulator with pluggable engines and GUI frontends."
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.2.0"
@@ -42,29 +42,29 @@
   :in-order-to ((test-op (test-op "slt/tests"))))
 
 (asdf:defsystem #:slt/cli
-  :description "The slt command line; options for the web backend and REPL
+  :description "The slt command line; options for the web frontend and REPL
 servers appear when those are loaded."
   :depends-on (:slt/core :clingon)
   :pathname "src/"
   :components ((:file "cli")))
 
 (asdf:defsystem #:slt/ltk
-  :description "Tk backend for slt, through LTK (needs wish at run time)."
+  :description "Tk frontend for slt, through LTK (needs wish at run time)."
   :depends-on (:slt/core :ltk)
   :pathname "src/"
-  :components ((:file "ltk-backend")))
+  :components ((:file "ltk-frontend")))
 
 (asdf:defsystem #:slt/gtk
-  :description "GTK 3 backend through cl-cffi-gtk: Cairo and Pango drawing."
+  :description "GTK 3 frontend through cl-cffi-gtk: Cairo and Pango drawing."
   :depends-on (:slt/core :cl-cffi-gtk)
   :pathname "src/"
-  :components ((:file "gtk-backend")))
+  :components ((:file "gtk-frontend")))
 
 (asdf:defsystem #:slt/clx
-  :description "X11 backend through CLX: core fonts, no foreign libraries."
+  :description "X11 frontend through CLX: core fonts, no foreign libraries."
   :depends-on (:slt/core :clx)
   :pathname "src/"
-  :components ((:file "clx-backend")))
+  :components ((:file "clx-frontend")))
 
 (asdf:defsystem #:slt/3bst
   :description "3bst engine for slt: pure Lisp, a fork of 3b's port of st."
@@ -73,10 +73,10 @@ servers appear when those are loaded."
   :components ((:file "engine-3bst")))
 
 (asdf:defsystem #:slt/sdl2
-  :description "SDL2 backend (needs SDL2, SDL2_ttf and SDL2_image installed)."
+  :description "SDL2 frontend (needs SDL2, SDL2_ttf and SDL2_image installed)."
   :depends-on (:slt/core :sdl2 :sdl2-ttf :sdl2-image)
   :pathname "src/"
-  :components ((:file "sdl2-backend")))
+  :components ((:file "sdl2-frontend")))
 
 (asdf:defsystem #:slt/tests
   :depends-on (:slt :slt/sdl2 :slt/conformance)
@@ -114,17 +114,17 @@ servers appear when those are loaded."
   :components ((:file "engine-ghostty")))
 
 (asdf:defsystem #:slt/cocoa
-  :description "Native macOS backend: AppKit window, Metal renderer, CoreText glyphs."
+  :description "Native macOS frontend: AppKit window, Metal renderer, CoreText glyphs."
   :depends-on (:slt/core :cocoas :float-features)
   :pathname "src/macos/"
   :serial t
   :components ((:file "objc")
                (:file "coretext")
                (:file "metal")
-               (:file "cocoa-backend")))
+               (:file "cocoa-frontend")))
 
 (asdf:defsystem #:slt/gl
-  :description "GLFW + OpenGL 3.3 / OpenGL ES 3.0 backend: X11 and Wayland on Linux and the BSDs, and macOS."
+  :description "GLFW + OpenGL 3.3 / OpenGL ES 3.0 frontend: X11 and Wayland on Linux and the BSDs, and macOS."
   :depends-on (:slt/core :glfw :cl-opengl :float-features
                ;; Glyphs: CoreText on macOS, font-discovery and FreeType elsewhere.
                (:feature :darwin :slt/cocoa)
@@ -134,20 +134,20 @@ servers appear when those are loaded."
   :components ((:file "package")
                (:file "gl-renderer")
                (:file "freetype" :if-feature (:not :darwin))
-               (:file "gl-backend")))
+               (:file "gl-frontend")))
 
 (asdf:defsystem #:slt/web
   :description "Web frontend: serves web/slt-terminal.js and streams the grid over a WebSocket."
   :depends-on (:slt/core :hunchentoot :hunchensocket :com.inuoe.jzon)
   :pathname "src/web/"
-  :components ((:file "web-backend")))
+  :components ((:file "web-frontend")))
 
 (asdf:defsystem #:slt/app
   :description "The distributed executable: bin/slt plus its native
 libraries, built with Deploy by 'make' (scripts/build).  This is the
 command line over slt/core; the build first loads slt (ltk and web
-backends, REPL servers, 3bst) unless LEAN, plus the optional engines and
-backends."
+frontends, REPL servers, 3bst) unless LEAN, plus the optional engines and
+frontends."
   :defsystem-depends-on (:deploy)
   :build-operation "deploy-console-op"
   :build-pathname "slt"

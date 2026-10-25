@@ -34,6 +34,13 @@
 (defconstant +attr-wide+ (ash 1 8))
 (defconstant +attr-wide-spacer+ (ash 1 9))
 (defconstant +attr-double-underline+ (ash 1 10))
+(defconstant +attr-curly-underline+ (ash 1 11))
+(defconstant +attr-dotted-underline+ (ash 1 12))
+(defconstant +attr-dashed-underline+ (ash 1 13))
+(defconstant +attr-underlines+
+  (logior +attr-underline+ +attr-double-underline+ +attr-curly-underline+
+          +attr-dotted-underline+ +attr-dashed-underline+)
+  "The underline styles; a cell has at most one.")
 
 (deftype code-vector () '(simple-array (unsigned-byte 32) (*)))
 (deftype color-vector () '(simple-array (unsigned-byte 32) (*)))
@@ -43,19 +50,45 @@
 (defstruct (line (:constructor %make-line (codes fg bg attrs)))
   "One row of cells.  A code of 0 is an erased cell; COMBINING holds extra
 codepoints as an alist of (COLUMN . STRING); WRAPPED is true when the text
-continues on the next line because of autowrap."
+continues on the next line because of autowrap.  UL holds underline colors
+(SGR 58), 0 where the underline takes the foreground; it is allocated only
+once one is printed on the line.  Cells from EXTENT on are known to be
+blank with the default background, so clearing the line stops there."
   (codes nil :type code-vector)
   (fg nil :type color-vector)
   (bg nil :type color-vector)
   (attrs nil :type attr-vector)
+  (ul nil :type (or null color-vector))
   (combining '() :type list)
-  (wrapped nil :type boolean))
+  (wrapped nil :type boolean)
+  (extent 0 :type fixnum))
 
 (defun make-line (columns &optional (bg +color-default+))
-  (%make-line (make-array columns :element-type '(unsigned-byte 32) :initial-element 0)
-              (make-array columns :element-type '(unsigned-byte 32) :initial-element 0)
-              (make-array columns :element-type '(unsigned-byte 32) :initial-element bg)
-              (make-array columns :element-type '(unsigned-byte 16) :initial-element 0)))
+  (let ((line (%make-line (make-array columns :element-type '(unsigned-byte 32)
+                                              :initial-element 0)
+                          (make-array columns :element-type '(unsigned-byte 32)
+                                              :initial-element 0)
+                          (make-array columns :element-type '(unsigned-byte 32)
+                                              :initial-element bg)
+                          (make-array columns :element-type '(unsigned-byte 16)
+                                              :initial-element 0))))
+    (unless (= bg +color-default+)
+      (setf (line-extent line) columns))
+    line))
+
+(declaim (inline note-extent))
+(defun note-extent (line end)
+  "Cells before END of LINE may no longer be blank."
+  (declare (type line line) (type fixnum end))
+  (when (> end (line-extent line))
+    (setf (line-extent line) end)))
+
+(defun ensure-line-ul (line)
+  "LINE's underline colors, allocated on first use."
+  (or (line-ul line)
+      (setf (line-ul line) (make-array (length (line-codes line))
+                                       :element-type '(unsigned-byte 32)
+                                       :initial-element 0))))
 
 (declaim (inline line-length))
 (defun line-length (line)
@@ -77,12 +110,22 @@ continues on the next line because of autowrap."
            (type fixnum start end)
            (type (unsigned-byte 32) bg)
            (optimize speed (safety 0)))
-  (let ((end (min end (line-length line))))
+  (let* ((end (min end (line-length line)))
+         (extent (line-extent line))
+         ;; Past the extent, cells are blank already, unless the new
+         ;; background is not the default.
+         (fill-end (if (= bg +color-default+) (min end extent) end)))
+    (declare (type fixnum end extent fill-end))
+    (when (< start fill-end)
+      (fill (line-codes line) 0 :start start :end fill-end)
+      (fill (line-fg line) 0 :start start :end fill-end)
+      (fill (line-bg line) bg :start start :end fill-end)
+      (fill (line-attrs line) 0 :start start :end fill-end)
+      (when (line-ul line)
+        (fill (line-ul line) 0 :start start :end fill-end)))
+    (cond ((/= bg +color-default+) (note-extent line end))
+          ((and (< start extent) (>= end extent)) (setf (line-extent line) start)))
     (when (< start end)
-      (fill (line-codes line) 0 :start start :end end)
-      (fill (line-fg line) 0 :start start :end end)
-      (fill (line-bg line) bg :start start :end end)
-      (fill (line-attrs line) 0 :start start :end end)
       (line-remove-combining line start end))))
 
 (defun clear-line (line bg)
@@ -106,6 +149,9 @@ continues on the next line because of autowrap."
                                  (resized (line-fg line) '(unsigned-byte 32))
                                  (resized (line-bg line) '(unsigned-byte 32))
                                  (resized (line-attrs line) '(unsigned-byte 16)))))
+            (when (line-ul line)
+              (setf (line-ul new) (resized (line-ul line) '(unsigned-byte 32))))
+            (setf (line-extent new) (min columns (line-extent line)))
             (setf (line-combining new)
                   (remove-if (lambda (entry) (>= (car entry) columns))
                              (line-combining line)))

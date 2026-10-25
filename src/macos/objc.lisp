@@ -1,6 +1,6 @@
 (in-package #:slt)
 
-;;;; Minimal Objective-C messaging for the macOS backend, on top of the
+;;;; Minimal Objective-C messaging for the macOS frontend, on top of the
 ;;;; runtime bindings in cocoas (codeberg.org/shinmera/cocoas).
 ;;;;
 ;;;; On arm64 every message goes through objc_msgSend, including those
@@ -11,7 +11,7 @@
 ;;;; are not float aggregates (MTLRegion) are passed as a pointer.  Struct
 ;;;; results are read through key-value coding instead (see OBJC-RECT).
 
-#-arm64 (warn "slt's Cocoa backend has only been written for arm64 calling conventions.")
+#-arm64 (warn "slt's Cocoa frontend has only been written for arm64 calling conventions.")
 
 (cffi:define-foreign-library metal-framework (:darwin (:framework "Metal")))
 (cffi:define-foreign-library quartz-core-framework (:darwin (:framework "QuartzCore")))

@@ -212,7 +212,8 @@ to DEFAULt if not already set"
 ;; not sure if we want AoS or SoA for term data yet?
 (defclass glyph ()
   ;; C stores a CL character instead of utf8 encoded string
-  ((c :accessor c :initform #\space)
+  ;; #\Nul is an erased cell, told apart from a printed space.
+  ((c :accessor c :initform #\Nul)
    (mode :accessor mode :initform +attr-null+)
    (fg :accessor fg :initform *default-foreground*)
    (bg :accessor bg :initform *default-background*)))
@@ -402,11 +403,11 @@ to DEFAULt if not already set"
 
 (defun term-line-length (y &key (term *term*))
   (let* ((screen (screen term))
-         (i (array-dimension screen 1)))
+         (i (length (aref screen y))))
     (when (logtest +attr-wrap+ (mode (glyph-at screen y (1- i))))
       (return-from term-line-length i))
     (loop while (and (plusp i)
-                     (eql #\space (c (glyph-at screen y (1- i)))))
+                     (member (c (glyph-at screen y (1- i))) '(#\Nul #\space)))
        do (decf i))
     i))
 
@@ -620,12 +621,12 @@ child process"
     (setf c (aref *vt100-0* (- (char-code c) #x41))))
   (if (logtest +attr-wide+ (mode (glyph-at (screen term) y x)))
       (when (< (1+ x) (columns term))
-        (setf (c (glyph-at (screen term) y (1+ x))) #\space
+        (setf (c (glyph-at (screen term) y (1+ x))) #\Nul
               (mode (glyph-at (screen term) y (1+ x)))
               (logxor (mode (glyph-at (screen term) y (1+ x)))
                       +attr-wdummy+)))
       (when (logtest +attr-wdummy+ (mode (glyph-at (screen term) y x)))
-        (setf (c (glyph-at (screen term) y (1- x))) #\space
+        (setf (c (glyph-at (screen term) y (1- x))) #\Nul
               (mode (glyph-at (screen term) y (1- x)))
               (logxor (mode (glyph-at (screen term) y (1- x)))
                       +attr-wide+))))
@@ -658,7 +659,7 @@ child process"
             (setf (fg g) (fg (attributes (cursor term)))
                   (bg g) (bg (attributes (cursor term)))
                   (mode g) 0
-                  (c g) #\space))))
+                  (c g) #\Nul))))
 
 (defun tdeletechar (n &key (term *term*))
   (limitf n 0 (- (columns term) (x (cursor term))))

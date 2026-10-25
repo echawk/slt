@@ -12,7 +12,7 @@
    ;; Reading the screen
    #:terminal-line #:terminal-dirty #:terminal-row-dirty-p #:terminal-clear-dirty
    #:terminal-row-text #:terminal-text
-   #:line #:line-codes #:line-fg #:line-bg #:line-attrs #:line-combining
+   #:line #:line-codes #:line-fg #:line-bg #:line-attrs #:line-ul #:line-combining
    #:line-wrapped
    ;; Scrollback
    #:terminal-scroll-viewport #:terminal-viewport-offset #:terminal-history-count
@@ -21,5 +21,7 @@
    #:+attr-bold+ #:+attr-faint+ #:+attr-italic+ #:+attr-underline+
    #:+attr-blink+ #:+attr-inverse+ #:+attr-invisible+ #:+attr-strike+
    #:+attr-wide+ #:+attr-wide-spacer+ #:+attr-double-underline+
+   #:+attr-curly-underline+ #:+attr-dotted-underline+ #:+attr-dashed-underline+
+   #:+attr-underlines+
    #:char-width
    #:scan-printable))

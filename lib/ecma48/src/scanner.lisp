@@ -13,8 +13,6 @@
 ;;;;
 ;;;; In UTF-8 the 8-bit C1 controls are not recognized: bytes 80-FF are text.
 
-(deftype octets () '(simple-array (unsigned-byte 8) (*)))
-
 (defconstant +max-parameters+ 32)
 
 (defconstant +max-sequence-length+ 1024
@@ -311,9 +309,7 @@ calls."
             do (let ((byte (aref octets index)))
                  (ecase (scanner-state scanner)
                    (:ground
-                    (let ((stop (or (position-if (lambda (b) (or (< b 32) (= b +del+)))
-                                                 octets :start index :end end)
-                                    end)))
+                    (let ((stop (scan-text octets index end)))
                       (when (< index stop)
                         (emit :text index stop))
                       (setf index stop)

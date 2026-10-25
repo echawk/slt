@@ -34,6 +34,7 @@ struct Fragment {
   float3 bg [[flat]];
   uint flags [[flat]];
   uint slot [[flat]];
+  float bg_alpha [[flat]];
   float2 atlas_px;
   float2 local_px;
 };
@@ -56,29 +57,55 @@ vertex Fragment cell_vertex(uint vid [[vertex_id]],
                         1.0 - px.y / u.viewport.y * 2.0, 0.0, 1.0);
   out.fg = unpack_rgb(cell.x);
   out.bg = unpack_rgb(cell.y);
-  out.slot = cell.z;
+  // The top bit marks the default background, transparent in layer 0.
+  uint slot = cell.z & 0x7FFFFFFFu;
+  out.slot = slot;
+  out.bg_alpha = (cell.z >> 31) != 0u ? 0.0 : 1.0;
   out.flags = cell.w;
-  float2 slot_origin = float2(cell.z % u.atlas_columns, cell.z / u.atlas_columns) * u.cell_size;
+  float2 slot_origin = float2(slot % u.atlas_columns, slot / u.atlas_columns) * u.cell_size;
   out.atlas_px = slot_origin + corner * u.cell_size;
   out.local_px = corner * u.cell_size;
   return out;
 }
 
+// LAYER 2 draws whole cells.  Under images with negative z the cells are
+// drawn in two layers instead: 0, the backgrounds (the default one
+// transparent), then 1, the text and decorations alone.
 fragment float4 cell_fragment(Fragment in [[stage_in]],
                               texture2d<float> atlas [[texture(0)]],
-                              constant Uniforms &u [[buffer(0)]]) {
+                              constant Uniforms &u [[buffer(0)]],
+                              constant uint &layer [[buffer(1)]]) {
+  if (layer == 0u) return float4(in.bg, in.bg_alpha);
   constexpr sampler nearest(coord::pixel, filter::nearest, address::clamp_to_edge);
-  float coverage = in.slot == 0u ? 0.0 : atlas.sample(nearest, in.atlas_px).r;
+  float ink = in.slot == 0u ? 0.0 : atlas.sample(nearest, in.atlas_px).r;
   float h = u.cell_size.y;
   float t = max(1.0, floor(h / 18.0));
   float y = in.local_px.y;
-  if ((in.flags & 1u) && y >= h - 2.0 * t && y < h - t) coverage = 1.0;
-  if ((in.flags & 2u) && ((y >= h - t) || (y >= h - 3.0 * t && y < h - 2.0 * t))) coverage = 1.0;
-  if ((in.flags & 4u) && abs(y - h * 0.55) < t * 0.5 + 0.25) coverage = 1.0;
-  float3 color = mix(in.bg, in.fg, coverage);
-  if ((in.flags & 8u) && in.local_px.x < 2.0 * t) color = u.cursor_color.rgb;
-  if ((in.flags & 16u) && y >= h - 2.0 * t) color = u.cursor_color.rgb;
-  return float4(color, 1.0);
+  if ((in.flags & 4u) && abs(y - h * 0.55) < t * 0.5 + 0.25) ink = 1.0;
+  // Underlines, in their own color; patterns follow the window's x so
+  // they run on across cells.
+  float x = in.position.x;
+  float band = (y >= h - 2.0 * t && y < h - t) ? 1.0 : 0.0;
+  float line = 0.0;
+  if (in.flags & 1u) line = band;
+  if ((in.flags & 2u) && ((y >= h - t) || (y >= h - 3.0 * t && y < h - 2.0 * t))) line = 1.0;
+  if (in.flags & 32u) {
+    float amplitude = max(1.0, t);
+    float centre = h - 1.5 * t - amplitude;
+    float wave = centre + amplitude * sin(x * 6.2831853 / max(6.0, 8.0 * amplitude));
+    line = clamp(t * 0.5 + 0.75 - abs(y - wave), 0.0, 1.0);
+  }
+  if ((in.flags & 64u) && fmod(floor(x / (2.0 * t)), 2.0) < 1.0) line = band;
+  if ((in.flags & 128u) && fmod(x, 8.0 * t) < 6.0 * t) line = band;
+  float cursor = ((in.flags & 8u) && in.local_px.x < 2.0 * t)
+                 || ((in.flags & 16u) && y >= h - 2.0 * t) ? 1.0 : 0.0;
+  float3 underline = unpack_rgb(in.flags >> 8);
+  if (layer == 1u) {
+    float3 color = cursor > 0.0 ? u.cursor_color.rgb : (line > ink ? underline : in.fg);
+    return float4(color, max(max(ink, line), cursor));
+  }
+  float3 color = mix(mix(in.bg, in.fg, ink), underline, line);
+  return float4(cursor > 0.0 ? u.cursor_color.rgb : color, 1.0);
 }
 
 struct ImageFragment {
@@ -170,7 +197,7 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
       (msg layer "setMaximumDrawableCount:" :unsigned-long +metal-frames-in-flight+ :void)
       (%make-metal-renderer :device device
                             :queue (msg device "newCommandQueue")
-                            :pipeline (make-metal-pipeline device)
+                            :pipeline (make-metal-pipeline device :blend t)
                             :image-pipeline (make-metal-pipeline
                                              device :vertex-name "image_vertex"
                                              :fragment-name "image_fragment" :blend t)
@@ -354,31 +381,34 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
          :double 1d0 :void)
     (let* ((commands (msg (metal-renderer-queue renderer) "commandBuffer"))
            (encoder (msg commands "renderCommandEncoderWithDescriptor:" :pointer pass)))
-      (metal-encode-images renderer encoder
-                           (remove-if-not (lambda (record)
-                                            (minusp (terminal-image-placement-z-index
-                                                     (first record))))
-                                          image-records)
-                           width height (metal-renderer-padding renderer))
-      (when (plusp cell-count)
-        (msg encoder "setRenderPipelineState:" :pointer (metal-renderer-pipeline renderer) :void)
-        (msg encoder "setVertexBuffer:offset:atIndex:"
-             :pointer buffer :unsigned-long 0 :unsigned-long 0 :void)
-        (msg encoder "setVertexBytes:length:atIndex:"
-             :pointer uniforms :unsigned-long 48 :unsigned-long 1 :void)
-        (msg encoder "setFragmentBytes:length:atIndex:"
-             :pointer uniforms :unsigned-long 48 :unsigned-long 0 :void)
-        (msg encoder "setFragmentTexture:atIndex:"
-             :pointer (metal-renderer-atlas-texture renderer) :unsigned-long 0 :void)
-        (msg encoder "drawPrimitives:vertexStart:vertexCount:instanceCount:"
-             :unsigned-long +mtl-primitive-type-triangle+
-             :unsigned-long 0 :unsigned-long 6 :unsigned-long cell-count :void))
-      (metal-encode-images renderer encoder
-                           (remove-if (lambda (record)
-                                        (minusp (terminal-image-placement-z-index
-                                                 (first record))))
-                                      image-records)
-                           width height (metal-renderer-padding renderer))
+      (multiple-value-bind (below-backgrounds below-text above) (image-layers image-records)
+        (flet ((cells (layer)
+                 (when (plusp cell-count)
+                   (cffi:with-foreign-object (layer-bytes :uint32)
+                     (setf (cffi:mem-ref layer-bytes :uint32) layer)
+                     (msg encoder "setRenderPipelineState:"
+                          :pointer (metal-renderer-pipeline renderer) :void)
+                     (msg encoder "setVertexBuffer:offset:atIndex:"
+                          :pointer buffer :unsigned-long 0 :unsigned-long 0 :void)
+                     (msg encoder "setVertexBytes:length:atIndex:"
+                          :pointer uniforms :unsigned-long 48 :unsigned-long 1 :void)
+                     (msg encoder "setFragmentBytes:length:atIndex:"
+                          :pointer uniforms :unsigned-long 48 :unsigned-long 0 :void)
+                     (msg encoder "setFragmentBytes:length:atIndex:"
+                          :pointer layer-bytes :unsigned-long 4 :unsigned-long 1 :void)
+                     (msg encoder "setFragmentTexture:atIndex:"
+                          :pointer (metal-renderer-atlas-texture renderer) :unsigned-long 0 :void)
+                     (msg encoder "drawPrimitives:vertexStart:vertexCount:instanceCount:"
+                          :unsigned-long +mtl-primitive-type-triangle+
+                          :unsigned-long 0 :unsigned-long 6 :unsigned-long cell-count :void))))
+               (images (records)
+                 (metal-encode-images renderer encoder records
+                                      width height (metal-renderer-padding renderer))))
+          (images below-backgrounds)
+          (if (or below-backgrounds below-text)
+              (progn (cells 0) (images below-text) (cells 1))
+              (cells 2))
+          (images above)))
       (msg encoder "endEncoding" :void)
       (incf (metal-renderer-frame renderer))
       commands)))

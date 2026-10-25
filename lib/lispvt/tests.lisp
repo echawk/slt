@@ -117,8 +117,41 @@
     (check (terminal-mode term :bracketed-paste))
     (check (equal (list (format nil "~c[?2004;1$y" #\Esc)) replies))))
 
+(defun extent-holds-p (term)
+  "True when every cell at or past its line's extent is blank with the
+default background, on both screens and in the scrollback."
+  (flet ((blank-tail-p (line)
+           (loop for i from (lispvt::line-extent line) below (lispvt::line-length line)
+                 always (and (zerop (aref (line-codes line) i)) (zerop (aref (line-fg line) i))
+                             (zerop (aref (line-bg line) i)) (zerop (aref (line-attrs line) i))
+                             (or (null (line-ul line)) (zerop (aref (line-ul line) i)))))))
+    (and (every #'blank-tail-p (lispvt::screen-lines (lispvt::terminal-primary term)))
+         (every #'blank-tail-p (lispvt::screen-lines (lispvt::terminal-alternate term)))
+         (loop for i below (terminal-history-count term)
+               always (blank-tail-p (lispvt::history-line (lispvt::terminal-primary term) i))))))
+
+(defun test-line-extents ()
+  ;; Clearing stops at each line's extent: random edits must never leave a
+  ;; written cell past it.
+  (let ((*random-state* (sb-ext:seed-random-state 7))
+        (pieces (vector "hello" "wide 中文" (esc "[K") (esc "[1K") (esc "[2K") (esc "[J")
+                        (esc "[1J") (esc "[2J") (esc "[3X") (esc "[2@") (esc "[3P")
+                        (esc "[2L") (esc "[M") (esc "[S") (esc "[T") (esc "[41m") (esc "[m")
+                        (esc "[4:3;58;5;2m") (esc "[44m") (esc "#8") (esc "[?1049h")
+                        (esc "[?1049l") (esc "[2;4r") (esc "[r") (esc "[4h") (esc "[4l")
+                        (format nil "~c~c" #\Return #\Linefeed) (string #\Linefeed)
+                        (esc "[3;7H") (esc "[999C") (esc "D") (esc "M"))))
+    (dotimes (trial 50)
+      (let ((term (make-terminal :rows 6 :columns 12 :scrollback 20)))
+        (dotimes (step 60)
+          (terminal-feed-string term (aref pieces (random (length pieces))))
+          (when (zerop (random 15))
+            (terminal-resize term (+ 3 (random 6)) (+ 6 (random 12)))))
+        (check (extent-holds-p term))))))
+
 (defun run-tests ()
   (let ((*failures* '()))
+    (test-line-extents)
     (test-scanners)
     (test-widths)
     (test-split-reads)

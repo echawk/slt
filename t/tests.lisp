@@ -14,7 +14,7 @@
 
 (defvar *tests* '())
 
-(defclass mock-backend (slt::terminal-backend) ())
+(defclass mock-frontend (slt::terminal-frontend) ())
 
 (defstruct (mock-view
             (:constructor make-mock-view
@@ -37,75 +37,75 @@
   focused-p
   exit-requested-p)
 
-(defmethod slt::backend-call-with-event-loop ((backend mock-backend) thunk)
-  (declare (ignore backend))
+(defmethod slt::frontend-call-with-event-loop ((frontend mock-frontend) thunk)
+  (declare (ignore frontend))
   (funcall thunk))
 
-(defmethod slt::backend-available-font-families ((backend mock-backend))
-  (declare (ignore backend))
+(defmethod slt::frontend-available-font-families ((frontend mock-frontend))
+  (declare (ignore frontend))
   '("Mock Mono"))
 
-(defmethod slt::backend-create-view ((backend mock-backend)
+(defmethod slt::frontend-create-view ((frontend mock-frontend)
                                      &key rows columns font-family font-size
                                        cell-width cell-height title)
-  (declare (ignore backend rows columns font-family font-size title))
+  (declare (ignore frontend rows columns font-family font-size title))
   (make-mock-view :cell-width (or cell-width 10)
                   :cell-height (or cell-height 20)))
 
-(defmethod slt::backend-view-cell-width ((backend mock-backend) (view mock-view))
-  (declare (ignore backend))
+(defmethod slt::frontend-view-cell-width ((frontend mock-frontend) (view mock-view))
+  (declare (ignore frontend))
   (mock-view-cell-width view))
 
-(defmethod slt::backend-view-cell-height ((backend mock-backend) (view mock-view))
-  (declare (ignore backend))
+(defmethod slt::frontend-view-cell-height ((frontend mock-frontend) (view mock-view))
+  (declare (ignore frontend))
   (mock-view-cell-height view))
 
-(defmethod slt::backend-view-window-size ((backend mock-backend) (view mock-view))
-  (declare (ignore backend))
+(defmethod slt::frontend-view-window-size ((frontend mock-frontend) (view mock-view))
+  (declare (ignore frontend))
   (values (mock-view-window-width view)
           (mock-view-window-height view)))
 
-(defmethod slt::backend-resize-view ((backend mock-backend) (view mock-view) rows columns)
-  (declare (ignore backend))
+(defmethod slt::frontend-resize-view ((frontend mock-frontend) (view mock-view) rows columns)
+  (declare (ignore frontend))
   (setf (mock-view-resized-to view) (list rows columns))
   view)
 
-(defmethod slt::backend-render-grid ((backend mock-backend) (view mock-view) grid)
-  (declare (ignore backend))
+(defmethod slt::frontend-render-grid ((frontend mock-frontend) (view mock-view) grid)
+  (declare (ignore frontend))
   (setf (mock-view-rendered-rows view) (grid-dirty-rows grid))
   view)
 
-(defmethod slt::backend-set-title ((backend mock-backend) (view mock-view) title)
-  (declare (ignore backend))
+(defmethod slt::frontend-set-title ((frontend mock-frontend) (view mock-view) title)
+  (declare (ignore frontend))
   (setf (mock-view-last-title view) title))
 
-(defmethod slt::backend-schedule ((backend mock-backend) (view mock-view) delay-ms thunk)
-  (declare (ignore backend delay-ms))
+(defmethod slt::frontend-schedule ((frontend mock-frontend) (view mock-view) delay-ms thunk)
+  (declare (ignore frontend delay-ms))
   (setf (mock-view-scheduled-callback view) thunk)
   :mock-token)
 
-(defmethod slt::backend-cancel-scheduled ((backend mock-backend) (view mock-view) token)
-  (declare (ignore backend))
+(defmethod slt::frontend-cancel-scheduled ((frontend mock-frontend) (view mock-view) token)
+  (declare (ignore frontend))
   (setf (mock-view-cancelled-token view) token))
 
-(defmethod slt::backend-bind-resize ((backend mock-backend) (view mock-view) callback)
-  (declare (ignore backend))
+(defmethod slt::frontend-bind-resize ((frontend mock-frontend) (view mock-view) callback)
+  (declare (ignore frontend))
   (setf (mock-view-resize-callback view) callback))
 
-(defmethod slt::backend-bind-keypress ((backend mock-backend) (view mock-view) callback)
-  (declare (ignore backend))
+(defmethod slt::frontend-bind-keypress ((frontend mock-frontend) (view mock-view) callback)
+  (declare (ignore frontend))
   (setf (mock-view-keypress-callback view) callback))
 
-(defmethod slt::backend-on-close ((backend mock-backend) (view mock-view) callback)
-  (declare (ignore backend))
+(defmethod slt::frontend-on-close ((frontend mock-frontend) (view mock-view) callback)
+  (declare (ignore frontend))
   (setf (mock-view-close-callback view) callback))
 
-(defmethod slt::backend-focus ((backend mock-backend) (view mock-view))
-  (declare (ignore backend))
+(defmethod slt::frontend-focus ((frontend mock-frontend) (view mock-view))
+  (declare (ignore frontend))
   (setf (mock-view-focused-p view) t))
 
-(defmethod slt::backend-request-exit ((backend mock-backend) (view mock-view))
-  (declare (ignore backend))
+(defmethod slt::frontend-request-exit ((frontend mock-frontend) (view mock-view))
+  (declare (ignore frontend))
   (setf (mock-view-exit-requested-p view) t))
 
 (defmacro deftest (name (&rest args) &body body)
@@ -150,20 +150,21 @@
                                 (window-width 80)
                                 (window-height 60)
                                 (cell-width 10)
-                                (cell-height 20))
-  (let* ((backend (make-instance 'mock-backend))
+                                (cell-height 20)
+                                (engine :3bst))
+  (let* ((frontend (make-instance 'mock-frontend))
          (view (make-mock-view :cell-width cell-width
                                :cell-height cell-height
                                :window-width window-width
                                :window-height window-height))
-         (engine (make-test-engine :rows rows :columns columns))
+         (engine (make-test-engine :rows rows :columns columns :engine engine))
          (grid (make-grid rows columns)))
     (engine-update-grid engine grid)
     (grid-clear-dirty grid)
     (values (slt::%make-terminal-emulator
              :engine engine
              :grid grid
-             :backend backend
+             :frontend frontend
              :view view
              :rows rows
              :columns columns
@@ -393,6 +394,25 @@
       (is (null (terminal-image-store-placements store)))
       (is (null (terminal-image-render-list store 8 16))))))
 
+(deftest printed-spaces-erase-sixel-cells-on-every-engine ()
+  (dolist (name '(:3bst :lispvt :libvterm))
+    (when (ignore-errors (slt::engine-available-p name))
+      (multiple-value-bind (emulator engine)
+          (make-mock-emulator :rows 2 :columns 4 :cell-width 8 :cell-height 16 :engine name)
+        (let ((store (slt::terminal-emulator-image-store emulator)))
+          (render-emulator emulator)
+          (slt::store-image store 1 0 8 16 (make-array (* 8 16 4)
+                                                       :element-type '(unsigned-byte 8)
+                                                       :initial-element 255))
+          (push (slt::make-terminal-image-placement
+                 :image-id 1 :row 0 :column 0 :columns 1 :rows 1 :erase-on-write-p t
+                 :baseline (vector (slt::grid-cell-signature
+                                    (slt::terminal-emulator-grid emulator) 0 0)))
+                (terminal-image-store-placements store))
+          (feed engine " ")
+          (render-emulator emulator)
+          (is (null (terminal-image-store-placements store)) name))))))
+
 (deftest render-emulator-hides-primary-images-during-alternate-screen-programs ()
   (multiple-value-bind (emulator engine)
       (make-mock-emulator :rows 2 :columns 4 :cell-width 8 :cell-height 16)
@@ -489,7 +509,7 @@
     (is-equal 0 (hash-table-count (terminal-image-store-images store)))))
 
 (defun graphics-session (&key (rows 4) (columns 10))
-  "An engine and image store wired as the frontend wires them, and a
+  "An engine and image store wired as the emulator wires them, and a
 function feeding strings through the graphics parser that returns the
 replies sent to the child."
   (let* ((engine (make-engine :lispvt :rows rows :columns columns))
@@ -672,6 +692,64 @@ replies sent to the child."
         (is (equalp (gethash '(42 . 0) (slt::terminal-image-store-virtual-origins store))
                     '(0 . 0)))))))
 
+(deftest kitty-indexed-images-follow-the-palette ()
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (declare (ignore engine))
+    (funcall feed (kitty '((#\a . "t") (#\f . "8") (#\s . "2") (#\v . "1") (#\i . "5"))
+                         '(1 2)))
+    (let ((image (gethash 5 (terminal-image-store-images store)))
+          (palette (make-palette :overrides '((1 . #x102030)))))
+      (is-equal (list (ldb (byte 8 16) (aref (palette-colors *palette*) 1)) 255)
+                (list (aref (terminal-image-rgba image) 0) (aref (terminal-image-rgba image) 3)))
+      (slt::set-image-store-palette store palette)
+      (is-equal '(#x10 #x20 #x30 255) (coerce (subseq (terminal-image-rgba image) 0 4) 'list))
+      (is (terminal-image-store-dirty-p store))
+      ;; Once it has frames of its own it keeps them.
+      (funcall feed (kitty '((#\a . "f") (#\f . "32") (#\i . "5") (#\s . "2") (#\v . "1"))
+                           '(9 9 9 255 9 9 9 255)))
+      (slt::set-image-store-palette store nil)
+      (is-equal '(#x10 #x20 #x30 255) (coerce (subseq (terminal-image-rgba image) 0 4) 'list)))))
+
+(deftest kitty-placeholder-underline-colors-pick-the-placement ()
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (funcall feed (kitty '((#\a . "t") (#\f . "32") (#\s . "16") (#\v . "32") (#\i . "42")
+                           (#\q . "2"))
+                         (make-list (* 16 32 4) :initial-element 255)))
+    (dolist (pid '("1" "2"))
+      (funcall feed (kitty `((#\a . "p") (#\U . "1") (#\i . "42") (#\p . ,pid)
+                             (#\c . "2") (#\r . "2") (#\q . "2")))))
+    ;; Placement 2 at row 1; placement 1 at row 2.
+    (funcall feed (format nil "~c[2;1H~c[38;5;42;58;5;2m~c~c~c[3;1H~c[58;5;1m~c~c~c[m"
+                          (code-char 27) (code-char 27) (code-char #x10EEEE) (code-char #x305)
+                          (code-char 27) (code-char 27) (code-char #x10EEEE) (code-char #x305)
+                          (code-char 27)))
+    (let ((grid (make-grid 4 10)))
+      (engine-update-grid engine grid :force t)
+      (terminal-image-display-store store grid 8 16 0)
+      (let ((origins (slt::terminal-image-store-virtual-origins store)))
+        (is (equalp '(1 . 0) (gethash '(42 . 2) origins)))
+        (is (equalp '(2 . 0) (gethash '(42 . 1) origins)))))))
+
+(deftest engines-report-underline-styles-and-colors ()
+  (dolist (name '(:lispvt :ghostty :libvterm))
+    (when (ignore-errors (slt::engine-available-p name))
+      (let ((engine (make-engine name :rows 2 :columns 10))
+            (grid (make-grid 2 10)))
+        (engine-feed-string engine (format nil "~c[4:3;58;2;1;2;3ma~c[4:1;59mb~c[24mc~c[21md"
+                                           (code-char 27) (code-char 27) (code-char 27)
+                                           (code-char 27)))
+        (engine-update-grid engine grid :force t)
+        (flet ((style (column) (underline-style (aref (grid-attrs grid) column)))
+               (ul (column) (aref (grid-ul grid) column)))
+          (is-equal :curly (style 0) name)
+          (is-equal :single (style 1) name)
+          (is-equal nil (style 2) name)
+          (is-equal :double (style 3) name)
+          (unless (eq name :libvterm)    ; libvterm keeps no underline color
+            (is-equal (rgb-color 1 2 3) (ul 0) name)
+            (is-equal +color-default+ (ul 1) name)))
+        (engine-close engine)))))
+
 (deftest engine-scrolls-move-image-placements ()
   (multiple-value-bind (engine store feed) (graphics-session :rows 4)
     (funcall feed (format nil "~c[3;1H" (code-char 27))
@@ -737,6 +815,20 @@ replies sent to the child."
         (multiple-value-bind (row column) (slt::engine-cursor-position engine)
           (is-equal 2 row)
           (is-equal 4 column))))))
+
+(deftest sixel-raster-attributes-set-the-pixel-aspect-ratio ()
+  (when (cl-libsixel:libsixel-available-p)
+    (flet ((decode (attributes)
+             (slt::decode-sixel-payload
+              (slt::string->octets
+               (format nil "~cP0;0q~a#1;2;100;0;0#1!4~~~c\\"
+                       (code-char 27) attributes (code-char 27))))))
+      ;; Square pixels, then 2:1 (tall), then 1:2 (wide).
+      (is-equal '(4 6) (rest (decode "\"1;1;4;6")))
+      (is-equal '(4 12) (rest (decode "\"2;1;4;6")))
+      (is-equal '(8 6) (rest (decode "\"1;2;4;6")))
+      ;; P1 alone does not stretch.
+      (is-equal '(4 6) (rest (decode ""))))))
 
 (defun mock-feed (emulator string)
   (slt::feed-emulator-output emulator (slt::string->octets string)))
@@ -923,13 +1015,13 @@ replies sent to the child."
 (defvar *mock-clipboard* nil)
 (defvar *mock-notifications* '())
 
-(defmethod slt::backend-set-clipboard-text ((backend mock-backend) (view mock-view) text)
+(defmethod slt::frontend-set-clipboard-text ((frontend mock-frontend) (view mock-view) text)
   (setf *mock-clipboard* text))
 
-(defmethod slt::backend-clipboard-text ((backend mock-backend) (view mock-view))
+(defmethod slt::frontend-clipboard-text ((frontend mock-frontend) (view mock-view))
   *mock-clipboard*)
 
-(defmethod slt::backend-notify ((backend mock-backend) (view mock-view) title body)
+(defmethod slt::frontend-notify ((frontend mock-frontend) (view mock-view) title body)
   (push (list title body) *mock-notifications*))
 
 (defmacro with-control-emulator ((emulator send replies &key (engine :lispvt) (rows 6)
@@ -1021,6 +1113,27 @@ emulator wrote back since the last call."
     (send (e "^[[?1049l^[[<u^[[?u"))
     (is-equal (e "^[[?0u") (replies))))
 
+(deftest kitty-keyboard-reports-repeats-releases-and-modifier-keys ()
+  (with-control-emulator (emulator send replies)
+    (flet ((key (keysym event &optional (state 0))
+             (slt::handle-keypress emulator "" keysym state event)
+             (replies)))
+      ;; Without the protocol: repeats are presses, releases send nothing.
+      (is-equal (e "^[") (key "Escape" :repeat))
+      (is-equal "" (key "Escape" :release))
+      (is-equal "" (key "Shift_L" :press))
+      ;; Disambiguate and report event types.
+      (send (e "^[[>3u"))
+      (is-equal (e "^[[27u") (key "Escape" :press))
+      (is-equal (e "^[[27;1:2u") (key "Escape" :repeat))
+      (is-equal (e "^[[27;1:3u") (key "Escape" :release))
+      ;; A release whose press never reached the child is not sent.
+      (is-equal "" (key "Escape" :release))
+      ;; Modifier keys need report-all-keys (8).
+      (is-equal "" (key "Shift_L" :press))
+      (send (e "^[[>11u"))
+      (is (search (e "^[[57441") (key "Shift_L" :press slt::+shift-mask+))))))
+
 (deftest synchronized-output-holds-renders-briefly ()
   (with-control-emulator (emulator send replies)
     (send (e "^[[?2026h^[[?2026$p"))
@@ -1041,6 +1154,29 @@ emulator wrote back since the last call."
     ;; Five lines from row 1 of a 4-row screen scroll it 3 rows.
     (is-equal '(-3) (slt::prompt-mark-rows emulator))))
 
+(deftest osc-133-marks-find-failed-commands-and-their-output ()
+  (dolist (name '(:lispvt :ghostty))
+   (when (ignore-errors (slt::engine-available-p name))
+  (with-control-emulator (emulator send replies :rows 4 :engine name)
+    (flet ((run (command status &rest output)
+             (send (e (format nil "^[]133;A^G$ ~a~c~c^[]133;C^G" command #\Return #\Linefeed)))
+             (dolist (line output)
+               (send (format nil "~a~c~c" line #\Return #\Linefeed)))
+             (send (e (format nil "^[]133;D;~d^G" status)))))
+      (run "true" 0 "fine")
+      (run "false" 1 "one" "two" "three" "four" "five")
+      (send (e "^[]133;A^G$ "))
+      (render-emulator emulator)
+      (is-equal 3 (length (slt::prompt-mark-rows emulator)))
+      (is-equal 1 (length (slt::prompt-mark-rows emulator :failed t)))
+      ;; The output is longer than the screen: it is read from the scrollback.
+      (is-equal (format nil "one~%two~%three~%four~%five") (slt::last-command-output emulator))
+      (is (zerop (engine-viewport-offset (slt::terminal-emulator-engine emulator)))
+          "the view is back on the live screen")
+      (is (slt::jump-to-prompt emulator :up :failed t))
+      (is-equal (- (second (slt::prompt-mark-rows emulator)))
+                (engine-viewport-offset (slt::terminal-emulator-engine emulator))))))))
+
 (deftest osc-8-hyperlinks-open-while-their-text-remains ()
   (with-control-emulator (emulator send replies)
     (send (e "^[]8;;https://example.com^[\\link^[]8;;^[\\ text"))
@@ -1051,6 +1187,24 @@ emulator wrote back since the last call."
     (send (format nil "~cXX" #\Return))
     (render-emulator emulator)
     (is (null (slt::hyperlink-at emulator 0 0)))))
+
+(deftest hyperlinks-are-underlined-under-the-pointer ()
+  (with-control-emulator (emulator send replies)
+    (send (e "^[]8;;https://example.com^[\\link^[]8;;^[\\ ^[[4mtext^[[m"))
+    (render-emulator emulator)
+    (let ((grid (slt::terminal-emulator-grid emulator)))
+      (flet ((underlined ()
+               (loop for column below 9
+                     collect (and (underline-style (aref (grid-attrs grid) column)) t)))
+             (point (row column)
+               (slt::handle-mouse emulator :motion row column 0 nil)
+               (render-emulator emulator)))
+        (is-equal '(nil nil nil nil nil t t t t) (underlined))
+        (point 0 2)
+        (is-equal '(t t t t nil t t t t) (underlined))
+        ;; Leaving the link restores it, and leaves real underlines alone.
+        (point 0 6)
+        (is-equal '(nil nil nil nil nil t t t t) (underlined))))))
 
 (deftest notifications-and-version-queries ()
   (with-control-emulator (emulator send replies)
@@ -1076,7 +1230,7 @@ emulator wrote back since the last call."
     (is-equal "" (replies))
     (send (e "^[]99;i=ok-1:p=?;^[\\"))
     (is (search "i=ok-1:p=?" (replies)))
-    ;; Backends fold Shift into the character.
+    ;; Frontends fold Shift into the character.
     (send (e "^[[>8u"))
     (is-equal (e "^[[97;2u") (slt::kitty-key-input emulator #\A '()))
     (is-equal (e "^[[49;2u") (slt::kitty-key-input emulator #\! '()))
@@ -1165,21 +1319,24 @@ emulator wrote back since the last call."
                                           "xterm-256color")))
 
 (deftest terminal-process-environment-forces-a-terminal-type ()
-  (is-equal '("COLUMNS=80" "LINES=24" "TERM=xterm-256color" "HOME=/tmp")
+  ;; The size is the PTY's: LINES and COLUMNS would pin curses programs
+  ;; to the launch size.
+  (is-equal '("TERM=xterm-256color" "HOME=/tmp")
             (terminal-process-environment :term-name "xterm-256color"
                                           :rows 24
                                           :columns 80
-                                          :base-environment '("HOME=/tmp")))
+                                          :base-environment '("LINES=50" "HOME=/tmp"
+                                                              "COLUMNS=100")))
   (is-equal '("HOME=/tmp")
             (terminal-process-environment :term-name nil
                                           :base-environment '("HOME=/tmp"))))
 
-(deftest backend-registry-exposes-the-ltk-and-sdl2-backends ()
-  (is (member :ltk (available-backends)))
-  (is (member :sdl2 (available-backends)))
-  (is (typep (make-backend :ltk) 'slt::terminal-backend))
-  (is (typep (make-backend :sdl2) 'slt::terminal-backend))
-  (is (typep (make-backend "sdl2") 'slt::terminal-backend)))
+(deftest frontend-registry-exposes-the-ltk-and-sdl2-frontends ()
+  (is (member :ltk (available-frontends)))
+  (is (member :sdl2 (available-frontends)))
+  (is (typep (make-frontend :ltk) 'slt::terminal-frontend))
+  (is (typep (make-frontend :sdl2) 'slt::terminal-frontend))
+  (is (typep (make-frontend "sdl2") 'slt::terminal-frontend)))
 
 (deftest hex->rgb-and-rgb->hex-round-trip ()
   (is-equal #xA1B2C3 (hex->rgb "#A1B2C3"))
@@ -1199,28 +1356,28 @@ emulator wrote back since the last call."
   (is-equal "A"
             (slt::normalize-sdl-key-name "A" :shiftp t)))
 
-(deftest sdl-backend-resolves-font-size-to-positive-point-size ()
-  (let ((backend (make-backend :sdl2)))
-    (is-equal 15 (slt::backend-resolve-font-size backend nil))
-    (is-equal 13 (slt::backend-resolve-font-size backend -13))
-    (is-equal 11 (slt::backend-resolve-font-size backend 11))))
+(deftest sdl-frontend-resolves-font-size-to-positive-point-size ()
+  (let ((frontend (make-frontend :sdl2)))
+    (is-equal 15 (slt::frontend-resolve-font-size frontend nil))
+    (is-equal 13 (slt::frontend-resolve-font-size frontend -13))
+    (is-equal 11 (slt::frontend-resolve-font-size frontend 11))))
 
-(deftest sdl-backend-main-thread-policy-matches-sbcl-on-macos ()
-  (is (slt::sdl-backend-use-main-thread-p "SBCL" :darwin))
-  (is (slt::sdl-backend-use-main-thread-p "SBCL" :macosx))
-  (is (not (slt::sdl-backend-use-main-thread-p "CCL" :darwin)))
-  (is (not (slt::sdl-backend-use-main-thread-p "SBCL" :linux))))
+(deftest sdl-frontend-main-thread-policy-matches-sbcl-on-macos ()
+  (is (slt::sdl-frontend-use-main-thread-p "SBCL" :darwin))
+  (is (slt::sdl-frontend-use-main-thread-p "SBCL" :macosx))
+  (is (not (slt::sdl-frontend-use-main-thread-p "CCL" :darwin)))
+  (is (not (slt::sdl-frontend-use-main-thread-p "SBCL" :linux))))
 
 (deftest dispatch-sdl-timer-runs-callback-once-and-clears-it ()
-  (let* ((backend (make-instance 'slt::sdl2-backend))
+  (let* ((frontend (make-instance 'slt::sdl2-frontend))
          (calls 0))
-    (setf (gethash 7 (slt::sdl2-backend-timers backend))
+    (setf (gethash 7 (slt::sdl2-frontend-timers frontend))
           (lambda ()
             (incf calls)))
-    (slt::dispatch-sdl-timer backend 7)
-    (slt::dispatch-sdl-timer backend 7)
+    (slt::dispatch-sdl-timer frontend 7)
+    (slt::dispatch-sdl-timer frontend 7)
     (is-equal 1 calls)
-    (is (null (gethash 7 (slt::sdl2-backend-timers backend))))))
+    (is (null (gethash 7 (slt::sdl2-frontend-timers frontend))))))
 
 (deftest find-font-file-prefers-the-closest-family-match ()
   (let* ((root (make-temp-directory))
@@ -1412,7 +1569,7 @@ emulator wrote back since the last call."
     (is (logtest slt::+attr-wide+ (aref (grid-attrs grid) 0)))
     (is (logtest slt::+attr-wide-spacer+ (aref (grid-attrs grid) 1)))))
 
-(deftest render-emulator-delegates-rendering-through-the-backend-interface ()
+(deftest render-emulator-delegates-rendering-through-the-frontend-interface ()
   (multiple-value-bind (emulator engine view)
       (make-mock-emulator :rows 2 :columns 4)
     (feed engine "hi")
@@ -1420,7 +1577,7 @@ emulator wrote back since the last call."
     (is-equal '(0) (mock-view-rendered-rows view))
     (is-equal '() (grid-dirty-rows (slt::terminal-emulator-grid emulator)))))
 
-(deftest apply-resize-uses-backend-window-metrics-and-resizes-the-view ()
+(deftest apply-resize-uses-frontend-window-metrics-and-resizes-the-view ()
   (multiple-value-bind (emulator engine view)
       (make-mock-emulator :rows 1
                           :columns 1
@@ -1592,7 +1749,7 @@ emulator wrote back since the last call."
           (close input))))))
 
 (deftest parse-cli-arguments-translates-runtime-flags-into-launch-keywords ()
-  (let* ((command (parse-cli-arguments '("--backend" "sdl2"
+  (let* ((command (parse-cli-arguments '("--frontend" "sdl2"
                                          "--engine" "3bst"
                                          "--rows" "30"
                                          "--columns" "120"
@@ -1606,7 +1763,7 @@ emulator wrote back since the last call."
                                          "--title" "scratch"
                                          "--no-config")))
          (arguments (command-launch-arguments command)))
-    (is-equal '(:backend "sdl2"
+    (is-equal '(:frontend "sdl2"
                 :engine "3bst"
                 :rows 30
                 :columns 120
@@ -1628,14 +1785,14 @@ emulator wrote back since the last call."
     (is (null (ignore-errors (parse-cli-arguments '("--repl-server" "nrepl"))))
         "only swank and slynk are accepted")))
 
-(deftest parse-cli-arguments-keeps-bare-backend-compatibility ()
+(deftest parse-cli-arguments-keeps-bare-frontend-compatibility ()
   (let* ((command (parse-cli-arguments '("ltk")))
          (arguments (command-launch-arguments command)))
-    (is-equal '(:backend "ltk")
+    (is-equal '(:frontend "ltk")
               arguments)))
 
-(deftest handle-cli-command-can-list-backends-without-launching-the-gui ()
-  (let* ((command (parse-cli-arguments '("--list-backends")))
+(deftest handle-cli-command-can-list-frontends-without-launching-the-gui ()
+  (let* ((command (parse-cli-arguments '("--list-frontends")))
          (output (with-output-to-string (stream)
                   (slt::handle-cli-command command :stream stream))))
     (is (search "ltk" output))
@@ -1658,13 +1815,17 @@ emulator wrote back since the last call."
                                   :esc "[31;4mA" :esc "[0mA" (string (code-char #x4E2D)))))
          (atlas (slt::make-glyph-atlas 2 2 #'fake-rasterizer :width 16 :height 16))
          (instances (slt::pack-grid grid atlas (make-palette :ansi :xterm) nil)))
+    (flet ((slot (index) (ldb (byte 31 0) (aref instances index))))
     ;; A (red, underlined), A again (same glyph, same slot), then a wide glyph.
-    (is-equal (list #xCD0000 1 slt::+gpu-flag-underline+)
-              (list (aref instances 0) (aref instances 2) (aref instances 3)))
-    (is-equal 1 (aref instances 6) "repeated glyph reuses its slot")
-    (is-equal 2 (aref instances 10) "wide glyph takes two fresh slots")
-    (is-equal 3 (aref instances 14) "spacer draws the wide glyph's right half")
-    (is-equal (char-code #\A) (aref (slt::glyph-atlas-pixels atlas) 2))))
+    ;; The underline's RGB, the foreground's here, sits above the flags.
+    (is-equal (list #xCD0000 1 (logior slt::+gpu-flag-underline+ (ash #xCD0000 8)))
+              (list (aref instances 0) (slot 2) (aref instances 3)))
+    (is-equal 1 (slot 6) "repeated glyph reuses its slot")
+    (is-equal 2 (slot 10) "wide glyph takes two fresh slots")
+    (is-equal 3 (slot 14) "spacer draws the wide glyph's right half")
+    (is (logtest slt::+gpu-slot-default-background+ (aref instances 2))
+        "default backgrounds are marked")
+    (is-equal (char-code #\A) (aref (slt::glyph-atlas-pixels atlas) 2)))))
 
 (deftest pack-grid-recovers-when-the-atlas-fills ()
   (let* ((grid (engine-grid (feed (make-test-engine :rows 1 :columns 8) "abcdefgh")))
@@ -1772,17 +1933,17 @@ emulator wrote back since the last call."
   (let ((grid (headless-view-grid view)))
     (if grid (format nil "~{~a~%~}" (grid-text grid)) "")))
 
-(deftest headless-backend-runs-a-shell-end-to-end ()
-  (let* ((backend (make-instance 'headless-backend))
+(deftest headless-frontend-runs-a-shell-end-to-end ()
+  (let* ((frontend (make-instance 'headless-frontend))
          (thread (bt:make-thread
                   (lambda ()
-                    (launch-terminal :backend backend :shell "/bin/sh"
+                    (launch-terminal :frontend frontend :shell "/bin/sh"
                                      :rows 6 :columns 40 :load-config nil))
                   :name "slt headless test")))
     (unwind-protect
          (progn
-           (is (wait-until (lambda () (slt::headless-backend-view backend))))
-           (let ((view (slt::headless-backend-view backend)))
+           (is (wait-until (lambda () (slt::headless-frontend-view frontend))))
+           (let ((view (slt::headless-frontend-view frontend)))
              (is (wait-until (lambda () (search "$" (headless-screen-text view)))))
              (loop for char across "echo hel"
                    do (headless-key view (string char) (string char) 0))
@@ -1800,20 +1961,20 @@ emulator wrote back since the last call."
              (headless-close view)
              (is (wait-until (lambda () (not (bt:thread-alive-p thread)))))))
       (when (bt:thread-alive-p thread)
-        (setf (slt::headless-backend-quit-p backend) t)
+        (setf (slt::headless-frontend-quit-p frontend) t)
         (bt:join-thread thread)))))
 
 (deftest headless-mouse-reaches-a-tracking-child ()
-  (let* ((backend (make-instance 'headless-backend))
+  (let* ((frontend (make-instance 'headless-frontend))
          (thread (bt:make-thread
                   (lambda ()
-                    (launch-terminal :backend backend :engine :lispvt :shell "/bin/sh"
+                    (launch-terminal :frontend frontend :engine :lispvt :shell "/bin/sh"
                                      :rows 6 :columns 40 :load-config nil))
                   :name "slt mouse test")))
     (unwind-protect
          (progn
-           (is (wait-until (lambda () (slt::headless-backend-view backend))))
-           (let ((view (slt::headless-backend-view backend)))
+           (is (wait-until (lambda () (slt::headless-frontend-view frontend))))
+           (let ((view (slt::headless-frontend-view frontend)))
              (is (wait-until (lambda () (search "$" (headless-screen-text view)))))
              ;; READY, split on the command line, shows the modes are set.
              (headless-paste view (format nil "printf '\\033[?1000h\\033[?1006hRE''ADY'; cat -v~%"))
@@ -1827,21 +1988,21 @@ emulator wrote back since the last call."
              (headless-close view)
              (is (wait-until (lambda () (not (bt:thread-alive-p thread)))))))
       (when (bt:thread-alive-p thread)
-        (setf (slt::headless-backend-quit-p backend) t)
+        (setf (slt::headless-frontend-quit-p frontend) t)
         (bt:join-thread thread)))))
 
 (deftest headless-scrollback-with-ghostty ()
   (when (slt::engine-available-p :ghostty)
-    (let* ((backend (make-instance 'headless-backend))
+    (let* ((frontend (make-instance 'headless-frontend))
            (thread (bt:make-thread
                     (lambda ()
-                      (launch-terminal :backend backend :engine :ghostty :shell "/bin/sh"
+                      (launch-terminal :frontend frontend :engine :ghostty :shell "/bin/sh"
                                        :rows 6 :columns 30 :load-config nil))
                     :name "slt scrollback test")))
       (unwind-protect
            (progn
-             (is (wait-until (lambda () (slt::headless-backend-view backend))))
-             (let ((view (slt::headless-backend-view backend)))
+             (is (wait-until (lambda () (slt::headless-frontend-view frontend))))
+             (let ((view (slt::headless-frontend-view frontend)))
                (is (wait-until (lambda () (search "$" (headless-screen-text view)))))
                (headless-paste view (format nil "for i in $(seq 1 60); do echo line$i; done~%"))
                (is (wait-until (lambda () (search "line60" (headless-screen-text view))))
@@ -1856,7 +2017,7 @@ emulator wrote back since the last call."
                (headless-close view)
                (is (wait-until (lambda () (not (bt:thread-alive-p thread)))))))
         (when (bt:thread-alive-p thread)
-          (setf (slt::headless-backend-quit-p backend) t)
+          (setf (slt::headless-frontend-quit-p frontend) t)
           (bt:join-thread thread))))))
 
 (defun find-screen-cell (view text)
@@ -1869,16 +2030,16 @@ emulator wrote back since the last call."
             when column return (list row column)))))
 
 (deftest headless-selection-copies-and-pastes ()
-  (let* ((backend (make-instance 'headless-backend))
+  (let* ((frontend (make-instance 'headless-frontend))
          (thread (bt:make-thread
                   (lambda ()
-                    (launch-terminal :backend backend :shell "/bin/sh"
+                    (launch-terminal :frontend frontend :shell "/bin/sh"
                                      :rows 8 :columns 40 :load-config nil))
                   :name "slt selection test")))
     (unwind-protect
          (progn
-           (is (wait-until (lambda () (slt::headless-backend-view backend))))
-           (let ((view (slt::headless-backend-view backend)))
+           (is (wait-until (lambda () (slt::headless-frontend-view frontend))))
+           (let ((view (slt::headless-frontend-view frontend)))
              (is (wait-until (lambda () (search "$" (headless-screen-text view)))))
              (headless-paste view (format nil "printf 'alpha %s\\n' beta/gamma~%"))
              (is (wait-until (lambda () (find-screen-cell view "alpha beta/gamma"))))
@@ -1912,7 +2073,7 @@ emulator wrote back since the last call."
              (headless-close view)
              (is (wait-until (lambda () (not (bt:thread-alive-p thread)))))))
       (when (bt:thread-alive-p thread)
-        (setf (slt::headless-backend-quit-p backend) t)
+        (setf (slt::headless-frontend-quit-p frontend) t)
         (bt:join-thread thread)))))
 
 ;;; Links, quoting, the shell's environment and the init file

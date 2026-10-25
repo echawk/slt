@@ -1,8 +1,8 @@
-# GPU backends
+# GPU frontends
 
-slt has two GPU backends that share everything above the graphics API:
+slt has two GPU frontends that share everything above the graphics API:
 
-| backend | window | renderer | glyphs |
+| frontend | window | renderer | glyphs |
 |---|---|---|---|
 | `cocoa` (`src/macos`) | AppKit | Metal | CoreText |
 | `gl` (`src/gl`) | GLFW 3.4: X11 or Wayland, also macOS | OpenGL 3.3 core or OpenGL ES 3.0 | FreeType with font-discovery; CoreText on macOS |
@@ -14,15 +14,16 @@ slt has two GPU backends that share everything above the graphics API:
 - **Glyph atlas and instance packing** (`src/gpu.lisp`).
   - Glyphs are rasterized once into an alpha-only atlas of cell-sized slots.
   - A wide glyph takes two adjacent slots.
-  - Each cell becomes 4 × u32: foreground RGB, background RGB, atlas slot and
-    decoration flags.
+  - Each cell becomes 4 × u32: foreground RGB, background RGB, the atlas
+    slot (its top bit marks the default background), and decoration flags
+    in the low 8 bits under the underline's RGB.
   - Only dirty rows are repacked, and the atlas grows if one screen overflows
     it.
-- **Frontend** (`src/frontend.lisp`). A reader thread parses PTY output
+- **Emulator** (`src/emulator.lisp`). A reader thread parses PTY output
   continuously. The UI thread renders at most once per frame through
-  `backend-render-grid`.
+  `frontend-render-grid`.
 
-A backend provides a window with input events, a rasterizer for the atlas
+A frontend provides a window with input events, a rasterizer for the atlas
 (a function that draws a string's coverage into an atlas rectangle), uploads
 of the atlas and the instance array, and one instanced draw call.
 
@@ -34,8 +35,15 @@ vertex buffer:
 - The vertex stage places the cell from the instance index. It looks up the
   glyph's slot in the atlas and passes the colors and flags through.
 - The fragment stage mixes background and foreground by the atlas coverage,
-  then draws underline, double underline, strikethrough, and bar or underline
-  cursors from the flags.
+  then draws strikethrough, the underline in its own color (single, double,
+  curly, dotted or dashed; patterns follow the window's x so they continue
+  across cells), and bar or underline cursors from the flags.
+
+Images with a negative z-index lie under the text. Then the cells are drawn
+twice instead of once, with blending: first only the backgrounds (the
+default one transparent), then only the text and decorations. Images with
+z below -1073741824 are drawn before the backgrounds, other negative ones
+between the two passes, and the rest after.
 
 The shaders are `*metal-shader-source*` in `src/macos/metal.lisp` and
 `*gl-vertex-shader-source*` / `*gl-fragment-shader-source*` in
@@ -50,7 +58,7 @@ Per frame, the OpenGL renderer:
   `glTexSubImage2D`, into an `R8` texture read with `texelFetch`;
 - issues one `glDrawArraysInstanced`.
 
-A persistently mapped ring of buffers with fences, like the Metal backend's
+A persistently mapped ring of buffers with fences, like the Metal frontend's
 three frames in flight, would save a copy. It is not worth it yet: a 200 × 60
 screen is 192 KB per frame.
 
@@ -72,7 +80,7 @@ FreeBSD/OpenBSD:
 | Keyboard | XKB | `wl_keyboard` + xkbcommon |
 | Clipboard | selections | `wl_data_device` |
 
-The `gl` backend asks for OpenGL 3.3 core first. Off macOS it falls back to
+The `gl` frontend asks for OpenGL 3.3 core first. Off macOS it falls back to
 OpenGL ES 3.0 through EGL (`*gl-api*` forces either). cl-opengl resolves
 entry points through `glfwGetProcAddress`, which works for GLX, EGL and CGL
 alike.
@@ -97,7 +105,7 @@ Shirakumo's [glfw](https://codeberg.org/shirakumo/glfw) bindings ship GLFW
   mark follows the base's advance. A mark with its own advance (as in Menlo)
   is drawn at the base's origin.
 
-On macOS the `gl` backend uses the CoreText rasterizer instead. font-discovery
+On macOS the `gl` frontend uses the CoreText rasterizer instead. font-discovery
 c6e4728 aborts there, because it reads `kCTFontFormatAttribute`, a CFNumber,
 as a string.
 
@@ -108,11 +116,11 @@ as a string.
   background, glyphs, an SGR background and box drawing, and leaves
   `build/gl-test/snapshot.ppm`.
 - On Linux CI, run it under `xvfb-run` for X11, or with `weston
-  --backend=headless` and `WAYLAND_DISPLAY` set for Wayland.
+  --frontend=headless` and `WAYLAND_DISPLAY` set for Wayland.
 
 ## Still to do
 
-1. Run the `gl` backend on real Linux and BSD desktops, X11 and Wayland, and
+1. Run the `gl` frontend on real Linux and BSD desktops, X11 and Wayland, and
    in CI.
 2. HarfBuzz shaping for combining marks, a color atlas for emoji, subpixel
    positioning, and ligatures if wanted.

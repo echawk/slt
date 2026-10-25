@@ -1,24 +1,24 @@
 (in-package #:slt)
 
-(defclass sdl2-backend (terminal-backend)
+(defclass sdl2-frontend (terminal-frontend)
   ((view
     :initform nil
-    :accessor sdl2-backend-view)
+    :accessor sdl2-frontend-view)
    (timer-seq
     :initform 0
-    :accessor sdl2-backend-timer-seq)
+    :accessor sdl2-frontend-timer-seq)
    (timers
     :initform (make-hash-table :test #'eql)
-    :accessor sdl2-backend-timers)
+    :accessor sdl2-frontend-timers)
    (ttf-initialized-p
     :initform nil
-    :accessor sdl2-backend-ttf-initialized-p)
+    :accessor sdl2-frontend-ttf-initialized-p)
    (image-initialized-p
     :initform nil
-    :accessor sdl2-backend-image-initialized-p)
+    :accessor sdl2-frontend-image-initialized-p)
    (timer-event-type
     :initform nil
-    :accessor sdl2-backend-timer-event-type)))
+    :accessor sdl2-frontend-timer-event-type)))
 
 (defstruct (glyph-texture
             (:constructor make-glyph-texture
@@ -46,8 +46,14 @@
   target
   (target-width 0)
   (target-height 0)
+  ;; True while images lie under the text: the target then leaves default
+  ;; backgrounds transparent and those images are drawn beneath it.
+  (layered nil)
+  ;; The grid last drawn into the target.
+  grid
   resize-callback
   keypress-callback
+  drop-callback
   mouse-callback
   scroll-callback
   close-callback
@@ -77,7 +83,12 @@
     ("Up" . "Up")))
 
 (defparameter *sdl-scancode-keysym-map*
-  '((:scancode-kp-0 . "KP_0")
+  '((:scancode-lshift . "Shift_L") (:scancode-rshift . "Shift_R")
+    (:scancode-lctrl . "Control_L") (:scancode-rctrl . "Control_R")
+    (:scancode-lalt . "Alt_L") (:scancode-ralt . "Alt_R")
+    (:scancode-lgui . "Super_L") (:scancode-rgui . "Super_R")
+    (:scancode-capslock . "Caps_Lock") (:scancode-numlockclear . "Num_Lock")
+    (:scancode-kp-0 . "KP_0")
     (:scancode-kp-1 . "KP_1")
     (:scancode-kp-2 . "KP_2")
     (:scancode-kp-3 . "KP_3")
@@ -99,7 +110,7 @@
     (:scancode-kp-pagedown . "KP_Next")
     (:scancode-kp-insert . "KP_Insert")))
 
-(defun sdl-backend-use-main-thread-p (&optional
+(defun sdl-frontend-use-main-thread-p (&optional
                                         (implementation-type
                                           (uiop:implementation-type))
                                         (operating-system
@@ -203,7 +214,7 @@
                                            (default-font-family))
                                        :search-roots search-roots)))
          (unless pathname
-           (error "Unable to locate a usable font file for SDL2 backend."))
+           (error "Unable to locate a usable font file for SDL2 frontend."))
          (namestring pathname))))))
 
 (defun sdl-modifiers->state (modifiers)
@@ -339,12 +350,12 @@ it was (re)created, in which case its contents are undefined."
               (setf (gethash key cache) entry))
             entry)))))
 
-(defun sdl-set-color (renderer rgb)
+(defun sdl-set-color (renderer rgb &optional (alpha 255))
   (sdl2:set-render-draw-color renderer
                               (ldb (byte 8 16) rgb)
                               (ldb (byte 8 8) rgb)
                               (ldb (byte 8 0) rgb)
-                              255))
+                              alpha))
 
 (defun draw-sdl-row (view grid row palette rect)
   (let* ((renderer (sdl2-view-renderer view))
@@ -357,7 +368,11 @@ it was (re)created, in which case its contents are undefined."
     (let ((run-start 0)
           (run-color (nth-value 1 (cell-rgb grid base palette))))
       (flet ((flush (end)
-               (sdl-set-color renderer run-color)
+               ;; Under images, the default background is see-through.
+               (sdl-set-color renderer run-color
+                              (if (and (sdl2-view-layered view)
+                                       (= run-color (palette-background palette)))
+                                  0 255))
                (setf (sdl2:rect-x rect) (* run-start cell-width)
                      (sdl2:rect-y rect) y
                      (sdl2:rect-width rect) (* (- end run-start) cell-width)
@@ -391,16 +406,16 @@ it was (re)created, in which case its contents are undefined."
               (sdl2:render-copy renderer (glyph-texture-texture glyph)
                                 :source-rect (cffi:null-pointer)
                                 :dest-rect rect)))
-          (when (logtest attrs (logior +attr-underline+ +attr-double-underline+
-                                       +attr-strike+))
-            (sdl-set-color renderer fg)
+          (when (logtest attrs (logior +attr-underlines+ +attr-strike+))
             (let ((width (* cell-width (if (logtest attrs +attr-wide+) 2 1))))
-              (when (logtest attrs (logior +attr-underline+ +attr-double-underline+))
-                (sdl2:render-draw-line renderer x (+ y cell-height -1)
-                                       (+ x width -1) (+ y cell-height -1)))
-              (when (logtest attrs +attr-double-underline+)
-                (sdl2:render-draw-line renderer x (+ y cell-height -3)
-                                       (+ x width -1) (+ y cell-height -3)))
+              (when (logtest attrs +attr-underlines+)
+                (sdl-set-color renderer (cell-underline-rgb grid index palette fg))
+                (loop for (rx ry rw rh) in (underline-rectangles (underline-style attrs)
+                                                                 x width cell-height)
+                      do (setf (sdl2:rect-x rect) rx (sdl2:rect-y rect) (+ y ry)
+                               (sdl2:rect-width rect) rw (sdl2:rect-height rect) rh)
+                         (sdl2:render-fill-rect renderer rect)))
+              (sdl-set-color renderer fg)
               (when (logtest attrs +attr-strike+)
                 (let ((mid (+ y (floor cell-height 2))))
                   (sdl2:render-draw-line renderer x mid (+ x width -1) mid))))))))
@@ -417,53 +432,73 @@ it was (re)created, in which case its contents are undefined."
                   (sdl2:rect-width rect) cell-width (sdl2:rect-height rect) 2))
         (sdl2:render-fill-rect renderer rect)))))
 
-(defun draw-sdl-images (view)
-  (let ((store (sdl2-view-image-store view))
-        (renderer (sdl2-view-renderer view)))
-    (when store
-      (dolist (record (terminal-image-render-list
-                       store (sdl2-view-cell-width view) (sdl2-view-cell-height view)))
-        (destructuring-bind (placement image x y width height) record
-          (let ((rgba (terminal-image-rgba image)))
-            (sb-sys:with-pinned-objects (rgba)
-              (let* ((surface (sdl2:create-rgb-surface-with-format-from
-                               (sb-sys:vector-sap rgba)
-                               (terminal-image-width image) (terminal-image-height image)
-                               32 (* 4 (terminal-image-width image))
-                               :format sdl2:+pixelformat-rgba32+))
-                     (texture (sdl2:create-texture-from-surface renderer surface)))
-                (unwind-protect
-                     (sdl2:with-rects
-                         ((source (terminal-image-placement-source-x placement)
-                                  (terminal-image-placement-source-y placement)
-                                  (or (terminal-image-placement-source-width placement)
-                                      (- (terminal-image-width image)
-                                         (terminal-image-placement-source-x placement)))
-                                  (or (terminal-image-placement-source-height placement)
-                                      (- (terminal-image-height image)
-                                         (terminal-image-placement-source-y placement))))
-                          (destination x y width height))
-                       (sdl2:render-copy renderer texture
-                                         :source-rect source :dest-rect destination))
-                  (sdl2:destroy-texture texture)
-                  (sdl2:free-surface surface))))))))))
+(defun sdl-image-records (view)
+  (let ((store (sdl2-view-image-store view)))
+    (and store (terminal-image-render-list store (sdl2-view-cell-width view)
+                                           (sdl2-view-cell-height view)))))
+
+(defun draw-sdl-images (view records)
+  (let ((renderer (sdl2-view-renderer view)))
+    (dolist (record records)
+      (destructuring-bind (placement image x y width height) record
+        (let ((rgba (terminal-image-rgba image)))
+          (sb-sys:with-pinned-objects (rgba)
+            (let* ((surface (sdl2:create-rgb-surface-with-format-from
+                             (sb-sys:vector-sap rgba)
+                             (terminal-image-width image) (terminal-image-height image)
+                             32 (* 4 (terminal-image-width image))
+                             :format sdl2:+pixelformat-rgba32+))
+                   (texture (sdl2:create-texture-from-surface renderer surface)))
+              (unwind-protect
+                   (sdl2:with-rects
+                       ((source (terminal-image-placement-source-x placement)
+                                (terminal-image-placement-source-y placement)
+                                (or (terminal-image-placement-source-width placement)
+                                    (- (terminal-image-width image)
+                                       (terminal-image-placement-source-x placement)))
+                                (or (terminal-image-placement-source-height placement)
+                                    (- (terminal-image-height image)
+                                       (terminal-image-placement-source-y placement))))
+                        (destination x y width height))
+                     (sdl2:render-copy renderer texture
+                                       :source-rect source :dest-rect destination))
+                (sdl2:destroy-texture texture)
+                (sdl2:free-surface surface)))))))))
 
 (defun present-sdl-view (view &optional (palette (view-palette view)))
   (let ((renderer (sdl2-view-renderer view)))
     (sdl2:set-render-target renderer nil)
     (sdl-set-color renderer (palette-background palette))
     (sdl2:render-clear renderer)
-    (sdl2:with-rects ((dest 0 0 (sdl2-view-target-width view)
-                            (sdl2-view-target-height view)))
-      (sdl2:render-copy renderer (sdl2-view-target view)
-                        :source-rect (cffi:null-pointer)
-                        :dest-rect dest))
-    (draw-sdl-images view)
+    ;; Images with negative z go under the grid.  Unlike the GPU frontends,
+    ;; which draw them between backgrounds and text, they are then hidden by
+    ;; every background but the default one.
+    (multiple-value-bind (below-backgrounds below-text above)
+        (image-layers (sdl-image-records view))
+      (draw-sdl-images view (append below-backgrounds below-text))
+      (sdl2:with-rects ((dest 0 0 (sdl2-view-target-width view)
+                              (sdl2-view-target-height view)))
+        (sdl2:render-copy renderer (sdl2-view-target view)
+                          :source-rect (cffi:null-pointer)
+                          :dest-rect dest))
+      (draw-sdl-images view above))
     (sdl2:render-present renderer)))
+
+(defun sdl-layered-p (view)
+  "True when images lie under the text."
+  (and (find-if (lambda (record) (minusp (terminal-image-placement-z-index (first record))))
+                (sdl-image-records view))
+       t))
 
 (defun render-sdl-grid (view grid &optional (palette (view-palette view)))
   (let ((renderer (sdl2-view-renderer view)))
     (when (ensure-sdl-target view grid)
+      (grid-mark-all-dirty grid))
+    (setf (sdl2-view-grid view) grid)
+    (unless (eq (sdl-layered-p view) (sdl2-view-layered view))
+      (setf (sdl2-view-layered view) (sdl-layered-p view))
+      (sdl2:set-texture-blend-mode (sdl2-view-target view)
+                                   (if (sdl2-view-layered view) :blend :none))
       (grid-mark-all-dirty grid))
     (sdl2:set-render-target renderer (sdl2-view-target view))
     (sdl2:with-rects ((rect 0 0 0 0))
@@ -486,17 +521,17 @@ it was (re)created, in which case its contents are undefined."
     (when (sdl2-view-close-callback view)
       (funcall (sdl2-view-close-callback view)))))
 
-(defun ensure-sdl-timer-event-type (backend)
-  (or (sdl2-backend-timer-event-type backend)
-      (setf (sdl2-backend-timer-event-type backend)
+(defun ensure-sdl-timer-event-type (frontend)
+  (or (sdl2-frontend-timer-event-type frontend)
+      (setf (sdl2-frontend-timer-event-type frontend)
             (progn
               (sdl2:register-user-event-type :slt-timer)
               :slt-timer))))
 
-(defun dispatch-sdl-timer (backend token)
-  (let ((thunk (gethash token (sdl2-backend-timers backend))))
+(defun dispatch-sdl-timer (frontend token)
+  (let ((thunk (gethash token (sdl2-frontend-timers frontend))))
     (when thunk
-      (remhash token (sdl2-backend-timers backend))
+      (remhash token (sdl2-frontend-timers frontend))
       (funcall thunk))))
 
 (defvar *sdl-scroll-rows* 3
@@ -517,23 +552,26 @@ it was (re)created, in which case its contents are undefined."
   "slt's number for an SDL button: SDL numbers left, middle, right 1-3."
   (and (<= 1 button 3) button))
 
-(defun run-sdl2-backend-loop (backend thunk)
+(defun run-sdl2-frontend-loop (frontend thunk)
   (sdl2:with-init (:video)
-    (setf (sdl2-backend-ttf-initialized-p backend) nil
-          (sdl2-backend-image-initialized-p backend) nil)
+    (setf (sdl2-frontend-ttf-initialized-p frontend) nil
+          (sdl2-frontend-image-initialized-p frontend) nil)
     (unwind-protect
          (progn
            (sdl2-ttf:init)
-           (setf (sdl2-backend-ttf-initialized-p backend) t)
+           (setf (sdl2-frontend-ttf-initialized-p frontend) t)
            (when (ignore-errors (sdl2-image:init '(:png)))
-             (setf (sdl2-backend-image-initialized-p backend) t))
-           (ensure-sdl-timer-event-type backend)
+             (setf (sdl2-frontend-image-initialized-p frontend) t))
+           (ensure-sdl-timer-event-type frontend)
            (funcall thunk)
-           (let ((view (sdl2-backend-view backend)))
+           (let ((view (sdl2-frontend-view frontend)))
              (when view
                (sdl2:start-text-input)
+               (let ((key-event :press))
                (sdl2:with-event-loop (:method :poll)
-                 (:keydown (:keysym keysym)
+                 (:keydown (:keysym keysym :repeat repeat)
+                           ;; Text input that follows comes from this key.
+                           (setf key-event (if (zerop repeat) :press :repeat))
                            (multiple-value-bind (char keysym-name state)
                                (sdl-keydown-dispatch-data keysym)
                              (when (and keysym-name
@@ -541,14 +579,30 @@ it was (re)created, in which case its contents are undefined."
                                (funcall (sdl2-view-keypress-callback view)
                                         char
                                         keysym-name
-                                        state))))
+                                        state
+                                        key-event))))
+                 (:keyup (:keysym keysym)
+                         (let ((name (sdl-keysym-name keysym))
+                               (state (sdl-modifiers->state
+                                       (sdl2:mod-keywords (sdl2:mod-value keysym)))))
+                           (when (and name (sdl2-view-keypress-callback view))
+                             (funcall (sdl2-view-keypress-callback view)
+                                      (if (= (length name) 1) name "")
+                                      name
+                                      (logand state (lognot +shift-mask+))
+                                      :release))))
+                 (:dropfile (:file file)
+                            (let ((name (sdl-drop-file-name file)))
+                              (when (and name (sdl2-view-drop-callback view))
+                                (funcall (sdl2-view-drop-callback view) (list name)))))
                  (:textinput (:text text)
                              (when (and (plusp (length text))
                                         (sdl2-view-keypress-callback view))
                                (funcall (sdl2-view-keypress-callback view)
                                         text
                                         text
-                                        0)))
+                                        0
+                                        key-event)))
                  (:mousebuttondown (:button button :x x :y y :clicks clicks)
                                    (let ((number (sdl-button-number button)))
                                      (when number
@@ -577,40 +631,40 @@ it was (re)created, in which case its contents are undefined."
                                   (maybe-dispatch-sdl-close view)
                                   (sdl2:push-quit-event))))
                  (:slt-timer (:user-data token)
-                             (dispatch-sdl-timer backend token))
+                             (dispatch-sdl-timer frontend token))
                  (:idle ()
                         (sdl2:delay 1))
                  (:quit ()
                         (maybe-dispatch-sdl-close view)
-                        t)))))
+                        t))))))
       (ignore-errors
         (sdl2:stop-text-input))
       (ignore-errors
-        (destroy-sdl-view (sdl2-backend-view backend)))
-      (setf (sdl2-backend-view backend) nil)
+        (destroy-sdl-view (sdl2-frontend-view frontend)))
+      (setf (sdl2-frontend-view frontend) nil)
       (ignore-errors
-        (when (sdl2-backend-image-initialized-p backend)
+        (when (sdl2-frontend-image-initialized-p frontend)
           (sdl2-image:quit)))
       (ignore-errors
-        (when (sdl2-backend-ttf-initialized-p backend)
+        (when (sdl2-frontend-ttf-initialized-p frontend)
           (sdl2-ttf:quit))))))
 
-(defmethod backend-call-with-event-loop ((backend sdl2-backend) thunk)
-  (if (sdl-backend-use-main-thread-p)
+(defmethod frontend-call-with-event-loop ((frontend sdl2-frontend) thunk)
+  (if (sdl-frontend-use-main-thread-p)
       (sdl2:make-this-thread-main
        (lambda ()
-         (run-sdl2-backend-loop backend thunk)))
-      (run-sdl2-backend-loop backend thunk)))
+         (run-sdl2-frontend-loop frontend thunk)))
+      (run-sdl2-frontend-loop frontend thunk)))
 
-(defmethod backend-available-font-families ((backend sdl2-backend))
-  (declare (ignore backend))
+(defmethod frontend-available-font-families ((frontend sdl2-frontend))
+  (declare (ignore frontend))
   '())
 
-(defmethod backend-resolve-font-size ((backend sdl2-backend) font-size)
-  (declare (ignore backend))
+(defmethod frontend-resolve-font-size ((frontend sdl2-frontend) font-size)
+  (declare (ignore frontend))
   (positive-font-size font-size))
 
-(defmethod backend-create-view ((backend sdl2-backend)
+(defmethod frontend-create-view ((frontend sdl2-frontend)
                                 &key rows columns font-family font-size
                                   cell-width cell-height title)
   (let* ((resolved-font-path (resolve-sdl-font-path font-family))
@@ -640,92 +694,112 @@ it was (re)created, in which case its contents are undefined."
                                 :cell-height resolved-cell-height
                                 :rows rows
                                 :columns columns)))
-    (setf (sdl2-backend-view backend) view)
+    (setf (sdl2-frontend-view frontend) view)
     view))
 
-(defmethod backend-view-cell-width ((backend sdl2-backend) (view sdl2-view))
-  (declare (ignore backend))
+(defmethod frontend-view-cell-width ((frontend sdl2-frontend) (view sdl2-view))
+  (declare (ignore frontend))
   (sdl2-view-cell-width view))
 
-(defmethod backend-view-cell-height ((backend sdl2-backend) (view sdl2-view))
-  (declare (ignore backend))
+(defmethod frontend-view-cell-height ((frontend sdl2-frontend) (view sdl2-view))
+  (declare (ignore frontend))
   (sdl2-view-cell-height view))
 
-(defmethod backend-view-window-size ((backend sdl2-backend) (view sdl2-view))
-  (declare (ignore backend))
+(defmethod frontend-view-window-size ((frontend sdl2-frontend) (view sdl2-view))
+  (declare (ignore frontend))
   (sdl2:get-window-size (sdl2-view-window view)))
 
-(defmethod backend-resize-view ((backend sdl2-backend) (view sdl2-view) rows columns)
-  (declare (ignore backend))
+(defmethod frontend-resize-view ((frontend sdl2-frontend) (view sdl2-view) rows columns)
+  (declare (ignore frontend))
   (setf (sdl2-view-rows view) rows
         (sdl2-view-columns view) columns)
   view)
 
-(defmethod backend-render-grid ((backend sdl2-backend) (view sdl2-view) grid)
-  (declare (ignore backend))
+(defmethod frontend-render-grid ((frontend sdl2-frontend) (view sdl2-view) grid)
+  (declare (ignore frontend))
   (render-sdl-grid view grid))
 
-(defmethod backend-render-images ((backend sdl2-backend) (view sdl2-view) store)
-  (declare (ignore backend))
+(defmethod frontend-render-images ((frontend sdl2-frontend) (view sdl2-view) store)
+  (declare (ignore frontend))
   (setf (sdl2-view-image-store view) store)
-  (when (sdl2-view-target view)
-    (present-sdl-view view)))
+  (cond ((and (sdl2-view-grid view)
+              (not (eq (sdl-layered-p view) (sdl2-view-layered view))))
+         ;; The grid must be redrawn with or without its default background.
+         (render-sdl-grid view (sdl2-view-grid view)))
+        ((sdl2-view-target view)
+         (present-sdl-view view))))
 
-(defmethod backend-set-title ((backend sdl2-backend) (view sdl2-view) title)
-  (declare (ignore backend))
+(defmethod frontend-set-title ((frontend sdl2-frontend) (view sdl2-view) title)
+  (declare (ignore frontend))
   (sdl2:set-window-title (sdl2-view-window view) title))
 
-(defmethod backend-schedule ((backend sdl2-backend) (view sdl2-view) delay-ms thunk)
+(defmethod frontend-schedule ((frontend sdl2-frontend) (view sdl2-view) delay-ms thunk)
   (declare (ignore view))
-  (let ((token (incf (sdl2-backend-timer-seq backend))))
-    (setf (gethash token (sdl2-backend-timers backend)) thunk)
+  (let ((token (incf (sdl2-frontend-timer-seq frontend))))
+    (setf (gethash token (sdl2-frontend-timers frontend)) thunk)
     (bt:make-thread
      (lambda ()
        (sleep (/ (max 0 delay-ms) 1000.0))
-       (when (gethash token (sdl2-backend-timers backend))
+       (when (gethash token (sdl2-frontend-timers frontend))
          (ignore-errors
-           (sdl2:push-user-event (ensure-sdl-timer-event-type backend) token))))
+           (sdl2:push-user-event (ensure-sdl-timer-event-type frontend) token))))
      :name (format nil "slt-sdl2-timer-~d" token))
     token))
 
-(defmethod backend-cancel-scheduled ((backend sdl2-backend) (view sdl2-view) token)
+(defmethod frontend-cancel-scheduled ((frontend sdl2-frontend) (view sdl2-view) token)
   (declare (ignore view))
-  (remhash token (sdl2-backend-timers backend))
+  (remhash token (sdl2-frontend-timers frontend))
   nil)
 
-(defmethod backend-bind-resize ((backend sdl2-backend) (view sdl2-view) callback)
-  (declare (ignore backend))
+(defmethod frontend-bind-resize ((frontend sdl2-frontend) (view sdl2-view) callback)
+  (declare (ignore frontend))
   (setf (sdl2-view-resize-callback view) callback)
   view)
 
-(defmethod backend-bind-keypress ((backend sdl2-backend) (view sdl2-view) callback)
-  (declare (ignore backend))
+(defun sdl-drop-file-name (file)
+  "The name in a drop event's FILE, which SDL allocated for us to free."
+  (let ((pointer (typecase file
+                   (string nil)
+                   (cffi:foreign-pointer file)
+                   (t (autowrap:ptr file)))))
+    (if pointer
+        (unless (cffi:null-pointer-p pointer)
+          (prog1 (cffi:foreign-string-to-lisp pointer :encoding :utf-8)
+            (sdl2-ffi.functions:sdl-free pointer)))
+        file)))
+
+(defmethod frontend-bind-drop ((frontend sdl2-frontend) (view sdl2-view) callback)
+  (declare (ignore frontend))
+  (setf (sdl2-view-drop-callback view) callback))
+
+(defmethod frontend-bind-keypress ((frontend sdl2-frontend) (view sdl2-view) callback)
+  (declare (ignore frontend))
   (setf (sdl2-view-keypress-callback view) callback)
   view)
 
-(defmethod backend-bind-mouse ((backend sdl2-backend) (view sdl2-view) callback)
-  (declare (ignore backend))
+(defmethod frontend-bind-mouse ((frontend sdl2-frontend) (view sdl2-view) callback)
+  (declare (ignore frontend))
   (setf (sdl2-view-mouse-callback view) callback)
   view)
 
-(defmethod backend-bind-scroll ((backend sdl2-backend) (view sdl2-view) callback)
-  (declare (ignore backend))
+(defmethod frontend-bind-scroll ((frontend sdl2-frontend) (view sdl2-view) callback)
+  (declare (ignore frontend))
   (setf (sdl2-view-scroll-callback view) callback)
   view)
 
-(defmethod backend-on-close ((backend sdl2-backend) (view sdl2-view) callback)
-  (declare (ignore backend))
+(defmethod frontend-on-close ((frontend sdl2-frontend) (view sdl2-view) callback)
+  (declare (ignore frontend))
   (setf (sdl2-view-close-callback view) callback)
   view)
 
-(defmethod backend-focus ((backend sdl2-backend) (view sdl2-view))
-  (declare (ignore backend))
+(defmethod frontend-focus ((frontend sdl2-frontend) (view sdl2-view))
+  (declare (ignore frontend))
   (sdl2:raise-window (sdl2-view-window view)))
 
-(defmethod backend-request-exit ((backend sdl2-backend) (view sdl2-view))
-  (declare (ignore backend))
+(defmethod frontend-request-exit ((frontend sdl2-frontend) (view sdl2-view))
+  (declare (ignore frontend))
   (unless (sdl2-view-exit-requested-p view)
     (setf (sdl2-view-exit-requested-p view) t)
     (sdl2:push-quit-event)))
 
-(register-backend :sdl2 (lambda () (make-instance 'sdl2-backend)))
+(register-frontend :sdl2 (lambda () (make-instance 'sdl2-frontend)))

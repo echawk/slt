@@ -1,6 +1,6 @@
 (in-package #:slt)
 
-;;;; Short names for the libraries the gl backend builds on: Shirakumo's
+;;;; Short names for the libraries the gl frontend builds on: Shirakumo's
 ;;;; GLFW bindings (which ship GLFW 3.4 binaries for Linux and macOS) and,
 ;;;; off macOS, Shinmera's font-discovery (fontconfig).
 

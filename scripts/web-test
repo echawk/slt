@@ -14,7 +14,7 @@ log="$out/server.log"
 scripts/lisp \
   --eval '(asdf:load-system :slt/web)' \
   --eval "(setf slt:*web-port* $port slt:*web-token* \"$token\")" \
-  --eval '(slt:launch-terminal :backend :web :shell "/bin/sh" :load-config nil)' \
+  --eval '(slt:launch-terminal :frontend :web :shell "/bin/sh" :load-config nil)' \
   >"$log" 2>&1 &
 server=$!
 trap 'kill $server 2>/dev/null || true' EXIT INT TERM

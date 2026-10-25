@@ -1,7 +1,7 @@
 # slt
 
 A terminal emulator in Common Lisp. The terminal emulation layer (the
-*engine*) and the user interface (the *backend*) are separate pieces, and
+*engine*) and the user interface (the *frontend*) are separate pieces, and
 either can be swapped, configured or extended from Lisp.
 
 ## Building and running
@@ -31,7 +31,7 @@ it. `make uninstall` removes both.
 | `PREFIX` | `/usr/local` | `BINDIR` and `LIBDIR` default to `$(PREFIX)/bin` and `$(PREFIX)/lib` |
 | `DESTDIR` | | staging root for packages |
 | `ENGINES` | `ghostty libvterm` | native engines to build in; `ENGINES=` gives a pure-Lisp build |
-| `BACKENDS` | `gl` off macOS | optional backends to build in |
+| `FRONTENDS` | `gl` off macOS | optional frontends to build in |
 | `SBCL`, `OCICL` | `sbcl`, `ocicl` | |
 
 For a package, run `make deps` while the network is available (building
@@ -39,9 +39,9 @@ ghostty also downloads Zig and Ghostty), then
 `make && make install DESTDIR="$pkgdir" PREFIX=/usr`.
 
 `make lean` (or `LEAN=1` on any step) builds a smaller slt: the native GUI
-backend (cocoa on macOS, gl elsewhere), the pure-Lisp `lispvt` engine and the
-headless backend, without ltk, the web backend, the REPL servers or other
-engines. `make tiny` (`TINY=1`) is the same with the ltk backend instead,
+frontend (cocoa on macOS, gl elsewhere), the pure-Lisp `lispvt` engine and the
+headless frontend, without ltk, the web frontend, the REPL servers or other
+engines. `make tiny` (`TINY=1`) is the same with the ltk frontend instead,
 which needs only Tk's `wish` at run time. Each fetches only the Lisp libraries
 its build loads, at the versions pinned in `ocicl.csv`, into
 `build/lean/ocicl` or `build/tiny/ocicl`, and downloads no Zig or Ghostty.
@@ -78,7 +78,7 @@ Scrollback (ghostty, lispvt): use the mouse wheel or trackpad, Shift+PageUp/Page
 and Shift+Home/End. Typing returns to the live screen. On the alternate
 screen (vim, less), the wheel sends arrow keys instead.
 
-Selection and the clipboard (cocoa, gl and web backends): drag to select,
+Selection and the clipboard (cocoa, gl and web frontends): drag to select,
 double-click for a word (paths and URLs count as one) and triple-click for a
 line. Copy with Command+C on macOS (Super+C elsewhere) or Control+Shift+C,
 and paste with Command+V / Super+V or Control+Shift+V. Typing, scrolling or
@@ -90,9 +90,9 @@ palette's `:selection`.
 `make conformance` (part of `make check`) runs the same byte streams through every available engine
 and compares the resulting screens. `slt/bench` measures throughput.
 
-## Backends
+## Frontends
 
-| backend | |
+| frontend | |
 |---|---|
 | `cocoa` | macOS default: AppKit window, Metal renderer, CoreText glyphs |
 | `clx` | X11 window through [CLX](https://github.com/sharplispers/clx), X core fonts, no foreign libraries (`slt/clx`; needs an X server) |
@@ -103,7 +103,7 @@ and compares the resulting screens. `slt/bench` measures throughput.
 | `web` | serves a browser terminal; see [web/README.md](web/README.md) |
 | `headless` | no UI; for tests, scripting and remote frontends |
 
-Choose one with `--backend NAME` or `SLT_BACKEND=NAME`.
+Choose one with `--frontend NAME` or `SLT_FRONTEND=NAME`.
 
 ## Escape sequences
 
@@ -114,12 +114,16 @@ same way for every engine:
 - **colors:** OSC 4/10/11/12, set and query, per window;
 - **clipboard:** OSC 52 (writing only, unless `*clipboard-access*` is
   `:read-write`);
-- **hyperlinks:** OSC 8, opened with Command-click;
+- **hyperlinks:** OSC 8, underlined under the pointer and opened with
+  Command-click;
 - **working directory:** OSC 7 (new windows open there);
 - **prompt marks:** OSC 133, with Super+Up/Down or Control+Shift+Up/Down to
-  jump between prompts;
+  jump between prompts (add Shift, or Meta with Control+Shift, for failed
+  commands) and Super+Shift+O or Control+Shift+O to copy the last command's
+  output;
 - **desktop notifications:** OSC 9/777/99;
-- **the Kitty keyboard protocol;**
+- **the Kitty keyboard protocol,** with key repeats, releases and modifier
+  keys;
 - **synchronized output:** mode 2026;
 - **XTVERSION.**
 
@@ -141,44 +145,50 @@ as in xterm, honor transparent backgrounds (`P2=1`), DECSDM (`?80`) and
 sixel-scrolls-right (`?8452`, both reportable with DECRQM), and answer
 XTSMGRAPHICS; the primary device attributes advertise sixel support. As in
 xterm and foot, text written or erased over a SIXEL image replaces it in
-those cells, and an opaque image replaces the older ones it covers.
+those cells, and an opaque image replaces the older ones it covers. Pixels
+that the raster attributes declare non-square are stretched to squares.
 
 Kitty supports chunked direct, file, temporary file, and POSIX shared-memory
 transfers; RGB, RGBA, PNG and palette-indexed images; zlib compression;
 cropping, scaling (aspect-preserving), offsets, z-order, image and placement
 IDs, image numbers, queries, cursor movement, relative placements, Unicode
 placeholders, every deletion selector, and animation (frames, frame
-composition, and terminal- or client-driven playback).
+composition, and terminal- or client-driven playback). Placeholder cells
+pick their placement by underline color, palette-indexed images follow
+palette changes (OSC 4), and images with negative z are drawn under the
+text: below cell backgrounds that are not the default for z under
+-1073741824, above them otherwise. (The SDL2 frontend draws every
+negative-z image below the backgrounds.)
 
 Placements scroll with the text, into the scrollback and within scroll
 regions, and are cleared by `ED 2`/`ED 3`, RIS and entering the alternate
 screen. Images are rendered by the cocoa/Metal, GL, GTK/Cairo, SDL2, CLX, Tk,
-web, and headless backends. Set `*sixel-images*` or `*kitty-graphics-images*`
+web, and headless frontends. Set `*sixel-images*` or `*kitty-graphics-images*`
 to `nil` to pass that protocol through untouched.
 
 On macOS, install the SIXEL decoder with `brew install libsixel`. The reusable
 bindings and Kitty codec live in [`lib/cl-libsixel`](lib/cl-libsixel/) and
 [`lib/kitty-graphics`](lib/kitty-graphics/).
 
-With the native macOS (`cocoa`) backend, Command+N (or **Shell ▸ New
+With the native macOS (`cocoa`) frontend, Command+N (or **Shell ▸ New
 Window**) opens another independent terminal window. Each window has its own
 shell and remains open until it or its child process exits; slt quits after
 the last window closes.
 
-The `gl` backend uses Shirakumo's [glfw](https://codeberg.org/shirakumo/glfw)
+The `gl` frontend uses Shirakumo's [glfw](https://codeberg.org/shirakumo/glfw)
 bindings, which ship GLFW 3.4 for Linux and macOS (the BSDs use the system's
 `libglfw`), and cl-opengl. GLFW chooses X11 or Wayland when it starts.
 `make gl-test` renders styled text in a hidden window and checks the pixels.
-[doc/gpu-backends.md](doc/gpu-backends.md) describes the design and what
+[doc/gpu-frontends.md](doc/gpu-frontends.md) describes the design and what
 Vulkan would add.
 
-The `gtk` backend uses the system's GTK 3 (on macOS, Homebrew's `gtk+3`).
-Build it in with `BACKENDS=gtk`, for example `make lean BACKENDS=gtk`.
+The `gtk` frontend uses the system's GTK 3 (on macOS, Homebrew's `gtk+3`).
+Build it in with `FRONTENDS=gtk`, for example `make lean FRONTENDS=gtk`.
 `make gtk-test` checks its drawing the same way `make gl-test` does. It
 has no input method support yet, and its font menu lists no families.
 
-The `clx` backend speaks the X protocol in Lisp, so it needs only an X
-server, with a 24-bit TrueColor visual; build it in with `BACKENDS=clx`.
+The `clx` frontend speaks the X protocol in Lisp, so it needs only an X
+server, with a 24-bit TrueColor visual; build it in with `FRONTENDS=clx`.
 It draws with the server's core fonts (ISO 10646 ones when the server has
 them, which covers the Basic Multilingual Plane only), so glyph coverage
 depends on the server's font path. `make clx-test` checks its drawing.
@@ -189,7 +199,7 @@ slt can start a Swank server (for SLIME and other clients of its protocol)
 or a Slynk server (for SLY) inside itself. You can then inspect, redefine and
 hook into the running terminal from your editor. To toggle the server:
 
-- choose **Lisp ▸ Start Swank Server** in the macOS menu bar (cocoa backend);
+- choose **Lisp ▸ Start Swank Server** in the macOS menu bar (cocoa frontend);
 - press Command+Shift+L on macOS (Super+Shift+L elsewhere) or Control+Shift+L;
 - or start it at launch with `--repl-server swank` or `--repl-server slynk`.
 
@@ -239,13 +249,13 @@ On macOS the menus hold the usual commands: Copy, Paste and Select All
 (Command+C, V, A), Clear Scrollback (Command+K), Bigger, Smaller and Actual
 Size (Command+=, -, 0), Enter Full Screen (Control+Command+F), Close Window
 (Command+W), plus the Lisp menu. The right button opens a menu with the
-Edit commands unless the program tracks the mouse. On the other backends
+Edit commands unless the program tracks the mouse. On the other frontends
 `command-key-handler` on `*key-hook*` gives the same commands on Super.
 `*commands*` maps each menu command to the function it calls.
 
 Command-click (Super-click) opens the link under the pointer
-(`*url-schemes*`). Files dropped on the window are pasted as shell-quoted
-names. The bell beeps (`*audible-bell*`) and bounces the Dock icon while
+(`*url-schemes*`). Files dropped on the window (cocoa, gl, gtk, clx and
+sdl2) are pasted as shell-quoted names. The bell beeps (`*audible-bell*`) and bounces the Dock icon while
 slt is in the background (`*bell-hook*` holds `ring-bell`). Programs that
 ask for focus events (mode 1004) get them. `*window-padding*` sets the
 space around the grid in points.
@@ -280,6 +290,6 @@ On macOS, the build also:
   binaries whose signatures are missing or invalid. To distribute outside
   your own machines, sign with a Developer ID and notarize.
 
-The SDL2 backend is left out because Homebrew's SDL2 brings a chain of
-further libraries (`make BACKENDS=sdl2` builds it in). LTK is always in, but
+The SDL2 frontend is left out because Homebrew's SDL2 brings a chain of
+further libraries (`make FRONTENDS=sdl2` builds it in). LTK is always in, but
 needs `wish` on the target machine.

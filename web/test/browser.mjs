@@ -100,6 +100,23 @@ try {
     "getComputedStyle(document.getElementById('term').shadowRoot.querySelector('.slt-root')).backgroundColor");
   check("theme switch recolors the terminal", background === "rgb(0, 43, 54)");
   await screenshot("web-solarized.png");
+
+  // A program's color changes (OSC 11) show over the theme, and resetting
+  // them (OSC 111) brings the theme back.
+  const typeLine = async (line) => {
+    for (const key of line) await send("Input.dispatchKeyEvent", { type: "keyDown", key, text: key });
+    await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  };
+  const rootBackground = () => evaluate(
+    "getComputedStyle(document.getElementById('term').shadowRoot.querySelector('.slt-root')).backgroundColor");
+  await typeLine("printf '\\033]11;#123456\\007'");
+  let changed = await rootBackground();
+  for (let i = 0; i < 60 && changed !== "rgb(18, 52, 86)"; i++) { await sleep(50); changed = await rootBackground(); }
+  check("OSC 11 recolors the background", changed === "rgb(18, 52, 86)");
+  await typeLine("printf '\\033]111\\007'");
+  let restored = await rootBackground();
+  for (let i = 0; i < 60 && restored !== "rgb(0, 43, 54)"; i++) { await sleep(50); restored = await rootBackground(); }
+  check("OSC 111 restores the theme's background", restored === "rgb(0, 43, 54)");
   cdp.close();
 } finally {
   chrome.kill();

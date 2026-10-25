@@ -1,6 +1,6 @@
 (in-package #:slt)
 
-;;;; X11 backend through CLX, the Lisp implementation of the X protocol, so
+;;;; X11 frontend through CLX, the Lisp implementation of the X protocol, so
 ;;;; it needs no foreign libraries.  Text is drawn with X core fonts, chosen
 ;;;; by XLFD pattern and preferably ISO 10646 encoded so that glyph indices
 ;;;; are code points (the Basic Multilingual Plane only).  Cell backgrounds
@@ -17,14 +17,14 @@
 (defvar *clx-multi-click-seconds* 0.4
   "The longest gap between clicks of a double or triple click.")
 
-(defclass clx-backend (terminal-backend)
-  ((display :initform nil :accessor clx-backend-display)
-   (views :initform '() :accessor clx-backend-views)
-   (timers :initform '() :accessor clx-backend-timers)
-   (wakeups :initform '() :accessor clx-backend-wakeups)
-   (lock :initform (sb-thread:make-mutex :name "clx backend")
-         :reader clx-backend-lock)
-   (exit-p :initform nil :accessor clx-backend-exit-p)))
+(defclass clx-frontend (terminal-frontend)
+  ((display :initform nil :accessor clx-frontend-display)
+   (views :initform '() :accessor clx-frontend-views)
+   (timers :initform '() :accessor clx-frontend-timers)
+   (wakeups :initform '() :accessor clx-frontend-wakeups)
+   (lock :initform (sb-thread:make-mutex :name "clx frontend")
+         :reader clx-frontend-lock)
+   (exit-p :initform nil :accessor clx-frontend-exit-p)))
 
 (defstruct (clx-view (:constructor %make-clx-view))
   window
@@ -41,6 +41,11 @@
   grid
   image-store
   keypress-callback
+  ;; The keycode whose next press is an autorepeat.
+  (repeat-code nil)
+  drop-callback
+  ;; The window dragging files over this one (XDND), as an X window id.
+  (drag-source nil)
   resize-callback
   scroll-callback
   mouse-callback
@@ -141,21 +146,21 @@ the regular one, and whether they are ISO 10646 encoded."
         (xlib:draw-glyphs (clx-view-window view) gc x (+ y (clx-view-ascent view))
                           (substitute-if #\? (lambda (c) (> (char-code c) 255)) text)))))
 
-(defun clx-draw-lines (view attrs rgb x width y)
+(defun clx-draw-lines (view attrs rgb x width y &optional (underline-rgb rgb))
   "Underline and strike-through for cells from X, WIDTH pixels wide."
   (let ((ch (clx-view-cell-height view)))
-    (when (logtest attrs (logior +attr-underline+ +attr-double-underline+))
-      (clx-fill view rgb x (+ y (- ch 2)) width 1))
-    (when (logtest attrs +attr-double-underline+)
-      (clx-fill view rgb x (+ y (- ch 4)) width 1))
+    (loop for (rx ry rw rh) in (underline-rectangles (underline-style attrs) x width ch)
+          do (clx-fill view underline-rgb rx (+ y ry) rw rh))
     (when (logtest attrs +attr-strike+)
       (clx-fill view rgb x (+ y (floor ch 2)) width 1))))
 
 (defconstant +clx-style-attrs+
-  (logior +attr-bold+ +attr-italic+ +attr-underline+ +attr-strike+
-          +attr-double-underline+ +attr-invisible+))
+  (logior +attr-bold+ +attr-italic+ +attr-underlines+ +attr-strike+ +attr-invisible+))
 
-(defun clx-draw-row (view grid row)
+(defun clx-draw-row (view grid row &key (part :all) skip-default-background)
+  "Draw ROW's backgrounds, text or both (PART :BACKGROUNDS, :TEXT or :ALL).
+SKIP-DEFAULT-BACKGROUND leaves cells with the default background alone, for
+images under the text."
   (let* ((columns (grid-columns grid))
          (cw (clx-view-cell-width view))
          (ch (clx-view-cell-height view))
@@ -164,17 +169,18 @@ the regular one, and whether they are ISO 10646 encoded."
          (attrs (grid-attrs grid)))
     ;; Backgrounds, in runs of one color.
     (let ((column 0))
-      (loop while (< column columns)
+      (loop while (and (< column columns) (not (eq part :text)))
             do (let* ((bg (nth-value 1 (clx-cell-colors grid (grid-index grid row column))))
                       (end (1+ column)))
                  (loop while (and (< end columns)
                                   (= bg (nth-value 1 (clx-cell-colors
                                                       grid (grid-index grid row end)))))
                        do (incf end))
-                 (clx-fill view bg (* column cw) y (* (- end column) cw) ch)
+                 (unless (and skip-default-background (= bg (palette-background *palette*)))
+                   (clx-fill view bg (* column cw) y (* (- end column) cw) ch))
                  (setf column end))))
     ;; Text: runs of ASCII cells with one foreground and style.
-    (let ((column 0))
+    (let ((column (if (eq part :backgrounds) columns 0)))
       (loop while (< column columns)
             do (let* ((index (grid-index grid row column))
                       (code (grid-glyph-code grid index))
@@ -194,6 +200,8 @@ the regular one, and whether they are ISO 10646 encoded."
                                            (not (gethash next (grid-combining grid)))
                                            (= style (logand (aref attrs next)
                                                             +clx-style-attrs+))
+                                           (= (aref (grid-ul grid) index)
+                                              (aref (grid-ul grid) next))
                                            (= fg (clx-cell-colors grid next)))))
                          do (incf end)))
                  (unless (logtest cell-attrs +attr-wide-spacer+)
@@ -208,7 +216,8 @@ the regular one, and whether they are ISO 10646 encoded."
                      (unless (or (logtest style +attr-invisible+)
                                  (zerop (length (string-trim " " text))))
                        (clx-draw-text view text (clx-font-index style) fg (* column cw) y))
-                     (clx-draw-lines view style fg (* column cw) width y)))
+                     (clx-draw-lines view style fg (* column cw) width y
+                                     (cell-underline-rgb grid index *palette* fg))))
                  (setf column end))))))
 
 (defun clx-draw-cursor (view grid)
@@ -223,54 +232,72 @@ the regular one, and whether they are ISO 10646 encoded."
           (clx-fill view (palette-cursor *palette*) x y 2 ch)
           (clx-fill view (palette-cursor *palette*) x (- (+ y ch) 2) cw 2)))))
 
+(defun clx-image-records (view)
+  (let ((store (clx-view-image-store view)))
+    (and store (terminal-image-render-list store (clx-view-cell-width view)
+                                           (clx-view-cell-height view)))))
+
+(defun clx-images-under-text-p (view)
+  (find-if (lambda (record) (minusp (terminal-image-placement-z-index (first record))))
+           (clx-image-records view)))
+
 (defun clx-draw-grid (view)
-  "Paint the whole window."
+  "Paint the whole window: images under the text, if any, between the cell
+backgrounds and the text."
   (with-view-palette (view)
     (clx-fill view (palette-background *palette*) 0 0
               (max 1 (clx-view-width view)) (max 1 (clx-view-height view)))
-    (let ((grid (clx-view-grid view)))
-      (when grid
-        (dotimes (row (grid-rows grid))
-          (clx-draw-row view grid row))
-        (clx-draw-cursor view grid)))
-    (clx-draw-images view)))
+    (multiple-value-bind (below-backgrounds below-text above)
+        (image-layers (clx-image-records view))
+      (let ((grid (clx-view-grid view))
+            (layered (or below-backgrounds below-text)))
+        (clx-draw-images view below-backgrounds)
+        (when grid
+          (dotimes (row (grid-rows grid))
+            (clx-draw-row view grid row :part (if layered :backgrounds :all)
+                                        :skip-default-background layered)))
+        (clx-draw-images view below-text)
+        (when grid
+          (when layered
+            (dotimes (row (grid-rows grid))
+              (clx-draw-row view grid row :part :text)))
+          (clx-draw-cursor view grid)))
+      (clx-draw-images view above))))
 
-(defun clx-draw-images (view)
-  (let ((store (clx-view-image-store view)))
-    (when store
-      (dolist (record (terminal-image-render-list
-                       store (clx-view-cell-width view) (clx-view-cell-height view)))
-        (destructuring-bind (placement image x y width height) record
-          (let* ((iw (terminal-image-width image)) (ih (terminal-image-height image))
-                 (rgba (terminal-image-rgba image))
-                 (sx (terminal-image-placement-source-x placement))
-                 (sy (terminal-image-placement-source-y placement))
-                 (sw (or (terminal-image-placement-source-width placement) (- iw sx)))
-                 (sh (or (terminal-image-placement-source-height placement) (- ih sy)))
-                 (background (palette-background *palette*))
-                 (pixels (make-array (list height width)
-                                     :element-type '(unsigned-byte 32))))
-            (dotimes (dy height)
-              (dotimes (dx width)
-                (let* ((source-x (+ sx (min (1- sw) (floor (* dx sw) width))))
-                       (source-y (+ sy (min (1- sh) (floor (* dy sh) height))))
-                       (index (* 4 (+ source-x (* source-y iw))))
-                       (alpha (aref rgba (+ index 3)))
-                       (inverse (- 255 alpha)))
-                  (setf (aref pixels dy dx)
-                        (logior
-                         (ash (floor (+ (* (aref rgba index) alpha)
-                                        (* (ldb (byte 8 16) background) inverse)) 255) 16)
-                         (ash (floor (+ (* (aref rgba (+ index 1)) alpha)
-                                        (* (ldb (byte 8 8) background) inverse)) 255) 8)
-                         (floor (+ (* (aref rgba (+ index 2)) alpha)
-                                   (* (ldb (byte 8 0) background) inverse)) 255))))))
-            (xlib:put-image
-             (clx-view-window view) (clx-view-gcontext view)
-             (xlib:create-image :width width :height height :depth 24
-                                :bits-per-pixel 32 :data pixels
-                                :red-mask #xff0000 :green-mask #x00ff00 :blue-mask #x0000ff)
-             :x x :y y :width width :height height)))))))
+(defun clx-draw-images (view records)
+  "Draw image RECORDS (see TERMINAL-IMAGE-RENDER-LIST)."
+  (dolist (record records)
+    (destructuring-bind (placement image x y width height) record
+      (let* ((iw (terminal-image-width image)) (ih (terminal-image-height image))
+             (rgba (terminal-image-rgba image))
+             (sx (terminal-image-placement-source-x placement))
+             (sy (terminal-image-placement-source-y placement))
+             (sw (or (terminal-image-placement-source-width placement) (- iw sx)))
+             (sh (or (terminal-image-placement-source-height placement) (- ih sy)))
+             (background (palette-background *palette*))
+             (pixels (make-array (list height width)
+                                 :element-type '(unsigned-byte 32))))
+        (dotimes (dy height)
+          (dotimes (dx width)
+            (let* ((source-x (+ sx (min (1- sw) (floor (* dx sw) width))))
+                   (source-y (+ sy (min (1- sh) (floor (* dy sh) height))))
+                   (index (* 4 (+ source-x (* source-y iw))))
+                   (alpha (aref rgba (+ index 3)))
+                   (inverse (- 255 alpha)))
+              (setf (aref pixels dy dx)
+                    (logior
+                     (ash (floor (+ (* (aref rgba index) alpha)
+                                    (* (ldb (byte 8 16) background) inverse)) 255) 16)
+                     (ash (floor (+ (* (aref rgba (+ index 1)) alpha)
+                                    (* (ldb (byte 8 8) background) inverse)) 255) 8)
+                     (floor (+ (* (aref rgba (+ index 2)) alpha)
+                               (* (ldb (byte 8 0) background) inverse)) 255))))))
+        (xlib:put-image
+         (clx-view-window view) (clx-view-gcontext view)
+         (xlib:create-image :width width :height height :depth 24
+                            :bits-per-pixel 32 :data pixels
+                            :red-mask #xff0000 :green-mask #x00ff00 :blue-mask #x0000ff)
+         :x x :y y :width width :height height)))))
 
 ;;; Input
 
@@ -283,7 +310,10 @@ the regular one, and whether they are ISO 10646 encoded."
     (#xff96 . "KP_Left") (#xff97 . "KP_Up") (#xff98 . "KP_Right")
     (#xff99 . "KP_Down") (#xff9a . "KP_Prior") (#xff9b . "KP_Next")
     (#xff9c . "KP_End") (#xff9e . "KP_Insert") (#xff9f . "KP_Delete")
-    (#x0020 . "space"))
+    (#x0020 . "space")
+    (#xffe1 . "Shift_L") (#xffe2 . "Shift_R") (#xffe3 . "Control_L")
+    (#xffe4 . "Control_R") (#xffe5 . "Caps_Lock") (#xffe9 . "Alt_L")
+    (#xffea . "Alt_R") (#xffeb . "Super_L") (#xffec . "Super_R") (#xff7f . "Num_Lock"))
   "X11 names of the keysyms the terminal treats specially.")
 
 (defun clx-keysym-name (keysym)
@@ -297,7 +327,18 @@ points and Unicode keysyms are #x01000000 plus theirs."
   (cond ((or (<= #x20 keysym #x7e) (<= #xa0 keysym #xff)) (code-char keysym))
         ((<= #x01000100 keysym #x0110ffff) (code-char (- keysym #x01000000)))))
 
-(defun clx-key-press (view display code state)
+(defun clx-autorepeat-p (display code time)
+  "True when a key release of CODE at TIME is half of an autorepeat: X sends
+a release and a press with the same time for each repeat."
+  (and (xlib:event-listen display 0)
+       (xlib:process-event display :timeout 0 :peek-p t
+                                   :handler (lambda (&key event-key ((:code next-code))
+                                                       ((:time next-time)) &allow-other-keys)
+                                              (and (eq event-key :key-press)
+                                                   (eql next-code code)
+                                                   (eql next-time time))))))
+
+(defun clx-key-press (view display code state &optional (kind :press))
   (let* ((shiftp (logtest state +shift-mask+))
          (keysym (let ((shifted (and shiftp (xlib:keycode->keysym display code 1))))
                    (if (and shifted (plusp shifted))
@@ -314,7 +355,8 @@ points and Unicode keysyms are #x01000000 plus theirs."
     (when (and name (clx-view-keypress-callback view))
       (funcall (clx-view-keypress-callback view) text name
                (logand state (logior +shift-mask+ +control-mask+
-                                     +mod1-mask+ +mod4-mask+))))))
+                                     +mod1-mask+ +mod4-mask+))
+               kind))))
 
 (defun clx-pointer-cell (view x y)
   (list (max 0 (floor y (clx-view-cell-height view)))
@@ -393,15 +435,66 @@ points and Unicode keysyms are #x01000000 plus theirs."
                  (sb-ext:octets-to-string (coerce octets '(vector (unsigned-byte 8)))
                                           :external-format :utf-8))))))
 
+;;; Drag and drop (XDND, version 5: freedesktop.org's Drag-and-Drop
+;;; Protocol for the X Window System).  Files arrive as a text/uri-list.
+
+(defun clx-atom-named-p (atom name)
+  (and (symbolp atom) (string= (symbol-name atom) name)))
+
+(defun clx-send-xdnd (display source type &rest data)
+  "Send the XDND client message TYPE, with DATA, to the window with id SOURCE."
+  (let ((window (xlib::lookup-window display source)))
+    (xlib:send-event window :client-message nil
+                     :window window :type type :format 32
+                     :data (append data (make-list (- 5 (length data)) :initial-element 0)))
+    (xlib:display-force-output display)))
+
+(defun clx-handle-xdnd (view display type data)
+  "Answer the XDND message TYPE.  Return true when it was one."
+  (let ((window-id (xlib:window-id (clx-view-window view)))
+        (copy (xlib:intern-atom display :|XdndActionCopy|)))
+    (cond
+      ((clx-atom-named-p type "XdndEnter")
+       (setf (clx-view-drag-source view) (aref data 0)))
+      ((clx-atom-named-p type "XdndPosition")
+       ;; Accept anywhere in the window, asking to be told of every move.
+       (clx-send-xdnd display (aref data 0) :|XdndStatus| window-id 3 0 0 copy))
+      ((clx-atom-named-p type "XdndLeave")
+       (setf (clx-view-drag-source view) nil)
+       t)
+      ((clx-atom-named-p type "XdndDrop")
+       (setf (clx-view-drag-source view) (aref data 0))
+       (xlib:convert-selection :|XdndSelection| :|text/uri-list| (clx-view-window view)
+                               :_slt_dnd (aref data 2))
+       t))))
+
+(defun clx-receive-drop (view display property)
+  "The dropped files' text/uri-list arrived in PROPERTY, or NIL if refused."
+  (let ((paths (and property
+                    (uri-list-paths
+                     (sb-ext:octets-to-string
+                      (coerce (xlib:get-property (clx-view-window view) property
+                                                 :result-type '(vector (unsigned-byte 8))
+                                                 :delete-p t)
+                              '(vector (unsigned-byte 8)))
+                      :external-format :utf-8))))
+        (source (shiftf (clx-view-drag-source view) nil)))
+    (when source
+      (clx-send-xdnd display source :|XdndFinished| (xlib:window-id (clx-view-window view))
+                     (if paths 1 0)
+                     (if paths (xlib:intern-atom display :|XdndActionCopy|) 0)))
+    (when (and paths (clx-view-drop-callback view))
+      (funcall (clx-view-drop-callback view) paths))))
+
 ;;; Events
 
-(defun clx-find-view (backend window)
-  (find window (clx-backend-views backend) :key #'clx-view-window :test #'xlib:window-equal))
+(defun clx-find-view (frontend window)
+  (find window (clx-frontend-views frontend) :key #'clx-view-window :test #'xlib:window-equal))
 
-(defun clx-handle-event (backend &rest event &key event-key window event-window
+(defun clx-handle-event (frontend &rest event &key event-key window event-window
                                                   &allow-other-keys)
-  (let* ((display (clx-backend-display backend))
-         (view (clx-find-view backend (or event-window window))))
+  (let* ((display (clx-frontend-display frontend))
+         (view (clx-find-view frontend (or event-window window))))
     (when view
       (destructuring-bind (&key code state x y width height count type data
                              requestor selection target property time
@@ -418,7 +511,14 @@ points and Unicode keysyms are #x01000000 plus theirs."
              (when (clx-view-resize-callback view)
                (funcall (clx-view-resize-callback view)))))
           (:key-press
-           (clx-key-press view display code state))
+           (clx-key-press view display code state
+                          (if (eql code (shiftf (clx-view-repeat-code view) nil))
+                              :repeat
+                              :press)))
+          (:key-release
+           (if (clx-autorepeat-p display code time)
+               (setf (clx-view-repeat-code view) code)
+               (clx-key-press view display code state :release)))
           (:button-press (clx-button view :press code x y state))
           (:button-release (clx-button view :release code x y state))
           (:motion-notify
@@ -426,76 +526,79 @@ points and Unicode keysyms are #x01000000 plus theirs."
              (clx-deliver-mouse view (if button :drag :motion)
                                 (clx-pointer-cell view x y) button state)))
           (:client-message
-           (when (and (eq type :wm_protocols)
-                      (eq (xlib:atom-name display (aref data 0)) :wm_delete_window)
-                      (clx-view-close-callback view))
-             (funcall (clx-view-close-callback view))))
+           (if (and (eq type :wm_protocols)
+                    (eq (xlib:atom-name display (aref data 0)) :wm_delete_window))
+               (when (clx-view-close-callback view)
+                 (funcall (clx-view-close-callback view)))
+               (clx-handle-xdnd view display type data)))
           (:selection-request
            (clx-answer-selection-request view display requestor selection target
                                          property time))
           (:selection-clear
            (setf (clx-view-clipboard view) nil))
           (:selection-notify
-           (clx-receive-selection view (clx-view-window view) property))))))
+           (if (eq target :|text/uri-list|)
+               (clx-receive-drop view display property)
+               (clx-receive-selection view (clx-view-window view) property)))))))
   t)
 
-(defun clx-run-due (backend)
+(defun clx-run-due (frontend)
   "Run the wakeups and the timers that are due; return the seconds until
 the next timer, or NIL."
   (let ((now (get-internal-real-time))
         (due '())
         (wakeups '()))
-    (sb-thread:with-mutex ((clx-backend-lock backend))
-      (setf wakeups (reverse (clx-backend-wakeups backend))
-            (clx-backend-wakeups backend) '())
-      (setf due (remove-if (lambda (timer) (> (car timer) now)) (clx-backend-timers backend))
-            (clx-backend-timers backend) (set-difference (clx-backend-timers backend) due)))
+    (sb-thread:with-mutex ((clx-frontend-lock frontend))
+      (setf wakeups (reverse (clx-frontend-wakeups frontend))
+            (clx-frontend-wakeups frontend) '())
+      (setf due (remove-if (lambda (timer) (> (car timer) now)) (clx-frontend-timers frontend))
+            (clx-frontend-timers frontend) (set-difference (clx-frontend-timers frontend) due)))
     (mapc #'funcall wakeups)
     (dolist (timer (sort due #'< :key #'car))
       (funcall (cdr timer)))
-    (let ((times (sb-thread:with-mutex ((clx-backend-lock backend))
-                   (mapcar #'car (clx-backend-timers backend)))))
+    (let ((times (sb-thread:with-mutex ((clx-frontend-lock frontend))
+                   (mapcar #'car (clx-frontend-timers frontend)))))
       (when times
         (max 0 (/ (- (reduce #'min times) (get-internal-real-time))
                   internal-time-units-per-second))))))
 
-;;; The backend protocol
+;;; The frontend protocol
 
-(defmethod backend-call-with-event-loop ((backend clx-backend) thunk)
+(defmethod frontend-call-with-event-loop ((frontend clx-frontend) thunk)
   (funcall thunk)
-  (let ((display (clx-backend-display backend)))
+  (let ((display (clx-frontend-display frontend)))
     (unwind-protect
-         (loop until (or (clx-backend-exit-p backend) (null display))
-               do (let ((timeout (clx-run-due backend)))
-                    (unless (clx-backend-exit-p backend)
+         (loop until (or (clx-frontend-exit-p frontend) (null display))
+               do (let ((timeout (clx-run-due frontend)))
+                    (unless (clx-frontend-exit-p frontend)
                       (xlib:display-force-output display)
                       (xlib:process-event display
                                           :timeout (if timeout (min timeout 1) 1)
                                           :discard-p t
                                           :handler (lambda (&rest event)
-                                                     (apply #'clx-handle-event backend event))))))
+                                                     (apply #'clx-handle-event frontend event))))))
       (when display
         (ignore-errors (xlib:close-display display))
-        (setf (clx-backend-display backend) nil)))))
+        (setf (clx-frontend-display frontend) nil)))))
 
-(defmethod backend-available-font-families ((backend clx-backend))
+(defmethod frontend-available-font-families ((frontend clx-frontend))
   '())
 
-(defmethod backend-resolve-font-size ((backend clx-backend) font-size)
+(defmethod frontend-resolve-font-size ((frontend clx-frontend) font-size)
   (abs (or font-size 13)))
 
-(defun clx-ensure-display (backend)
-  (or (clx-backend-display backend)
-      (setf (clx-backend-display backend) (xlib:open-default-display))))
+(defun clx-ensure-display (frontend)
+  (or (clx-frontend-display frontend)
+      (setf (clx-frontend-display frontend) (xlib:open-default-display))))
 
-(defmethod backend-create-view ((backend clx-backend)
+(defmethod frontend-create-view ((frontend clx-frontend)
                                 &key rows columns font-family font-size
                                   cell-width cell-height title)
-  (let* ((display (clx-ensure-display backend))
+  (let* ((display (clx-ensure-display frontend))
          (screen (xlib:display-default-screen display))
          (root (xlib:screen-root screen)))
     (multiple-value-bind (fonts unicode-p)
-        (clx-open-fonts display font-family (backend-resolve-font-size backend font-size))
+        (clx-open-fonts display font-family (frontend-resolve-font-size frontend font-size))
       (let* ((font (first fonts))
              (cw (or cell-width (max 1 (xlib:max-char-width font))))
              (ch (or cell-height (max 1 (+ (xlib:font-ascent font) (xlib:font-descent font)))))
@@ -505,7 +608,7 @@ the next timer, or NIL."
                       :parent root :x 0 :y 0 :width width :height height
                       :background (clx-pixel (palette-background *palette*))
                       :event-mask (xlib:make-event-mask
-                                   :exposure :structure-notify :key-press
+                                   :exposure :structure-notify :key-press :key-release
                                    :button-press :button-release :pointer-motion)))
              (gcontext (xlib:create-gcontext :drawable window :font font
                                              :foreground (clx-pixel (palette-foreground *palette*))
@@ -514,51 +617,54 @@ the next timer, or NIL."
                                    :unicode-p unicode-p :ascent (xlib:font-ascent font)
                                    :cell-width cw :cell-height ch
                                    :width width :height height)))
-        (push view (clx-backend-views backend))
+        (push view (clx-frontend-views frontend))
         (xlib:set-wm-properties window :name (or title "slt") :icon-name (or title "slt")
                                        :resource-name "slt" :resource-class "Slt"
                                        :width-inc cw :height-inc ch
                                        :base-width 0 :base-height 0)
         (setf (xlib:wm-protocols window) '(:wm_delete_window))
+        ;; Accept dropped files.
+        (xlib:change-property window :|XdndAware| '(5) :atom 32)
         (xlib:map-window window)
         (xlib:display-force-output display)
         view))))
 
-(defmethod backend-view-cell-width ((backend clx-backend) (view clx-view))
+(defmethod frontend-view-cell-width ((frontend clx-frontend) (view clx-view))
   (clx-view-cell-width view))
 
-(defmethod backend-view-cell-height ((backend clx-backend) (view clx-view))
+(defmethod frontend-view-cell-height ((frontend clx-frontend) (view clx-view))
   (clx-view-cell-height view))
 
-(defmethod backend-view-window-size ((backend clx-backend) (view clx-view))
+(defmethod frontend-view-window-size ((frontend clx-frontend) (view clx-view))
   (values (clx-view-width view) (clx-view-height view)))
 
-(defmethod backend-resize-view ((backend clx-backend) (view clx-view) rows columns)
+(defmethod frontend-resize-view ((frontend clx-frontend) (view clx-view) rows columns)
   (declare (ignore rows columns))
   view)
 
-(defmethod backend-render-grid ((backend clx-backend) (view clx-view) grid)
+(defmethod frontend-render-grid ((frontend clx-frontend) (view clx-view) grid)
   (let ((resized (not (eq grid (clx-view-grid view)))))
     (setf (clx-view-grid view) grid)
     (unless (clx-view-closed-p view)
-      (if resized
+      ;; Images under the text are redrawn with every change.
+      (if (or resized (clx-images-under-text-p view))
           (clx-draw-grid view)
           (with-view-palette (view)
             (dotimes (row (grid-rows grid))
               (when (= 1 (sbit (grid-dirty grid) row))
                 (clx-draw-row view grid row)))
             (clx-draw-cursor view grid)))
-      (xlib:display-force-output (clx-backend-display backend))))
+      (xlib:display-force-output (clx-frontend-display frontend))))
   view)
 
-(defmethod backend-render-images ((backend clx-backend) (view clx-view) store)
+(defmethod frontend-render-images ((frontend clx-frontend) (view clx-view) store)
   (setf (clx-view-image-store view) store)
   (unless (clx-view-closed-p view)
     (clx-draw-grid view)
-    (xlib:display-force-output (clx-backend-display backend)))
+    (xlib:display-force-output (clx-frontend-display frontend)))
   view)
 
-(defmethod backend-set-title ((backend clx-backend) (view clx-view) title)
+(defmethod frontend-set-title ((frontend clx-frontend) (view clx-view) title)
   (unless (clx-view-closed-p view)
     (let ((window (clx-view-window view)))
       (setf (xlib:wm-name window)
@@ -567,24 +673,24 @@ the next timer, or NIL."
                             (sb-ext:string-to-octets title :external-format :utf-8)
                             :utf8_string 8))))
 
-(defmethod backend-schedule ((backend clx-backend) (view clx-view) delay-ms thunk)
+(defmethod frontend-schedule ((frontend clx-frontend) (view clx-view) delay-ms thunk)
   (let ((timer (cons (+ (get-internal-real-time)
                         (round (* (max 0 delay-ms) internal-time-units-per-second) 1000))
                      thunk)))
-    (sb-thread:with-mutex ((clx-backend-lock backend))
-      (push timer (clx-backend-timers backend)))
+    (sb-thread:with-mutex ((clx-frontend-lock frontend))
+      (push timer (clx-frontend-timers frontend)))
     timer))
 
-(defmethod backend-cancel-scheduled ((backend clx-backend) (view clx-view) token)
-  (sb-thread:with-mutex ((clx-backend-lock backend))
-    (setf (clx-backend-timers backend) (remove token (clx-backend-timers backend)))))
+(defmethod frontend-cancel-scheduled ((frontend clx-frontend) (view clx-view) token)
+  (sb-thread:with-mutex ((clx-frontend-lock frontend))
+    (setf (clx-frontend-timers frontend) (remove token (clx-frontend-timers frontend)))))
 
-(defmethod backend-wakeup ((backend clx-backend) view thunk)
-  (sb-thread:with-mutex ((clx-backend-lock backend))
-    (setf (clx-backend-wakeups backend)
-          (cons thunk (clx-backend-wakeups backend))))
+(defmethod frontend-wakeup ((frontend clx-frontend) view thunk)
+  (sb-thread:with-mutex ((clx-frontend-lock frontend))
+    (setf (clx-frontend-wakeups frontend)
+          (cons thunk (clx-frontend-wakeups frontend))))
   ;; Interrupt the event loop's wait with an event of our own.
-  (let ((display (clx-backend-display backend))
+  (let ((display (clx-frontend-display frontend))
         (window (and view (clx-view-window view))))
     (when (and display window (not (clx-view-closed-p view)))
       (ignore-errors
@@ -594,22 +700,25 @@ the next timer, or NIL."
         (xlib:display-force-output display))))
   t)
 
-(defmethod backend-bind-resize ((backend clx-backend) (view clx-view) callback)
+(defmethod frontend-bind-resize ((frontend clx-frontend) (view clx-view) callback)
   (setf (clx-view-resize-callback view) callback))
 
-(defmethod backend-bind-keypress ((backend clx-backend) (view clx-view) callback)
+(defmethod frontend-bind-drop ((frontend clx-frontend) (view clx-view) callback)
+  (setf (clx-view-drop-callback view) callback))
+
+(defmethod frontend-bind-keypress ((frontend clx-frontend) (view clx-view) callback)
   (setf (clx-view-keypress-callback view) callback))
 
-(defmethod backend-bind-scroll ((backend clx-backend) (view clx-view) callback)
+(defmethod frontend-bind-scroll ((frontend clx-frontend) (view clx-view) callback)
   (setf (clx-view-scroll-callback view) callback))
 
-(defmethod backend-bind-mouse ((backend clx-backend) (view clx-view) callback)
+(defmethod frontend-bind-mouse ((frontend clx-frontend) (view clx-view) callback)
   (setf (clx-view-mouse-callback view) callback))
 
-(defmethod backend-bind-paste ((backend clx-backend) (view clx-view) callback)
+(defmethod frontend-bind-paste ((frontend clx-frontend) (view clx-view) callback)
   (setf (clx-view-paste-callback view) callback))
 
-(defmethod backend-clipboard-text ((backend clx-backend) (view clx-view))
+(defmethod frontend-clipboard-text ((frontend clx-frontend) (view clx-view))
   ;; Our own selection is returned now; another client's arrives through
   ;; the paste callback once it answers.
   (or (clx-view-clipboard view)
@@ -618,25 +727,25 @@ the next timer, or NIL."
                                 :_slt_selection)
         nil)))
 
-(defmethod backend-set-clipboard-text ((backend clx-backend) (view clx-view) text)
+(defmethod frontend-set-clipboard-text ((frontend clx-frontend) (view clx-view) text)
   (setf (clx-view-clipboard view) text)
-  (setf (xlib:selection-owner (clx-backend-display backend) :clipboard)
+  (setf (xlib:selection-owner (clx-frontend-display frontend) :clipboard)
         (clx-view-window view)))
 
-(defmethod backend-on-close ((backend clx-backend) (view clx-view) callback)
+(defmethod frontend-on-close ((frontend clx-frontend) (view clx-view) callback)
   (setf (clx-view-close-callback view) callback))
 
-(defmethod backend-focus ((backend clx-backend) (view clx-view))
+(defmethod frontend-focus ((frontend clx-frontend) (view clx-view))
   (let ((window (clx-view-window view)))
     (xlib:map-window window)
     (setf (xlib:window-priority window) :above)))
 
-(defmethod backend-request-exit ((backend clx-backend) (view clx-view))
+(defmethod frontend-request-exit ((frontend clx-frontend) (view clx-view))
   (unless (clx-view-closed-p view)
     (setf (clx-view-closed-p view) t)
-    (setf (clx-backend-views backend) (remove view (clx-backend-views backend)))
+    (setf (clx-frontend-views frontend) (remove view (clx-frontend-views frontend)))
     (xlib:destroy-window (clx-view-window view))
-    (xlib:display-force-output (clx-backend-display backend))
-    (setf (clx-backend-exit-p backend) t)))
+    (xlib:display-force-output (clx-frontend-display frontend))
+    (setf (clx-frontend-exit-p frontend) t)))
 
-(register-backend :clx (lambda () (make-instance 'clx-backend)))
+(register-frontend :clx (lambda () (make-instance 'clx-frontend)))

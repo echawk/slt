@@ -1,14 +1,15 @@
 (in-package #:slt)
 
-;;;; Renderer-agnostic support for GPU backends (Metal, OpenGL, Vulkan).
+;;;; Renderer-agnostic support for GPU frontends (Metal, OpenGL, Vulkan).
 ;;;;
 ;;;; Glyphs are rasterized once into an alpha-only atlas of cell-sized
 ;;;; slots.  A wide glyph takes two adjacent slots so that its spacer cell
 ;;;; simply draws the right half; every cell is then one fixed-size quad.
 ;;;;
 ;;;; The grid is packed into an instance array of four 32-bit words per
-;;;; cell -- foreground RGB, background RGB, atlas slot, decoration flags --
-;;;; which a backend uploads and draws with a single instanced call.  Only
+;;;; cell -- foreground RGB, background RGB, atlas slot, and decoration
+;;;; flags in the low 8 bits under the underline's RGB --
+;;;; which a frontend uploads and draws with a single instanced call.  Only
 ;;;; dirty rows are repacked.
 
 (deftype u32-vector () '(simple-array (unsigned-byte 32) (*)))
@@ -19,7 +20,13 @@
 (defconstant +gpu-flag-strike+ 4)
 (defconstant +gpu-flag-cursor-bar+ 8)
 (defconstant +gpu-flag-cursor-underline+ 16)
+(defconstant +gpu-flag-curly-underline+ 32)
+(defconstant +gpu-flag-dotted-underline+ 64)
+(defconstant +gpu-flag-dashed-underline+ 128)
 (defconstant +gpu-words-per-cell+ 4)
+;; Set on the atlas slot of cells with the default background, which the
+;; background layer leaves transparent for images under the text.
+(defconstant +gpu-slot-default-background+ (ash 1 31))
 
 (defstruct (glyph-atlas (:constructor %make-glyph-atlas))
   (slot-width 1 :type (integer 1 4096))
@@ -33,7 +40,7 @@
   (next-slot 1 :type fixnum)
   (table (make-hash-table) :type hash-table)
   (cluster-table (make-hash-table :test #'equal) :type hash-table)
-  ;; Rows of pixels that changed since the backend last uploaded them.
+  ;; Rows of pixels that changed since the frontend last uploaded them.
   (dirty-start nil :type (or null fixnum))
   (dirty-end 0 :type fixnum)
   ;; (FUNCTION STRING STYLE PIXELS STRIDE X Y WIDTH HEIGHT): draw STRING's
@@ -153,9 +160,13 @@ it on first use.  Return NIL when the atlas is full."
              (code (grid-glyph-code grid index))
              (attrs (aref (grid-attrs grid) index))
              (offset (* +gpu-words-per-cell+ index))
-             (flags (logior (if (logtest attrs +attr-underline+) +gpu-flag-underline+ 0)
-                            (if (logtest attrs +attr-double-underline+)
-                                +gpu-flag-double-underline+ 0)
+             (flags (logior (case (underline-style attrs)
+                              ((nil) 0)
+                              (:single +gpu-flag-underline+)
+                              (:double +gpu-flag-double-underline+)
+                              (:curly +gpu-flag-curly-underline+)
+                              (:dotted +gpu-flag-dotted-underline+)
+                              (:dashed +gpu-flag-dashed-underline+))
                             (if (logtest attrs +attr-strike+) +gpu-flag-strike+ 0)
                             (if (eql column cursor-column)
                                 (case (grid-cursor-shape grid)
@@ -182,8 +193,12 @@ it on first use.  Return NIL when the atlas is full."
                 (setf wide-slot nil))
             (setf (aref instances offset) fg
                   (aref instances (+ offset 1)) bg
-                  (aref instances (+ offset 2)) slot
-                  (aref instances (+ offset 3)) flags)))))))
+                  (aref instances (+ offset 2))
+                  (if (= bg (palette-background palette))
+                      (logior slot +gpu-slot-default-background+)
+                      slot)
+                  (aref instances (+ offset 3))
+                  (logior flags (ash (cell-underline-rgb grid index palette fg) 8)))))))))
 
 (defun pack-grid (grid atlas palette instances)
   "Repack the dirty rows of GRID into INSTANCES (reallocating it when the

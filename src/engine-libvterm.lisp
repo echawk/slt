@@ -87,6 +87,7 @@
             (case underline
               (0 0)
               (2 +attr-double-underline+)
+              (3 +attr-curly-underline+)
               (t +attr-underline+))
             (if (logbitp 4 word) +attr-blink+ 0)
             (if (logbitp 5 word) +attr-inverse+ 0)

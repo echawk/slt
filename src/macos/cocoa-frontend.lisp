@@ -1,22 +1,22 @@
 (in-package #:slt)
 
-;;;; Native macOS backend: an NSWindow whose content view is layer-hosting
+;;;; Native macOS frontend: an NSWindow whose content view is layer-hosting
 ;;;; with a CAMetalLayer, glyphs rasterized by CoreText at the backing
 ;;;; scale, and the grid drawn by the Metal renderer.  All sizes the
-;;;; frontend sees are device pixels.
+;;;; emulator sees are device pixels.
 
-(defclass cocoa-backend (terminal-backend)
-  ((views :initform '() :accessor cocoa-backend-views)
-   (timer-seq :initform 0 :accessor cocoa-backend-timer-seq)
-   (quit-p :initform nil :accessor cocoa-backend-quit-p)
-   ;; Work posted from other threads (see BACKEND-WAKEUP), and the run
+(defclass cocoa-frontend (terminal-frontend)
+  ((views :initform '() :accessor cocoa-frontend-views)
+   (timer-seq :initform 0 :accessor cocoa-frontend-timer-seq)
+   (quit-p :initform nil :accessor cocoa-frontend-quit-p)
+   ;; Work posted from other threads (see FRONTEND-WAKEUP), and the run
    ;; loop source that runs it.
-   (wake-lock :initform (bt:make-lock "slt cocoa wakeup") :reader cocoa-backend-wake-lock)
-   (wake-thunks :initform '() :accessor cocoa-backend-wake-thunks)
-   (wake-source :initform nil :accessor cocoa-backend-wake-source)))
+   (wake-lock :initform (bt:make-lock "slt cocoa wakeup") :reader cocoa-frontend-wake-lock)
+   (wake-thunks :initform '() :accessor cocoa-frontend-wake-thunks)
+   (wake-source :initform nil :accessor cocoa-frontend-wake-source)))
 
 (defstruct (cocoa-view (:constructor %make-cocoa-view))
-  backend
+  frontend
   window
   ns-view
   delegate
@@ -84,7 +84,7 @@
           (if (logtest flags +ns-command-key-mask+) +mod4-mask+ 0)))
 
 (defun ns-event-key-data (event)
-  "Translate an NSKeyDown event into the (CHAR KEYSYM STATE) the frontend
+  "Translate an NSKeyDown event into the (CHAR KEYSYM STATE) the emulator
 expects, or NIL for keys the terminal should not see."
   (let* ((flags (msg event "modifierFlags" :unsigned-long))
          (keycode (msg event "keyCode" :unsigned-short))
@@ -97,7 +97,7 @@ expects, or NIL for keys the terminal should not see."
                     (msg event "characters")))))
     (cond
       (keysym (list "" keysym state))
-      ;; Command combinations arrive too, for the frontend's shortcuts.
+      ;; Command combinations arrive too, for the emulator's shortcuts.
       ((and text (plusp (length text)))
        ;; Shift is already reflected in the character.
        (list text text (logand state (lognot +shift-mask+))))
@@ -107,15 +107,42 @@ expects, or NIL for keys the terminal should not see."
   (declare (ignore self command))
   t)
 
+(defun deliver-cocoa-key (self data kind)
+  "Pass key DATA, (CHAR KEYSYM STATE), to the view's callback as a KIND
+event (:PRESS, :REPEAT or :RELEASE)."
+  (let ((view (cocoa-view-for self)))
+    (when (and view data (cocoa-view-keypress-callback view))
+      (handler-case (apply (cocoa-view-keypress-callback view) (append data (list kind)))
+        (error (condition)
+          (format *error-output* "~&slt: key handler error: ~a~%" condition))))))
+
 (cffi:defcallback slt-view-key-down :void ((self :pointer) (command :pointer) (event :pointer))
   (declare (ignore command))
-  (let ((view (cocoa-view-for self)))
-    (when (and view (cocoa-view-keypress-callback view))
-      (let ((data (ns-event-key-data event)))
-        (when data
-          (handler-case (apply (cocoa-view-keypress-callback view) data)
-            (error (condition)
-              (format *error-output* "~&slt: key handler error: ~a~%" condition))))))))
+  (deliver-cocoa-key self (ns-event-key-data event)
+                     (if (msg event "isARepeat" :bool) :repeat :press)))
+
+(cffi:defcallback slt-view-key-up :void ((self :pointer) (command :pointer) (event :pointer))
+  (declare (ignore command))
+  (deliver-cocoa-key self (ns-event-key-data event) :release))
+
+(defparameter *mac-modifier-keycodes*
+  `((56 "Shift_L" ,+ns-shift-key-mask+) (60 "Shift_R" ,+ns-shift-key-mask+)
+    (59 "Control_L" ,+ns-control-key-mask+) (62 "Control_R" ,+ns-control-key-mask+)
+    (58 "Alt_L" ,+ns-option-key-mask+) (61 "Alt_R" ,+ns-option-key-mask+)
+    (55 "Super_L" ,+ns-command-key-mask+) (54 "Super_R" ,+ns-command-key-mask+)
+    (57 "Caps_Lock" ,(ash 1 16)))
+  "Virtual key codes of modifier keys: their keysym and modifier flag.")
+
+(cffi:defcallback slt-view-flags-changed :void
+    ((self :pointer) (command :pointer) (event :pointer))
+  (declare (ignore command))
+  ;; A modifier key went down or up: down when its flag is now set.
+  (let* ((flags (msg event "modifierFlags" :unsigned-long))
+         (entry (assoc (msg event "keyCode" :unsigned-short) *mac-modifier-keycodes*)))
+    (when entry
+      (destructuring-bind (keysym mask) (rest entry)
+        (deliver-cocoa-key self (list "" keysym (ns-modifiers->state flags))
+                           (if (logtest flags mask) :press :release))))))
 
 (cffi:defcallback slt-view-scroll-wheel :void ((self :pointer) (command :pointer) (event :pointer))
   (declare (ignore command))
@@ -221,16 +248,16 @@ middle button, which Cocoa numbers 2 among its other buttons."
         ;; than through a timer, and run work the reader thread posted so
         ;; the program's redraw appears while dragging.
         (funcall (cocoa-view-resize-callback view) (cocoa-view-live-resize-p view))
-        (run-cocoa-wake-thunks (cocoa-view-backend view)))
+        (run-cocoa-wake-thunks (cocoa-view-frontend view)))
       (redraw-cocoa-view view))))
 
 (defun call-cocoa-focus-callback (self focused)
   (let ((view (cocoa-view-for self)))
     (when (and view focused (cocoa-view-commands view))
       ;; The application menu is global, so point it at the key window.
-      (backend-bind-commands (cocoa-view-backend view) view
+      (frontend-bind-commands (cocoa-view-frontend view) view
                              (cocoa-view-commands view))
-      (backend-bind-menu (cocoa-view-backend view) view
+      (frontend-bind-menu (cocoa-view-frontend view) view
                          (cocoa-view-lisp-menu-items view)))
     (when (and view (cocoa-view-focus-callback view))
       (handler-case (funcall (cocoa-view-focus-callback view) focused)
@@ -306,6 +333,8 @@ middle button, which Cocoa numbers 2 among its other buttons."
   (define-objc-subclass "SLTTerminalView" "NSView"
                         '(("acceptsFirstResponder" slt-view-accepts-first-responder "B@:")
                           ("keyDown:" slt-view-key-down "v@:@")
+                          ("keyUp:" slt-view-key-up "v@:@")
+                          ("flagsChanged:" slt-view-flags-changed "v@:@")
                           ("scrollWheel:" slt-view-scroll-wheel "v@:@")
                           ("mouseDown:" slt-view-mouse-down "v@:@")
                           ("mouseDragged:" slt-view-mouse-dragged "v@:@")
@@ -399,21 +428,21 @@ middle button, which Cocoa numbers 2 among its other buttons."
     (error (condition)
       (format *error-output* "~&slt: ~a~%" condition))))
 
-(defvar *cocoa-wake-backend* nil
-  "The backend whose posted work the run loop source runs.")
+(defvar *cocoa-wake-frontend* nil
+  "The frontend whose posted work the run loop source runs.")
 
-(defun run-cocoa-wake-thunks (backend)
-  (let ((thunks (bt:with-lock-held ((cocoa-backend-wake-lock backend))
-                  (shiftf (cocoa-backend-wake-thunks backend) '()))))
+(defun run-cocoa-wake-thunks (frontend)
+  (let ((thunks (bt:with-lock-held ((cocoa-frontend-wake-lock frontend))
+                  (shiftf (cocoa-frontend-wake-thunks frontend) '()))))
     (dolist (thunk (nreverse thunks))
       (call-from-run-loop thunk))))
 
 (cffi:defcallback slt-run-loop-perform :void ((info :pointer))
   (declare (ignore info))
-  (when *cocoa-wake-backend*
-    (run-cocoa-wake-thunks *cocoa-wake-backend*)))
+  (when *cocoa-wake-frontend*
+    (run-cocoa-wake-thunks *cocoa-wake-frontend*)))
 
-(defun install-cocoa-wake-source (backend)
+(defun install-cocoa-wake-source (frontend)
   ;; CFRunLoopSourceContext: version, info, retain, release,
   ;; copyDescription, equal, hash, schedule, cancel, perform.
   (cffi:with-foreign-object (context :pointer 10)
@@ -423,14 +452,14 @@ middle button, which Cocoa numbers 2 among its other buttons."
     (let ((source (%cf-run-loop-source-create (cffi:null-pointer) 0 context)))
       (%cf-run-loop-add-source (%cf-run-loop-get-main) source
                                (foreign-global "kCFRunLoopCommonModes"))
-      (setf (cocoa-backend-wake-source backend) source
-            *cocoa-wake-backend* backend))))
+      (setf (cocoa-frontend-wake-source frontend) source
+            *cocoa-wake-frontend* frontend))))
 
-(defmethod backend-wakeup ((backend cocoa-backend) view thunk)
+(defmethod frontend-wakeup ((frontend cocoa-frontend) view thunk)
   (declare (ignore view))
-  (bt:with-lock-held ((cocoa-backend-wake-lock backend))
-    (push thunk (cocoa-backend-wake-thunks backend)))
-  (let ((source (cocoa-backend-wake-source backend)))
+  (bt:with-lock-held ((cocoa-frontend-wake-lock frontend))
+    (push thunk (cocoa-frontend-wake-thunks frontend)))
+  (let ((source (cocoa-frontend-wake-source frontend)))
     (if source
         (progn (%cf-run-loop-source-signal source)
                (%cf-run-loop-wake-up (%cf-run-loop-get-main)))
@@ -450,7 +479,7 @@ middle button, which Cocoa numbers 2 among its other buttons."
       (cf-release (car entry))
       (call-from-run-loop (cdr entry)))))
 
-(defmethod backend-call-with-event-loop ((backend cocoa-backend) thunk)
+(defmethod frontend-call-with-event-loop ((frontend cocoa-frontend) thunk)
   (float-features:with-float-traps-masked t
     (ensure-objc)
     (register-cocoa-classes)
@@ -458,15 +487,15 @@ middle button, which Cocoa numbers 2 among its other buttons."
       (msg app "setActivationPolicy:" :long 0 :bool)
       (install-application-menu app)
       (msg app "finishLaunching" :void)
-      (install-cocoa-wake-source backend)
+      (install-cocoa-wake-source frontend)
       (unwind-protect
            (progn
              (funcall thunk)
              (msg app "activateIgnoringOtherApps:" :bool t :void)
-             (loop until (cocoa-backend-quit-p backend)
+             (loop until (cocoa-frontend-quit-p frontend)
                    do (cocoa-pump-events app 0.25)
-                      (run-cocoa-wake-thunks backend)))
-        (dolist (view (copy-list (cocoa-backend-views backend)))
+                      (run-cocoa-wake-thunks frontend)))
+        (dolist (view (copy-list (cocoa-frontend-views frontend)))
           (destroy-cocoa-view view))))))
 
 ;;; Views
@@ -532,21 +561,21 @@ middle button, which Cocoa numbers 2 among its other buttons."
 (defun retire-cocoa-view (view)
   "Remove VIEW from the application and release it after AppKit finishes
 delivering its close notification."
-  (let ((backend (cocoa-view-backend view)))
-    (when (member view (cocoa-backend-views backend))
-      (setf (cocoa-backend-views backend)
-            (delete view (cocoa-backend-views backend)))
-      (backend-wakeup backend view (lambda () (destroy-cocoa-view view)))
-      (when (null (cocoa-backend-views backend))
-        (setf (cocoa-backend-quit-p backend) t)))))
+  (let ((frontend (cocoa-view-frontend view)))
+    (when (member view (cocoa-frontend-views frontend))
+      (setf (cocoa-frontend-views frontend)
+            (delete view (cocoa-frontend-views frontend)))
+      (frontend-wakeup frontend view (lambda () (destroy-cocoa-view view)))
+      (when (null (cocoa-frontend-views frontend))
+        (setf (cocoa-frontend-quit-p frontend) t)))))
 
-(defmethod backend-available-font-families ((backend cocoa-backend))
+(defmethod frontend-available-font-families ((frontend cocoa-frontend))
   '())
 
-(defmethod backend-resolve-font-size ((backend cocoa-backend) font-size)
+(defmethod frontend-resolve-font-size ((frontend cocoa-frontend) font-size)
   (abs (or font-size 15)))
 
-(defmethod backend-create-view ((backend cocoa-backend)
+(defmethod frontend-create-view ((frontend cocoa-frontend)
                                 &key rows columns font-family font-size
                                   cell-width cell-height title)
   (let* ((screen-scale (msg (msg "NSScreen" "mainScreen") "backingScaleFactor" :double))
@@ -567,7 +596,7 @@ delivering its close notification."
          (ns-view (msg (msg "SLTTerminalView" "alloc") "init"))
          (delegate (msg (msg "SLTWindowDelegate" "alloc") "init"))
          (renderer (make-metal-renderer))
-         (view (%make-cocoa-view :backend backend
+         (view (%make-cocoa-view :frontend frontend
                                  :window window
                                  :ns-view ns-view
                                  :delegate delegate
@@ -583,7 +612,7 @@ delivering its close notification."
     (setf (metal-renderer-padding renderer) padding)
     (setf (gethash (cffi:pointer-address ns-view) *cocoa-views*) view
           (gethash (cffi:pointer-address delegate) *cocoa-views*) view
-          (cocoa-backend-views backend) (cons view (cocoa-backend-views backend)))
+          (cocoa-frontend-views frontend) (cons view (cocoa-frontend-views frontend)))
     (msg (metal-renderer-layer renderer) "setContentsScale:" :double (cocoa-view-scale view) :void)
     (msg ns-view "setLayer:" :pointer (metal-renderer-layer renderer) :void)
     (msg ns-view "setWantsLayer:" :bool t :void)
@@ -610,37 +639,37 @@ delivering its close notification."
     (update-cocoa-drawable-size view)
     view))
 
-(defmethod backend-view-cell-width ((backend cocoa-backend) (view cocoa-view))
+(defmethod frontend-view-cell-width ((frontend cocoa-frontend) (view cocoa-view))
   (cocoa-view-cell-width view))
 
-(defmethod backend-view-cell-height ((backend cocoa-backend) (view cocoa-view))
+(defmethod frontend-view-cell-height ((frontend cocoa-frontend) (view cocoa-view))
   (cocoa-view-cell-height view))
 
-(defmethod backend-view-window-size ((backend cocoa-backend) (view cocoa-view))
+(defmethod frontend-view-window-size ((frontend cocoa-frontend) (view cocoa-view))
   (multiple-value-bind (width height) (cocoa-view-pixel-size view)
     (let ((padding (* 2 (cocoa-view-padding view))))
       (values (max 1 (- width padding)) (max 1 (- height padding))))))
 
-(defmethod backend-resize-view ((backend cocoa-backend) (view cocoa-view) rows columns)
+(defmethod frontend-resize-view ((frontend cocoa-frontend) (view cocoa-view) rows columns)
   (declare (ignore rows columns))
   (update-cocoa-drawable-size view)
   view)
 
-(defmethod backend-render-grid ((backend cocoa-backend) (view cocoa-view) grid)
+(defmethod frontend-render-grid ((frontend cocoa-frontend) (view cocoa-view) grid)
   (setf (cocoa-view-grid view) grid)
   (redraw-cocoa-view view))
 
-(defmethod backend-render-images ((backend cocoa-backend) (view cocoa-view) store)
-  (declare (ignore backend))
+(defmethod frontend-render-images ((frontend cocoa-frontend) (view cocoa-view) store)
+  (declare (ignore frontend))
   (setf (cocoa-view-image-store view) store)
   (redraw-cocoa-view view))
 
-(defmethod backend-set-title ((backend cocoa-backend) (view cocoa-view) title)
+(defmethod frontend-set-title ((frontend cocoa-frontend) (view cocoa-view) title)
   (with-autorelease-pool ()
     (msg (cocoa-view-window view) "setTitle:" :pointer (ns-string title) :void)))
 
-(defmethod backend-schedule ((backend cocoa-backend) (view cocoa-view) delay-ms thunk)
-  (let ((token (incf (cocoa-backend-timer-seq backend))))
+(defmethod frontend-schedule ((frontend cocoa-frontend) (view cocoa-view) delay-ms thunk)
+  (let ((token (incf (cocoa-frontend-timer-seq frontend))))
     ;; CFRunLoopTimerContext: version, info, retain, release, copyDescription.
     (cffi:with-foreign-object (context :pointer 5)
       (dotimes (i 5)
@@ -655,23 +684,23 @@ delivering its close notification."
                                 (foreign-global "kCFRunLoopCommonModes"))))
     token))
 
-(defmethod backend-cancel-scheduled ((backend cocoa-backend) (view cocoa-view) token)
+(defmethod frontend-cancel-scheduled ((frontend cocoa-frontend) (view cocoa-view) token)
   (let ((entry (gethash token *cocoa-timers*)))
     (when entry
       (remhash token *cocoa-timers*)
       (%cf-run-loop-timer-invalidate (car entry))
       (cf-release (car entry)))))
 
-(defmethod backend-bind-resize ((backend cocoa-backend) (view cocoa-view) callback)
+(defmethod frontend-bind-resize ((frontend cocoa-frontend) (view cocoa-view) callback)
   (setf (cocoa-view-resize-callback view) callback))
 
-(defmethod backend-bind-keypress ((backend cocoa-backend) (view cocoa-view) callback)
+(defmethod frontend-bind-keypress ((frontend cocoa-frontend) (view cocoa-view) callback)
   (setf (cocoa-view-keypress-callback view) callback))
 
-(defmethod backend-bind-scroll ((backend cocoa-backend) (view cocoa-view) callback)
+(defmethod frontend-bind-scroll ((frontend cocoa-frontend) (view cocoa-view) callback)
   (setf (cocoa-view-scroll-callback view) callback))
 
-(defmethod backend-bind-mouse ((backend cocoa-backend) (view cocoa-view) callback)
+(defmethod frontend-bind-mouse ((frontend cocoa-frontend) (view cocoa-view) callback)
   (setf (cocoa-view-mouse-callback view) callback))
 
 ;;; Menus
@@ -713,7 +742,7 @@ returning one (see *MENU-ITEMS*)."
         (msg bar "addItem:" :pointer bar-item :void))
     bar-item))
 
-(defmethod backend-bind-commands ((backend cocoa-backend) (view cocoa-view) commands)
+(defmethod frontend-bind-commands ((frontend cocoa-frontend) (view cocoa-view) commands)
   "Replace the menu bar with the standard application, Shell, Edit, View
 and Window menus, whose slt items call COMMANDS, and set the right
 button's menu."
@@ -774,7 +803,7 @@ button's menu."
                                    nil
                                    (command :clear-scrollback "Clear Scrollback")))))))
 
-(defmethod backend-bind-menu ((backend cocoa-backend) (view cocoa-view) items)
+(defmethod frontend-bind-menu ((frontend cocoa-frontend) (view cocoa-view) items)
   "Add a Lisp menu holding ITEMS to the menu bar, before the Window menu."
   (setf (cocoa-view-lisp-menu-items view) items)
   (when items
@@ -785,16 +814,16 @@ button's menu."
                                              collect (make-slt-menu-item view label function)))
                          (max 0 (1- (msg bar "numberOfItems" :long)))))))
 
-(defmethod backend-set-mouse-tracking ((backend cocoa-backend) (view cocoa-view) tracking)
+(defmethod frontend-set-mouse-tracking ((frontend cocoa-frontend) (view cocoa-view) tracking)
   (setf (cocoa-view-mouse-tracking view) tracking))
 
-(defmethod backend-bind-focus ((backend cocoa-backend) (view cocoa-view) callback)
+(defmethod frontend-bind-focus ((frontend cocoa-frontend) (view cocoa-view) callback)
   (setf (cocoa-view-focus-callback view) callback))
 
-(defmethod backend-bind-drop ((backend cocoa-backend) (view cocoa-view) callback)
+(defmethod frontend-bind-drop ((frontend cocoa-frontend) (view cocoa-view) callback)
   (setf (cocoa-view-drop-callback view) callback))
 
-(defmethod backend-bell ((backend cocoa-backend) (view cocoa-view) audible)
+(defmethod frontend-bell ((frontend cocoa-frontend) (view cocoa-view) audible)
   (let ((app (msg "NSApplication" "sharedApplication")))
     (cond
       ;; NSInformationalRequest: bounce the Dock icon once.
@@ -803,7 +832,7 @@ button's menu."
       (audible
        (cffi:foreign-funcall "NSBeep" :void)))))
 
-(defmethod backend-set-font-size ((backend cocoa-backend) (view cocoa-view) size)
+(defmethod frontend-set-font-size ((frontend cocoa-frontend) (view cocoa-view) size)
   (let* ((old (cocoa-view-font view))
          (font (make-coretext-font (cocoa-view-font-family view)
                                    (* size (cocoa-view-scale view))))
@@ -820,12 +849,12 @@ button's menu."
     (free-coretext-font old)
     t))
 
-(defmethod backend-clipboard-text ((backend cocoa-backend) (view cocoa-view))
+(defmethod frontend-clipboard-text ((frontend cocoa-frontend) (view cocoa-view))
   (with-autorelease-pool ()
     (ns-string->string (msg (msg "NSPasteboard" "generalPasteboard") "stringForType:"
                             :pointer (foreign-global "NSPasteboardTypeString")))))
 
-(defmethod backend-set-clipboard-text ((backend cocoa-backend) (view cocoa-view) text)
+(defmethod frontend-set-clipboard-text ((frontend cocoa-frontend) (view cocoa-view) text)
   (with-autorelease-pool ()
     (let ((pasteboard (msg "NSPasteboard" "generalPasteboard")))
       (msg pasteboard "clearContents" :long)
@@ -834,20 +863,20 @@ button's menu."
            :pointer (foreign-global "NSPasteboardTypeString")
            :bool))))
 
-(defmethod backend-on-close ((backend cocoa-backend) (view cocoa-view) callback)
+(defmethod frontend-on-close ((frontend cocoa-frontend) (view cocoa-view) callback)
   (setf (cocoa-view-close-callback view) callback))
 
-(defmethod backend-focus ((backend cocoa-backend) (view cocoa-view))
+(defmethod frontend-focus ((frontend cocoa-frontend) (view cocoa-view))
   (msg (cocoa-view-window view) "makeKeyAndOrderFront:" :pointer (cffi:null-pointer) :void))
 
-(defmethod backend-request-exit ((backend cocoa-backend) (view cocoa-view))
+(defmethod frontend-request-exit ((frontend cocoa-frontend) (view cocoa-view))
   (unless (cocoa-view-closed-p view)
     (setf (cocoa-view-closed-p view) t)
     (msg (cocoa-view-window view) "close" :void))
   ;; Closing an already-closing window reaches here from its close callback.
   ;; The delegate retires it once that callback returns.
-  (when (null (cocoa-backend-views backend))
-    (setf (cocoa-backend-quit-p backend) t)
+  (when (null (cocoa-frontend-views frontend))
+    (setf (cocoa-frontend-quit-p frontend) t)
     (post-wakeup-event)))
 
-(register-backend :cocoa (lambda () (make-instance 'cocoa-backend)))
+(register-frontend :cocoa (lambda () (make-instance 'cocoa-frontend)))

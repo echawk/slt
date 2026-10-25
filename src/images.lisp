@@ -7,7 +7,7 @@
 ;;;;
 ;;;; Placements are anchored to screen cells.  Engines that report their
 ;;;; scrolls (ENGINE-REPORTS-SCROLLS-P) move them exactly through
-;;;; NOTE-ENGINE-SCROLL; for the others the frontend infers whole-screen
+;;;; NOTE-ENGINE-SCROLL; for the others the emulator infers whole-screen
 ;;;; scrolls from the grid.
 
 (defvar *sixel-images* t)
@@ -50,7 +50,10 @@
   (max-loops 0 :type integer)
   (loops 0 :type integer)
   ;; Internal real time, in milliseconds, at which the current frame ends.
-  (frame-deadline nil))
+  (frame-deadline nil)
+  ;; The transmission of an indexed-color (f=8 or f=16) image, whose colors
+  ;; follow the terminal's palette; NIL otherwise, or once it has frames.
+  (indexed nil))
 
 (defstruct terminal-image-placement
   (image-id 0 :type (integer 0))
@@ -100,7 +103,9 @@
   (reported-scroll 0 :type integer)
   (active-screen :primary :type (member :primary :alternate))
   (kitty-decoder (kitty-graphics:make-graphics-decoder))
-  ;; Geometry, kept current by the frontend.
+  ;; The palette indexed-color images are drawn with; NIL for *PALETTE*.
+  (palette nil)
+  ;; Geometry, kept current by the emulator.
   (cell-width 8 :type (integer 1 *))
   (cell-height 16 :type (integer 1 *))
   (rows 24 :type (integer 1 *))
@@ -675,25 +680,57 @@ silences successes, q=2 everything."
         (kitty-graphics:encode-graphics-response
          (nreverse controls) status (and message (kitty-printable message)))))))
 
-(defun kitty-palette-rgb (index)
-  "Kitty indexed-color lookup through *PALETTE*."
-  (let* ((palette *palette*)
-         (rgb (case index
-                ((248 253) (palette-background palette))
-                ((249 251 255) (palette-foreground palette))
-                (250 (palette-selection palette))
-                (252 (palette-cursor palette))
-                (254 #x0087BD)
-                (t (aref (palette-colors palette) index)))))
-    (values (ldb (byte 8 16) rgb) (ldb (byte 8 8) rgb) (ldb (byte 8 0) rgb))))
+(defun kitty-palette-lookup (palette)
+  "Kitty's indexed-color lookup through PALETTE: its 256 colors, but for
+248-255, which are the background, foreground and other theme colors."
+  (lambda (index)
+    (let ((rgb (case index
+                 ((248 253) (palette-background palette))
+                 ((249 251 255) (palette-foreground palette))
+                 (250 (palette-selection palette))
+                 (252 (palette-cursor palette))
+                 (254 #x0087BD)
+                 (t (aref (palette-colors palette) index)))))
+      (values (ldb (byte 8 16) rgb) (ldb (byte 8 8) rgb) (ldb (byte 8 0) rgb)))))
 
-(defun kitty-command-rgba (command &key width height)
-  "Decode COMMAND's pixels.  WIDTH and HEIGHT stand in for missing s and v."
+(defun image-store-palette (store)
+  (or (terminal-image-store-palette store) *palette*))
+
+(defun kitty-indexed-p (command)
+  (member (kitty-int command #\f) '(8 16)))
+
+(defvar *kitty-decoded* nil
+  "(COMMAND . RESULT) for a command whose pixels were decoded beforehand by
+PREPARE-KITTY-COMMAND: RESULT is (RGBA WIDTH HEIGHT), or the condition
+decoding signalled.")
+
+(defun kitty-command-rgba (command &key width height (palette *palette*))
+  "Decode COMMAND's pixels.  WIDTH and HEIGHT stand in for missing s and v;
+PALETTE colors indexed images."
+  (let ((decoded *kitty-decoded*))
+    (when (and decoded (eq (car decoded) command))
+      (let ((result (cdr decoded)))
+        (if (typep result 'condition)
+            (error result)
+            (return-from kitty-command-rgba (values-list result))))))
   (when (and width (zerop (kitty-int command #\s)))
     (push (cons #\s (princ-to-string width)) (kitty-graphics:graphics-command-controls command)))
   (when (and height (zerop (kitty-int command #\v)))
     (push (cons #\v (princ-to-string height)) (kitty-graphics:graphics-command-controls command)))
-  (kitty-graphics:graphics-command-rgba command :palette #'kitty-palette-rgb))
+  (kitty-graphics:graphics-command-rgba command :palette (kitty-palette-lookup palette)))
+
+(defun set-image-store-palette (store palette)
+  "Draw STORE's indexed-color images with PALETTE (NIL for *PALETTE*)."
+  (unless (eq palette (terminal-image-store-palette store))
+    (setf (terminal-image-store-palette store) palette)
+    (loop for image being the hash-values of (terminal-image-store-images store)
+          for command = (terminal-image-indexed image)
+          when command
+            do (let ((rgba (kitty-command-rgba command :palette (image-store-palette store))))
+                 (setf (terminal-image-rgba image) rgba
+                       (terminal-image-frame-rgba (aref (terminal-image-frames image) 0)) rgba
+                       (terminal-image-store-dirty-p store) t))))
+  store)
 
 (defun kitty-move-cursor (engine columns rows)
   "Move the cursor past an image: down ROWS - 1 lines, scrolling at the
@@ -799,13 +836,16 @@ bottom margin, then right COLUMNS cells (each at most a screenful)."
          (number (kitty-int command #\I))
          (anonymous-p (and (zerop requested) (zerop number)))
          (display-p (char= #\T (kitty-graphics:graphics-command-action command))))
-    (multiple-value-bind (rgba width height) (kitty-command-rgba command)
+    (multiple-value-bind (rgba width height)
+        (kitty-command-rgba command :palette (image-store-palette store))
       (when (and anonymous-p (not display-p))
         ;; Nothing could ever refer to it.
         (return-from kitty-transmit (kitty-response command "OK")))
       (let* ((id (image-store-id store requested number))
              (image (store-image store id number width height rgba
                                  :anonymous-p anonymous-p)))
+        (when (kitty-indexed-p command)
+          (setf (terminal-image-indexed image) command))
         (when display-p
           (kitty-put store command engine id image))
         (kitty-response command "OK" nil id)))))
@@ -970,6 +1010,8 @@ bottom margin, then right COLUMNS cells (each at most a screenful)."
 (defun kitty-frame (store command)
   "a=f: add a frame to an image or edit one."
   (multiple-value-bind (image id) (kitty-find-image store command)
+    ;; Frames are kept as RGBA: the image no longer follows the palette.
+    (setf (terminal-image-indexed image) nil)
     (let* ((width (terminal-image-width image))
            (height (terminal-image-height image))
            (frames (terminal-image-frames image))
@@ -986,7 +1028,8 @@ bottom margin, then right COLUMNS cells (each at most a screenful)."
         (kitty-fail "ENOENT" "frame ~d not found" base))
       (multiple-value-bind (data data-width data-height)
           (if has-data
-              (kitty-command-rgba command :width (- width x) :height (- height y))
+              (kitty-command-rgba command :width (- width x) :height (- height y)
+                                          :palette (image-store-palette store))
               (values nil 0 0))
         (unless (and (<= 0 x) (<= 0 y)
                      (<= (+ x data-width) width) (<= (+ y data-height) height))
@@ -1069,6 +1112,7 @@ bottom margin, then right COLUMNS cells (each at most a screenful)."
 (defun kitty-compose (store command)
   "a=c: compose a rectangle of one frame onto another."
   (multiple-value-bind (image id) (kitty-find-image store command)
+    (setf (terminal-image-indexed image) nil)
     (let* ((width (terminal-image-width image))
            (height (terminal-image-height image))
            (source-number (max 1 (kitty-int command #\r 1)))
@@ -1153,6 +1197,28 @@ bottom margin, then right COLUMNS cells (each at most a screenful)."
 (defun handle-kitty-command (store payload engine)
   "Execute the Kitty graphics command PAYLOAD (an APC body).  Return the reply
 for the child, or NIL."
+  (multiple-value-bind (command reply decoded) (prepare-kitty-command store payload)
+    (if command
+        (run-kitty-command store command engine decoded)
+        reply)))
+
+(defun predecode-kitty-pixels (store command)
+  "Decode the pixels COMMAND transmits, as RUN-KITTY-COMMAND will want them:
+a list of the RGBA, width and height, the condition decoding signalled, or
+NIL for a command that transmits nothing.  Frames (a=f) are left to
+RUN-KITTY-COMMAND, as their size depends on the image they belong to."
+  (case (kitty-graphics:graphics-command-action command)
+    ((#\t #\T #\q)
+     (handler-case (multiple-value-list
+                    (kitty-command-rgba command :palette (image-store-palette store)))
+       (error (condition) condition)))))
+
+(defun prepare-kitty-command (store payload)
+  "The slow half of HANDLE-KITTY-COMMAND, which may run without the engine
+lock: it uses only STORE's chunk decoder and palette, which the renderer
+never touches.  Join PAYLOAD to the chunks before it and decode the image.  Return the complete command (or NIL while chunks
+are still due), the reply when PAYLOAD failed, and the decoded pixels to
+pass to RUN-KITTY-COMMAND."
   (let* ((decoder (terminal-image-store-kitty-decoder store))
          (header (ignore-errors (kitty-graphics:parse-graphics-command payload
                                                                        :decode-data nil)))
@@ -1166,40 +1232,48 @@ for the child, or NIL."
       (handler-case
           (setf command (kitty-graphics:graphics-decoder-feed decoder payload))
         (kitty-graphics:graphics-protocol-error (condition)
-          (return-from handle-kitty-command
-            (fail (kitty-graphics:graphics-protocol-error-code condition)
-                  (kitty-graphics:graphics-protocol-error-message condition))))
+          (return-from prepare-kitty-command
+            (values nil (fail (kitty-graphics:graphics-protocol-error-code condition)
+                              (kitty-graphics:graphics-protocol-error-message condition)))))
         (error (condition)
-          (return-from handle-kitty-command (fail "EINVAL" (princ-to-string condition)))))
+          (return-from prepare-kitty-command
+            (values nil (fail "EINVAL" (princ-to-string condition))))))
       (when command
-        (handler-case
-            (progn
-              (when (and (plusp (kitty-int command #\i)) (plusp (kitty-int command #\I)))
-                (kitty-fail "EINVAL" "i and I are mutually exclusive"))
-              (case (kitty-graphics:graphics-command-action command)
-                ((#\t #\T) (kitty-transmit store command engine))
-                (#\p (multiple-value-bind (image id) (kitty-find-image store command)
-                       (kitty-put store command engine id image)
-                       (kitty-response command "OK" nil id)))
-                (#\q (kitty-command-rgba command)
-                 (kitty-response command "OK"))
-                (#\d (multiple-value-bind (row column) (engine-cursor-position engine)
-                       (delete-kitty-images store command row column
-                                            :screen (if (engine-mode engine :alternate-screen)
-                                                        :alternate :primary)))
-                 nil)
-                (#\f (kitty-frame store command))
-                (#\a (kitty-animate store command))
-                (#\c (kitty-compose store command))
-                (t (kitty-fail "EINVAL" "unknown action"))))
-          (kitty-command-error (condition)
-            (kitty-response command (kitty-command-error-code condition)
-                            (kitty-command-error-message condition)))
-          (kitty-graphics:graphics-protocol-error (condition)
-            (kitty-response command (kitty-graphics:graphics-protocol-error-code condition)
-                            (kitty-graphics:graphics-protocol-error-message condition)))
-          (error (condition)
-            (kitty-response command "EINVAL" (princ-to-string condition))))))))
+        (let ((decoded (predecode-kitty-pixels store command)))
+          (values command nil (and decoded (cons command decoded))))))))
+
+(defun run-kitty-command (store command engine &optional decoded)
+  "Execute COMMAND, from PREPARE-KITTY-COMMAND with its DECODED pixels.
+Return the reply for the child, or NIL."
+  (let ((*kitty-decoded* decoded))
+    (handler-case
+        (progn
+          (when (and (plusp (kitty-int command #\i)) (plusp (kitty-int command #\I)))
+            (kitty-fail "EINVAL" "i and I are mutually exclusive"))
+          (case (kitty-graphics:graphics-command-action command)
+            ((#\t #\T) (kitty-transmit store command engine))
+            (#\p (multiple-value-bind (image id) (kitty-find-image store command)
+                   (kitty-put store command engine id image)
+                   (kitty-response command "OK" nil id)))
+            (#\q (kitty-command-rgba command)
+             (kitty-response command "OK"))
+            (#\d (multiple-value-bind (row column) (engine-cursor-position engine)
+                   (delete-kitty-images store command row column
+                                        :screen (if (engine-mode engine :alternate-screen)
+                                                    :alternate :primary)))
+             nil)
+            (#\f (kitty-frame store command))
+            (#\a (kitty-animate store command))
+            (#\c (kitty-compose store command))
+            (t (kitty-fail "EINVAL" "unknown action"))))
+      (kitty-command-error (condition)
+        (kitty-response command (kitty-command-error-code condition)
+                        (kitty-command-error-message condition)))
+      (kitty-graphics:graphics-protocol-error (condition)
+        (kitty-response command (kitty-graphics:graphics-protocol-error-code condition)
+                        (kitty-graphics:graphics-protocol-error-message condition)))
+      (error (condition)
+        (kitty-response command "EINVAL" (princ-to-string condition))))))
 
 ;;; Unicode placeholders
 
@@ -1253,7 +1327,8 @@ for the child, or NIL."
 (defun scan-image-placeholders (store grid)
   "Return (ROW COLUMN IMAGE-ID PLACEMENT-ID IMAGE-ROW IMAGE-COLUMN) for every
 Unicode placeholder cell of GRID, filling in omitted diacritics from the
-cell to the left as the protocol prescribes."
+cell to the left as the protocol prescribes.  The foreground color holds
+the image id's low 24 bits and the underline color the placement id."
   (declare (ignore store))
   (let ((cells '())
         (codes (grid-codes grid))
@@ -1266,11 +1341,13 @@ cell to the left as the protocol prescribes."
             (if (/= code +image-placeholder+)
                 (setf previous nil)
                 (let* ((fg (aref (grid-fg grid) index))
+                       (ul (aref (grid-ul grid) index))
                        (marks (loop for char across (or (gethash index (grid-combining grid)) "")
                                     for value = (gethash (char-code char)
                                                          *placeholder-diacritic-values*)
                                     when value collect value))
-                       (same (and previous (= fg (getf previous :fg))))
+                       (same (and previous (= fg (getf previous :fg))
+                                  (= ul (getf previous :ul))))
                        (image-row (first marks))
                        (image-column (second marks))
                        (msb (third marks)))
@@ -1289,9 +1366,11 @@ cell to the left as the protocol prescribes."
                                    (getf previous :msb)
                                    0))))
                   (let ((id (logior (placeholder-image-id fg) (ash msb 24))))
-                    (setf previous (list :fg fg :row image-row :column image-column :msb msb))
+                    (setf previous (list :fg fg :ul ul :row image-row :column image-column
+                                         :msb msb))
                     (when (plusp id)
-                      (push (list row column id 0 image-row image-column) cells)))))))))
+                      (push (list row column id (placeholder-image-id ul) image-row image-column)
+                            cells)))))))))
     (nreverse cells)))
 
 (defun placeholder-display-placements (store grid cell-width cell-height)
@@ -1345,6 +1424,25 @@ origins of their virtual placements."
                                  :screen (terminal-image-store-active-screen store)
                                  :draw-rect (list (- left cx) (- top cy)
                                                   (- right left) (- bottom top))))))))))))))
+
+;;; Image layers
+
+(defconstant +kitty-z-below-backgrounds+ (- (expt 2 30))
+  "Kitty draws images with a z-index below this under cell backgrounds that
+are not the default; other negative z-indexes are drawn over backgrounds
+but under text.")
+
+(defun image-layers (records)
+  "Split render RECORDS (see TERMINAL-IMAGE-RENDER-LIST) by where they are
+drawn: under cell backgrounds, between backgrounds and text, and over text.
+Each list keeps the records' order."
+  (let ((below-backgrounds '()) (below-text '()) (above '()))
+    (dolist (record records)
+      (let ((z (terminal-image-placement-z-index (first record))))
+        (cond ((< z +kitty-z-below-backgrounds+) (push record below-backgrounds))
+              ((minusp z) (push record below-text))
+              (t (push record above)))))
+    (values (nreverse below-backgrounds) (nreverse below-text) (nreverse above))))
 
 ;;; Display snapshots
 
@@ -1401,21 +1499,78 @@ being shown (NIL hides every image)."
           while semicolon
           do (setf start (1+ semicolon)))))
 
+(defparameter +max-sixel-octets+ (* 256 1024 1024)
+  "Largest RGBA a stretched SIXEL image may take.")
+
+(defun sixel-pixel-aspect (payload)
+  "The pixel aspect ratio, height over width, that PAYLOAD's raster
+attributes (\"Pan;Pad;Ph;Pv right after the q) declare, or 1.  Like xterm
+and foot, the aspect ratio P1 selects is ignored: programs send P1 = 0,
+which means 2:1, for square pixels."
+  (let ((start (position (char-code #\q) payload)))
+    (if (and start (< (1+ start) (length payload))
+             (= (aref payload (1+ start)) (char-code #\")))
+        (let* ((text (map 'string #'code-char
+                          (subseq payload (+ 2 start) (min (length payload) (+ 2 start 64)))))
+               (semicolon (position #\; text))
+               (pan (parse-integer text :end semicolon :junk-allowed t))
+               (pad (and semicolon (parse-integer text :start (1+ semicolon) :junk-allowed t))))
+          (if (and pan pad (plusp pan) (plusp pad))
+              (max 1/8 (min 8 (/ pan pad)))
+              1))
+        1)))
+
+(defun scale-rgba (rgba width height new-width new-height)
+  "RGBA (WIDTH x HEIGHT) resized to NEW-WIDTH x NEW-HEIGHT, nearest pixel."
+  (let ((result (make-array (* 4 new-width new-height) :element-type '(unsigned-byte 8))))
+    (dotimes (y new-height result)
+      (let ((source-row (* width (floor (* y height) new-height))))
+        (dotimes (x new-width)
+          (replace result rgba :start1 (* 4 (+ x (* y new-width)))
+                               :start2 (* 4 (+ source-row (floor (* x width) new-width)))
+                               :end2 (+ 4 (* 4 (+ source-row (floor (* x width) new-width))))))))))
+
+(defun decode-sixel-payload (payload)
+  "Decode the SIXEL image PAYLOAD (a whole DCS string) into a list of its
+RGBA, width and height, or return the condition decoding signalled.  Pixels
+that are not square, by the raster attributes, are stretched to squares.
+This touches nothing the renderer reads, so it may run without the engine
+lock."
+  (handler-case
+      (let* ((image (cl-libsixel:decode-sixel payload))
+             (transparent-p (eql 1 (second (sixel-header-parameters payload))))
+             (rgba (cl-libsixel:sixel-image-rgba image
+                                                 :background (if transparent-p :transparent 0)))
+             (width (cl-libsixel:sixel-image-width image))
+             (height (cl-libsixel:sixel-image-height image))
+             (aspect (sixel-pixel-aspect payload))
+             (new-width (max 1 (round (* width (max 1 (/ aspect))))))
+             (new-height (max 1 (round (* height (max 1 aspect))))))
+        (when (> (* 4 new-width new-height) +max-sixel-octets+)
+          (error "SIXEL image too large at ~dx~d" new-width new-height))
+        (if (and (= new-width width) (= new-height height))
+            (list rgba width height)
+            (list (scale-rgba rgba width height new-width new-height) new-width new-height)))
+    (error (condition) condition)))
+
 (defun handle-sixel-command (store payload engine
                              &key (cell-width (terminal-image-store-cell-width store))
-                               (cell-height (terminal-image-store-cell-height store)))
+                               (cell-height (terminal-image-store-cell-height store))
+                               (decoded (decode-sixel-payload payload)))
   "Decode and place the SIXEL image PAYLOAD (a whole DCS string).  With sixel
 scrolling (DECSDM reset) the image starts at the cursor, which then ends on
 its last text row, at its left column (or after it with ?8452), scrolling as
 needed, like xterm and foot; with DECSDM set it is drawn at the top left and
 the cursor does not move.  An opaque image replaces older SIXEL images in
-the cells it covers entirely."
+the cells it covers entirely.  DECODED is the image from DECODE-SIXEL-PAYLOAD."
+  (when (typep decoded 'condition)
+    (warn "Could not decode SIXEL image: ~a" decoded)
+    (return-from handle-sixel-command nil))
   (handler-case
-      (let* ((image (cl-libsixel:decode-sixel payload))
-             (parameters (sixel-header-parameters payload))
-             (transparent-p (eql 1 (second parameters)))
-             (width (cl-libsixel:sixel-image-width image))
-             (height (cl-libsixel:sixel-image-height image))
+      (let* ((transparent-p (eql 1 (second (sixel-header-parameters payload))))
+             (rgba (first decoded))
+             (width (second decoded))
+             (height (third decoded))
              (display-mode (terminal-image-store-sixel-display-mode store))
              (screen (if (engine-mode engine :alternate-screen) :alternate :primary))
              (cell-width (max 1 cell-width))
@@ -1428,10 +1583,7 @@ the cells it covers entirely."
                  (image-columns (max 1 (ceiling width cell-width)))
                  (row-before 0)
                  (id (allocate-image-id store :internal t))
-                 (stored (store-image store id 0 width height
-                                      (cl-libsixel:sixel-image-rgba
-                                       image :background (if transparent-p :transparent 0))
-                                      :anonymous-p t))
+                 (stored (store-image store id 0 width height rgba :anonymous-p t))
                  (placement (make-terminal-image-placement
                              :image-id id :row row :column column :screen screen
                              :erase-on-write-p t)))

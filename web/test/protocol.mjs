@@ -1,4 +1,4 @@
-// Protocol checks against a running slt web backend.
+// Protocol checks against a running slt web frontend.
 // usage: node web/test/protocol.mjs http://127.0.0.1:PORT TOKEN
 const [base, token] = process.argv.slice(2);
 const wsBase = base.replace(/^http/, "ws");

@@ -68,6 +68,10 @@
     (replace (grid-fg grid) (lispvt:line-fg line) :start1 start :end1 end)
     (replace (grid-bg grid) (lispvt:line-bg line) :start1 start :end1 end)
     (replace (grid-attrs grid) (lispvt:line-attrs line) :start1 start :end1 end)
+    (let ((ul (lispvt:line-ul line)))
+      (if ul
+          (replace (grid-ul grid) ul :start1 start :end1 end)
+          (fill (grid-ul grid) +color-default+ :start start :end end)))
     (when (plusp (hash-table-count combining))
       (loop for index from start below end
             do (remhash index combining)))

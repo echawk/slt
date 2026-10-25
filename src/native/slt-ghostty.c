@@ -8,6 +8,7 @@
  *
  *   codes  uint32  base codepoint, 0 for an empty cell
  *   fg/bg  uint32  0 default, 0x01000000|index palette, 0x02000000|RGB
+ *   ul     uint32  underline color, encoded as fg/bg
  *   attrs  uint16  +attr-*+ bits; SLT_ATTR_COMBINING marks cells whose
  *                  extra codepoints are listed in the EXTRA buffer
  *
@@ -30,6 +31,9 @@ enum {
   SLT_ATTR_WIDE = 1u << 8,
   SLT_ATTR_WIDE_SPACER = 1u << 9,
   SLT_ATTR_DOUBLE_UNDERLINE = 1u << 10,
+  SLT_ATTR_CURLY_UNDERLINE = 1u << 11,
+  SLT_ATTR_DOTTED_UNDERLINE = 1u << 12,
+  SLT_ATTR_DASHED_UNDERLINE = 1u << 13,
   SLT_ATTR_COMBINING = 1u << 15,
 };
 
@@ -80,8 +84,14 @@ static uint16_t style_attrs(const GhosttyStyle *style) {
   if (style->inverse) a |= SLT_ATTR_INVERSE;
   if (style->invisible) a |= SLT_ATTR_INVISIBLE;
   if (style->strikethrough) a |= SLT_ATTR_STRIKE;
-  if (style->underline == 2) a |= SLT_ATTR_DOUBLE_UNDERLINE;
-  else if (style->underline != 0) a |= SLT_ATTR_UNDERLINE;
+  switch (style->underline) {
+  case GHOSTTY_SGR_UNDERLINE_NONE: break;
+  case GHOSTTY_SGR_UNDERLINE_DOUBLE: a |= SLT_ATTR_DOUBLE_UNDERLINE; break;
+  case GHOSTTY_SGR_UNDERLINE_CURLY: a |= SLT_ATTR_CURLY_UNDERLINE; break;
+  case GHOSTTY_SGR_UNDERLINE_DOTTED: a |= SLT_ATTR_DOTTED_UNDERLINE; break;
+  case GHOSTTY_SGR_UNDERLINE_DASHED: a |= SLT_ATTR_DASHED_UNDERLINE; break;
+  default: a |= SLT_ATTR_UNDERLINE; break;
+  }
   return a;
 }
 
@@ -96,7 +106,7 @@ static uint16_t style_attrs(const GhosttyStyle *style) {
  * Returns the number of rows written, or -1 on error. */
 int slt_ghostty_copy(slt_ghostty *s, GhosttyTerminal terminal, int rows, int columns,
                      int force, uint32_t *codes, uint32_t *fg, uint32_t *bg,
-                     uint16_t *attrs, uint8_t *dirty, uint32_t *extra,
+                     uint16_t *attrs, uint32_t *ul, uint8_t *dirty, uint32_t *extra,
                      int extra_capacity, int *extra_len, int32_t *cursor) {
   *extra_len = 0;
   if (ghostty_render_state_update(s->state, terminal) != GHOSTTY_SUCCESS) return -1;
@@ -163,6 +173,7 @@ int slt_ghostty_copy(slt_ghostty *s, GhosttyTerminal terminal, int rows, int col
         fg[i] = style_color(style.fg_color);
         bg[i] = background;
         attrs[i] = a;
+        ul[i] = style_color(style.underline_color);
       }
       for (; x < columns; x++) {
         size_t i = base + (size_t)x;
@@ -170,6 +181,7 @@ int slt_ghostty_copy(slt_ghostty *s, GhosttyTerminal terminal, int rows, int col
         fg[i] = 0;
         bg[i] = 0;
         attrs[i] = 0;
+        ul[i] = 0;
       }
       dirty[y] = 1;
       written++;

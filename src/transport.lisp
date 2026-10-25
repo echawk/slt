@@ -85,18 +85,19 @@
                                        (base-environment (sb-ext:posix-environ))
                                      #-sbcl
                                        (base-environment '()))
+  (declare (ignore rows columns))
   (let ((environment (copy-list base-environment)))
     (when term-name
       (setf environment
             (replace-environment-variable environment "TERM" term-name)))
-    (when rows
-      (setf environment
-            (replace-environment-variable environment "LINES"
-                                          (princ-to-string rows))))
-    (when columns
-      (setf environment
-            (replace-environment-variable environment "COLUMNS"
-                                          (princ-to-string columns))))
+    ;; The size is the PTY's alone.  curses prefers LINES and COLUMNS to
+    ;; the PTY, so set (or inherited) they would pin programs such as htop
+    ;; to the size the window had at launch.
+    (setf environment
+          (remove-if (lambda (entry)
+                       (member (environment-entry-name entry) '("LINES" "COLUMNS")
+                               :test #'string=))
+                     environment))
     ;; VARIABLES is an alist of (NAME . VALUE); a NIL value unsets NAME,
     ;; and (NAME . :DEFAULT) sets NAME only when it is not already set.
     (loop for (name . value) in variables

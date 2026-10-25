@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Build bin/: the slt executable plus the native libraries it loads, via
 # Deploy (system slt/app).  Run by `make`; SLT_SYSTEMS lists the optional
-# slt/NAME systems (engines, backends) to build in, e.g.
+# slt/NAME systems (engines, frontends) to build in, e.g.
 # "slt/ghostty slt/libvterm".  Their native libraries must already be built.
 #
 # On macOS, Homebrew's SBCL runtime links libzstd by an absolute path, and

@@ -1,6 +1,6 @@
 (in-package #:slt)
 
-;;;; GTK 3 backend, through cl-cffi-gtk: a GtkWindow holding a
+;;;; GTK 3 frontend, through cl-cffi-gtk: a GtkWindow holding a
 ;;;; GtkDrawingArea that is painted with Cairo and Pango.  Each draw paints
 ;;;; the whole grid: GTK clips it to the damaged area and, with HiDPI, hands
 ;;;; us an already scaled Cairo context, so all sizes here are logical
@@ -11,7 +11,7 @@
 (defvar *gtk-scroll-rows* 3
   "Rows scrolled per wheel step.")
 
-(defclass gtk-backend (terminal-backend) ())
+(defclass gtk-frontend (terminal-frontend) ())
 
 (defstruct (gtk-view (:constructor %make-gtk-view))
   window
@@ -23,6 +23,9 @@
   grid
   image-store
   keypress-callback
+  drop-callback
+  ;; Keyvals down, to tell repeats from presses.
+  (keys-held (make-hash-table) :type hash-table)
   resize-callback
   scroll-callback
   mouse-callback
@@ -82,20 +85,26 @@
   (cairo:cairo-move-to cr x y)
   (pango:pango-cairo-show-layout cr layout))
 
-(defun gtk-draw-lines (view cr attrs x width y)
-  "Underline and strike-through for cells from X, WIDTH pixels wide."
+(defun gtk-draw-lines (view cr attrs x width y underline-rgb)
+  "Underline and strike-through for cells from X, WIDTH pixels wide, in the
+current color but for the underline's UNDERLINE-RGB."
   (let ((ch (gtk-view-cell-height view)))
-    (flet ((line (offset)
-             (cairo:cairo-rectangle cr x (+ y offset) width 1)
-             (cairo:cairo-fill cr)))
-      (when (logtest attrs (logior +attr-underline+ +attr-double-underline+))
-        (line (- ch 2)))
-      (when (logtest attrs +attr-double-underline+)
-        (line (- ch 4)))
-      (when (logtest attrs +attr-strike+)
-        (line (floor ch 2))))))
+    (when (logtest attrs +attr-strike+)
+      (cairo:cairo-rectangle cr x (+ y (floor ch 2)) width 1)
+      (cairo:cairo-fill cr))
+    (when (logtest attrs +attr-underlines+)
+      (gtk-set-color cr underline-rgb)
+      (loop for (rx ry rw rh) in (underline-rectangles (underline-style attrs) x width ch)
+            do (cairo:cairo-rectangle cr rx (+ y ry) rw rh))
+      (cairo:cairo-fill cr))))
 
-(defun gtk-draw-row (view cr layout grid row)
+(defconstant +gtk-style-attrs+
+  (logior +attr-bold+ +attr-italic+ +attr-underlines+ +attr-strike+ +attr-invisible+))
+
+(defun gtk-draw-row (view cr layout grid row &key (part :all) skip-default-background)
+  "Draw ROW's backgrounds, text or both (PART :BACKGROUNDS, :TEXT or :ALL).
+SKIP-DEFAULT-BACKGROUND leaves cells with the default background alone, for
+images under the text."
   (let* ((columns (grid-columns grid))
          (cw (gtk-view-cell-width view))
          (ch (gtk-view-cell-height view))
@@ -104,7 +113,7 @@
          (attrs (grid-attrs grid)))
     ;; Backgrounds, in runs of one color.
     (let ((column 0))
-      (loop while (< column columns)
+      (loop while (and (< column columns) (not (eq part :text)))
             do (let* ((index (grid-index grid row column))
                       (bg (nth-value 1 (gtk-cell-colors grid index)))
                       (end (1+ column)))
@@ -112,21 +121,20 @@
                                   (= bg (nth-value 1 (gtk-cell-colors
                                                       grid (grid-index grid row end)))))
                        do (incf end))
-                 (gtk-set-color cr bg)
-                 (cairo:cairo-rectangle cr (* column cw) y (* (- end column) cw) ch)
-                 (cairo:cairo-fill cr)
+                 (unless (and skip-default-background (= bg (palette-background *palette*)))
+                   (gtk-set-color cr bg)
+                   (cairo:cairo-rectangle cr (* column cw) y (* (- end column) cw) ch)
+                   (cairo:cairo-fill cr))
                  (setf column end))))
     ;; Text: runs of ASCII cells with one foreground and style.
-    (let ((column 0))
+    (let ((column (if (eq part :backgrounds) columns 0)))
       (loop while (< column columns)
             do (let* ((index (grid-index grid row column))
                       (code (grid-glyph-code grid index))
                       (cell-attrs (aref attrs index))
                       (fg (gtk-cell-colors grid index))
-                      (style (logand cell-attrs (logior +attr-bold+ +attr-italic+
-                                                        +attr-underline+ +attr-strike+
-                                                        +attr-double-underline+
-                                                        +attr-invisible+)))
+                      (style (logand cell-attrs +gtk-style-attrs+))
+                      (ul (aref (grid-ul grid) index))
                       (ascii-p (and (< code 128)
                                     (not (gethash index (grid-combining grid)))))
                       (end (1+ column)))
@@ -135,12 +143,8 @@
                                     (let ((next (grid-index grid row end)))
                                       (and (< (aref codes next) 128)
                                            (not (gethash next (grid-combining grid)))
-                                           (= style (logand (aref attrs next)
-                                                            (logior +attr-bold+ +attr-italic+
-                                                                    +attr-underline+
-                                                                    +attr-strike+
-                                                                    +attr-double-underline+
-                                                                    +attr-invisible+)))
+                                           (= style (logand (aref attrs next) +gtk-style-attrs+))
+                                           (= ul (aref (grid-ul grid) next))
                                            (= fg (gtk-cell-colors grid next)))))
                          do (incf end)))
                  (unless (logtest cell-attrs +attr-wide-spacer+)
@@ -157,7 +161,8 @@
                                  (zerop (length (string-trim " " text))))
                        (gtk-draw-text view cr layout text (gtk-font-index style)
                                       (* column cw) y))
-                     (gtk-draw-lines view cr style (* column cw) width y)))
+                     (gtk-draw-lines view cr style (* column cw) width y
+                                     (cell-underline-rgb grid index *palette* fg))))
                  (setf column end))))))
 
 (defun gtk-draw-cursor (view cr grid)
@@ -184,15 +189,29 @@ cairo_t pointer."
   t)
 
 (defun gtk-draw-grid (view cr)
+  "Paint the whole view: images under the text, if any, between the cell
+backgrounds and the text."
   (gtk-set-color cr (palette-background *palette*))
   (cairo:cairo-paint cr)
-  (let ((grid (gtk-view-grid view)))
-    (when grid
-      (let ((layout (pango:pango-cairo-create-layout cr)))
-        (dotimes (row (grid-rows grid))
-          (gtk-draw-row view cr layout grid row))
-        (gtk-draw-cursor view cr grid)))
-    (gtk-draw-images view cr)))
+  (let* ((store (gtk-view-image-store view))
+         (records (and store (terminal-image-render-list store (gtk-view-cell-width view)
+                                                         (gtk-view-cell-height view))))
+         (grid (gtk-view-grid view))
+         (layout (and grid (pango:pango-cairo-create-layout cr))))
+    (multiple-value-bind (below-backgrounds below-text above) (image-layers records)
+      (let ((layered (or below-backgrounds below-text)))
+        (gtk-draw-images cr below-backgrounds)
+        (when grid
+          (dotimes (row (grid-rows grid))
+            (gtk-draw-row view cr layout grid row :part (if layered :backgrounds :all)
+                                                  :skip-default-background layered)))
+        (gtk-draw-images cr below-text)
+        (when grid
+          (when layered
+            (dotimes (row (grid-rows grid))
+              (gtk-draw-row view cr layout grid row :part :text)))
+          (gtk-draw-cursor view cr grid))
+        (gtk-draw-images cr above)))))
 
 (defun rgba-to-cairo-argb32 (rgba)
   ;; Cairo ARGB32 is premultiplied BGRA in memory on little-endian machines.
@@ -205,32 +224,30 @@ cairo_t pointer."
                    (aref result (+ i 3)) alpha))
     result))
 
-(defun gtk-draw-images (view cr)
-  (let ((store (gtk-view-image-store view)))
-    (when store
-      (dolist (record (terminal-image-render-list
-                       store (gtk-view-cell-width view) (gtk-view-cell-height view)))
-        (destructuring-bind (placement image x y width height) record
-          (let* ((pixels (rgba-to-cairo-argb32 (terminal-image-rgba image)))
-                 (iw (terminal-image-width image)) (ih (terminal-image-height image))
-                 (sx (terminal-image-placement-source-x placement))
-                 (sy (terminal-image-placement-source-y placement))
-                 (sw (or (terminal-image-placement-source-width placement) (- iw sx)))
-                 (sh (or (terminal-image-placement-source-height placement) (- ih sy))))
-            (cffi:with-pointer-to-vector-data (pointer pixels)
-              (let ((surface (cairo:cairo-image-surface-create-for-data
-                              pointer :argb32 iw ih (* iw 4))))
-                (unwind-protect
-                     (progn
-                       (cairo:cairo-save cr)
-                       (cairo:cairo-rectangle cr x y width height)
-                       (cairo:cairo-clip cr)
-                       (cairo:cairo-translate cr x y)
-                       (cairo:cairo-scale cr (/ width sw) (/ height sh))
-                       (cairo:cairo-set-source-surface cr surface (- sx) (- sy))
-                       (cairo:cairo-paint cr)
-                       (cairo:cairo-restore cr))
-                  (cairo:cairo-surface-destroy surface))))))))))
+(defun gtk-draw-images (cr records)
+  "Draw image RECORDS (see TERMINAL-IMAGE-RENDER-LIST)."
+  (dolist (record records)
+    (destructuring-bind (placement image x y width height) record
+      (let* ((pixels (rgba-to-cairo-argb32 (terminal-image-rgba image)))
+             (iw (terminal-image-width image)) (ih (terminal-image-height image))
+             (sx (terminal-image-placement-source-x placement))
+             (sy (terminal-image-placement-source-y placement))
+             (sw (or (terminal-image-placement-source-width placement) (- iw sx)))
+             (sh (or (terminal-image-placement-source-height placement) (- ih sy))))
+        (cffi:with-pointer-to-vector-data (pointer pixels)
+          (let ((surface (cairo:cairo-image-surface-create-for-data
+                          pointer :argb32 iw ih (* iw 4))))
+            (unwind-protect
+                 (progn
+                   (cairo:cairo-save cr)
+                   (cairo:cairo-rectangle cr x y width height)
+                   (cairo:cairo-clip cr)
+                   (cairo:cairo-translate cr x y)
+                   (cairo:cairo-scale cr (/ width sw) (/ height sh))
+                   (cairo:cairo-set-source-surface cr surface (- sx) (- sy))
+                   (cairo:cairo-paint cr)
+                   (cairo:cairo-restore cr))
+              (cairo:cairo-surface-destroy surface))))))))
 
 ;;; Input
 
@@ -239,15 +256,21 @@ cairo_t pointer."
   (logior (if (member :shift-mask flags) +shift-mask+ 0)
           (if (member :control-mask flags) +control-mask+ 0)
           (if (member :mod1-mask flags) +mod1-mask+ 0)
-          ;; Command is Mod2 (and Meta) in GTK's macOS backend.
+          ;; Command is Mod2 (and Meta) in GTK's macOS frontend.
           (if (or (member :super-mask flags)
                   (and (uiop:os-macosx-p)
                        (or (member :mod2-mask flags) (member :meta-mask flags))))
               +mod4-mask+
               0)))
 
-(defun gtk-key-press (view event)
+(defun gtk-key-press (view event &optional (kind :press))
+  "Pass a key EVENT on; KIND is :PRESS or :RELEASE.  GTK does not mark
+repeats, so a press of a key already down is one."
   (let* ((keyval (gdk:gdk-event-key-keyval event))
+         (held (gtk-view-keys-held view))
+         (kind (cond ((eq kind :release) (remhash keyval held) :release)
+                     ((gethash keyval held) :repeat)
+                     (t (setf (gethash keyval held) t) :press)))
          (keysym (gdk:gdk-keyval-name keyval))
          (char (let ((code (gdk:gdk-keyval-to-unicode keyval)))
                  (if (characterp code) code (and (integerp code) (plusp code)
@@ -255,7 +278,7 @@ cairo_t pointer."
          (text (if (and char (graphic-char-p char)) (string char) ""))
          (state (gtk-modifier-state (gdk:gdk-event-key-state event))))
     (when (and keysym (gtk-view-keypress-callback view))
-      (funcall (gtk-view-keypress-callback view) text keysym state))
+      (funcall (gtk-view-keypress-callback view) text keysym state kind))
     ;; Keep Tab and the arrows from moving the focus.
     t))
 
@@ -314,21 +337,21 @@ cairo_t pointer."
             (funcall callback whole))))))
   t)
 
-;;; The backend protocol
+;;; The frontend protocol
 
-(defmethod backend-call-with-event-loop ((backend gtk-backend) thunk)
+(defmethod frontend-call-with-event-loop ((frontend gtk-frontend) thunk)
   ;; GTK and the platform libraries under it trip SBCL's float traps.
   (sb-int:with-float-traps-masked (:invalid :divide-by-zero :overflow :inexact)
     (funcall thunk)
     (gtk:gtk-main)))
 
-(defmethod backend-available-font-families ((backend gtk-backend))
+(defmethod frontend-available-font-families ((frontend gtk-frontend))
   '())
 
-(defmethod backend-resolve-font-size ((backend gtk-backend) font-size)
+(defmethod frontend-resolve-font-size ((frontend gtk-frontend) font-size)
   (abs (or font-size 13)))
 
-(defmethod backend-create-view ((backend gtk-backend)
+(defmethod frontend-create-view ((frontend gtk-frontend)
                                 &key rows columns font-family font-size
                                   cell-width cell-height title)
   (let* ((window (make-instance 'gtk:gtk-window :type :toplevel :title (or title "slt")))
@@ -340,7 +363,8 @@ cairo_t pointer."
             (gtk-view-cell-height view) (or cell-height ch)))
     (gtk:gtk-widget-add-events area '(:button-press-mask :button-release-mask
                                       :pointer-motion-mask :scroll-mask
-                                      :smooth-scroll-mask :key-press-mask))
+                                      :smooth-scroll-mask :key-press-mask
+                                      :key-release-mask))
     (gtk:gtk-container-add window area)
     (gtk:gtk-window-resize window
                            (* columns (gtk-view-cell-width view))
@@ -351,6 +375,20 @@ cairo_t pointer."
                               (lambda (widget event)
                                 (declare (ignore widget))
                                 (gtk-key-press view event)))
+    ;; Files dropped on the window arrive as a text/uri-list.
+    (gtk:gtk-drag-dest-set area '(:all) nil '(:copy))
+    (gtk:gtk-drag-dest-add-uri-targets area)
+    (gobject:g-signal-connect area "drag-data-received"
+                              (lambda (widget context x y data info time)
+                                (declare (ignore widget context x y info time))
+                                (let ((paths (uri-list-paths
+                                              (gtk:gtk-selection-data-get-uris data))))
+                                  (when (and paths (gtk-view-drop-callback view))
+                                    (funcall (gtk-view-drop-callback view) paths)))))
+    (gobject:g-signal-connect area "key-release-event"
+                              (lambda (widget event)
+                                (declare (ignore widget))
+                                (gtk-key-press view event :release)))
     (gobject:g-signal-connect area "button-press-event"
                               (lambda (widget event)
                                 (declare (ignore widget))
@@ -390,22 +428,22 @@ cairo_t pointer."
     (gtk:gtk-widget-show-all window)
     view))
 
-(defmethod backend-view-cell-width ((backend gtk-backend) (view gtk-view))
+(defmethod frontend-view-cell-width ((frontend gtk-frontend) (view gtk-view))
   (gtk-view-cell-width view))
 
-(defmethod backend-view-cell-height ((backend gtk-backend) (view gtk-view))
+(defmethod frontend-view-cell-height ((frontend gtk-frontend) (view gtk-view))
   (gtk-view-cell-height view))
 
-(defmethod backend-view-window-size ((backend gtk-backend) (view gtk-view))
+(defmethod frontend-view-window-size ((frontend gtk-frontend) (view gtk-view))
   (let ((area (gtk-view-area view)))
     (values (gtk:gtk-widget-get-allocated-width area)
             (gtk:gtk-widget-get-allocated-height area))))
 
-(defmethod backend-resize-view ((backend gtk-backend) (view gtk-view) rows columns)
+(defmethod frontend-resize-view ((frontend gtk-frontend) (view gtk-view) rows columns)
   (declare (ignore rows columns))
   view)
 
-(defmethod backend-render-grid ((backend gtk-backend) (view gtk-view) grid)
+(defmethod frontend-render-grid ((frontend gtk-frontend) (view gtk-view) grid)
   (setf (gtk-view-grid view) grid)
   (unless (gtk-view-closed-p view)
     (let ((area (gtk-view-area view))
@@ -417,52 +455,55 @@ cairo_t pointer."
                                           (* (grid-columns grid) cw) ch)))))
   view)
 
-(defmethod backend-render-images ((backend gtk-backend) (view gtk-view) store)
-  (declare (ignore backend))
+(defmethod frontend-render-images ((frontend gtk-frontend) (view gtk-view) store)
+  (declare (ignore frontend))
   (setf (gtk-view-image-store view) store)
   (unless (gtk-view-closed-p view)
     (gtk:gtk-widget-queue-draw (gtk-view-area view)))
   view)
 
-(defmethod backend-set-title ((backend gtk-backend) (view gtk-view) title)
+(defmethod frontend-set-title ((frontend gtk-frontend) (view gtk-view) title)
   (unless (gtk-view-closed-p view)
     (setf (gtk:gtk-window-title (gtk-view-window view)) title)))
 
-(defmethod backend-schedule ((backend gtk-backend) (view gtk-view) delay-ms thunk)
+(defmethod frontend-schedule ((frontend gtk-frontend) (view gtk-view) delay-ms thunk)
   (glib:g-timeout-add (max 0 (round delay-ms))
                       (lambda ()
                         (funcall thunk)
                         ;; Run once.
                         nil)))
 
-(defmethod backend-cancel-scheduled ((backend gtk-backend) (view gtk-view) token)
+(defmethod frontend-cancel-scheduled ((frontend gtk-frontend) (view gtk-view) token)
   (glib:g-source-remove token))
 
-(defmethod backend-wakeup ((backend gtk-backend) view thunk)
+(defmethod frontend-wakeup ((frontend gtk-frontend) view thunk)
   (declare (ignore view))
   ;; g_idle_add may be called from any thread.
   (glib:g-idle-add (lambda () (funcall thunk) nil))
   t)
 
-(defmethod backend-bind-resize ((backend gtk-backend) (view gtk-view) callback)
+(defmethod frontend-bind-resize ((frontend gtk-frontend) (view gtk-view) callback)
   (setf (gtk-view-resize-callback view) callback))
 
-(defmethod backend-bind-keypress ((backend gtk-backend) (view gtk-view) callback)
+(defmethod frontend-bind-drop ((frontend gtk-frontend) (view gtk-view) callback)
+  (setf (gtk-view-drop-callback view) callback))
+
+(defmethod frontend-bind-keypress ((frontend gtk-frontend) (view gtk-view) callback)
   (setf (gtk-view-keypress-callback view) callback))
 
-(defmethod backend-bind-scroll ((backend gtk-backend) (view gtk-view) callback)
+(defmethod frontend-bind-scroll ((frontend gtk-frontend) (view gtk-view) callback)
   (setf (gtk-view-scroll-callback view) callback))
 
-(defmethod backend-bind-mouse ((backend gtk-backend) (view gtk-view) callback)
+(defmethod frontend-bind-mouse ((frontend gtk-frontend) (view gtk-view) callback)
   (setf (gtk-view-mouse-callback view) callback))
 
-(defmethod backend-bind-paste ((backend gtk-backend) (view gtk-view) callback)
+(defmethod frontend-bind-paste ((frontend gtk-frontend) (view gtk-view) callback)
   (setf (gtk-view-paste-callback view) callback))
 
 (defun gtk-clipboard ()
   (gtk:gtk-clipboard-get "CLIPBOARD"))
 
-(defmethod backend-clipboard-text ((backend gtk-backend) (view gtk-view))
+(defmethod frontend-clipboard-text ((frontend gtk-frontend) (view gtk-view))
   ;; The binding has only the asynchronous request: the text arrives
   ;; through the paste callback, and nothing is returned now.
   (gtk:gtk-clipboard-request-text (gtk-clipboard)
@@ -473,20 +514,20 @@ cairo_t pointer."
                                       (funcall (gtk-view-paste-callback view) text))))
   nil)
 
-(defmethod backend-set-clipboard-text ((backend gtk-backend) (view gtk-view) text)
+(defmethod frontend-set-clipboard-text ((frontend gtk-frontend) (view gtk-view) text)
   (gtk:gtk-clipboard-set-text (gtk-clipboard) text))
 
-(defmethod backend-on-close ((backend gtk-backend) (view gtk-view) callback)
+(defmethod frontend-on-close ((frontend gtk-frontend) (view gtk-view) callback)
   (setf (gtk-view-close-callback view) callback))
 
-(defmethod backend-focus ((backend gtk-backend) (view gtk-view))
+(defmethod frontend-focus ((frontend gtk-frontend) (view gtk-view))
   (gtk:gtk-window-present (gtk-view-window view))
   (gtk:gtk-widget-grab-focus (gtk-view-area view)))
 
-(defmethod backend-request-exit ((backend gtk-backend) (view gtk-view))
+(defmethod frontend-request-exit ((frontend gtk-frontend) (view gtk-view))
   (unless (gtk-view-closed-p view)
     (setf (gtk-view-closed-p view) t)
     (gtk:gtk-widget-destroy (gtk-view-window view))
     (gtk:gtk-main-quit)))
 
-(register-backend :gtk (lambda () (make-instance 'gtk-backend)))
+(register-frontend :gtk (lambda () (make-instance 'gtk-frontend)))

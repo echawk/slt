@@ -1,4 +1,4 @@
-;;;; Smoke test for the gl backend: run a shell that prints styled text in
+;;;; Smoke test for the gl frontend: run a shell that prints styled text in
 ;;;; a hidden GLFW window, render it offscreen and check the pixels.  Run
 ;;;; with scripts/gl-test; on Linux CI, under Xvfb or a headless Wayland
 ;;;; compositor.  Leaves build/gl-test/snapshot.ppm for inspection.
@@ -63,7 +63,7 @@
 (setf *gl-window-visible* nil)
 (add-hook '*after-init-hook*
           (lambda (emulator)
-            (let ((backend (terminal-emulator-backend emulator))
+            (let ((frontend (terminal-emulator-frontend emulator))
                   (view (terminal-emulator-view emulator)))
               (let ((store (terminal-emulator-image-store emulator)))
                 (store-image store 1 0 1 1
@@ -73,15 +73,15 @@
                                                      :columns 1 :rows 1 :z-index 1)
                       (terminal-image-store-placements store))
                 (setf (terminal-image-store-dirty-p store) t))
-              (backend-schedule backend view 1500
+              (frontend-schedule frontend view 1500
                                 (lambda ()
                                   (render-emulator emulator :force t)
                                   (handler-case (check-snapshot view)
                                     (error (condition)
                                       (check nil (format nil "snapshot: ~a" condition))))
                                   (destroy-emulator emulator)
-                                  (backend-request-exit backend view))))))
+                                  (frontend-request-exit frontend view))))))
 
-(launch-terminal :backend :gl :engine (or (uiop:getenv "SLT_ENGINE") :3bst)
+(launch-terminal :frontend :gl :engine (or (uiop:getenv "SLT_ENGINE") :3bst)
                  :shell *script* :rows 10 :columns 50 :load-config nil)
 (uiop:quit (if *failures* 1 0))

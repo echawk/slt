@@ -73,10 +73,10 @@ See the README's *Terminal graphics* section for behavior.
 | 10, 11, 12, 17, 19 | foreground, background, cursor, selection background, selection foreground | set and query; 19 is queried as the foreground |
 | 104, 110, 111, 112, 117, 119 | reset colors | |
 | 7 | working directory (`file://host/path`) | remembered for local hosts; new windows (Command+N) open there |
-| 8 | hyperlinks | Command-click (Super-click) opens them, while their text is still on screen; only `*hyperlink-schemes*` (http, https, mailto) |
+| 8 | hyperlinks | underlined under the pointer; Command-click (Super-click) opens them, while their text is still on screen; only `*hyperlink-schemes*` (http, https, mailto) |
 | 9, 777, 99 | desktop notifications (iTerm2, rxvt, kitty) | osascript on macOS, notify-send elsewhere; rate-limited; kitty's support query is answered; OSC 9;4 progress is ignored |
 | 52 | clipboard | writing by default; reading only when `*clipboard-access*` is `:read-write` |
-| 133 | shell-integration marks | prompt starts are remembered; Super+Up/Down (Control+Shift+Up/Down) jumps between prompts |
+| 133 | shell-integration marks | prompts (A), output starts (C) and ends with exit status (D) are remembered; Super+Up/Down (Control+Shift+Up/Down) jumps between prompts, with Shift (Meta) between those of failed commands; Super+Shift+O (Control+Shift+O) copies the last command's output, read from the scrollback |
 
 Other OSC strings (the title among them) go to the engine.
 
@@ -88,8 +88,9 @@ The [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/
   handled, with separate flag stacks for the main and alternate screens.
 - While flags are set, keys are encoded by the protocol instead of by the
   engine.
-- Backends report key presses only, so the report-event-types flag sends
-  presses and repeats as presses and never sends releases.
+- Frontends report presses, repeats and releases, and modifier keys alone
+  (the ltk frontend presses only).  Releases are sent only for keys whose
+  press reached the child.
 
 ### Other
 
@@ -130,10 +131,19 @@ Output can come from any program, including over SSH:
 - **Graphics:** see `lib/kitty-graphics/README.md` for its file and
   shared-memory checks, and for its size limits.
 
-## Not yet supported
+## Underlines
 
-- **Hyperlinks** are not drawn differently from other text.
-- **Prompt marks:** of the OSC 133 marks, only prompt starts are used.
-- **The web backend** ignores color changes; it uses its own theme.
-- **Styled and colored underlines** (`SGR 4:3`, `SGR 58`) are drawn as
-  plain underlines, since that is up to the engines.
+The engines keep underline styles (`SGR 4:1` to `4:5`: single, double,
+curly, dotted, dashed) and colors (`SGR 58`/`59`), which every frontend but
+ltk draws:
+
+| engine | styles | colors |
+|---|---|---|
+| lispvt, ghostty | all | yes |
+| libvterm | single, double, curly | no |
+| 3bst | single | no |
+
+## The web frontend's colors
+
+The web frontend keeps its own theme for the colors a program has not
+changed: OSC 4 and 10-19 changes are sent to it, the defaults are not.

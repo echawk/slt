@@ -36,7 +36,7 @@ screen when omitted) when rows TOP..BOTTOM (inclusive) move up COUNT rows
 
 (defgeneric engine-reports-all-scrolls-p (engine)
   (:documentation "True when the scroll reports are complete; otherwise the
-frontend also infers scrolls from the screen contents.")
+emulator also infers scrolls from the screen contents.")
   (:method ((engine engine))
     (engine-reports-scrolls-p engine)))
 
@@ -145,9 +145,9 @@ engine supports scrollback.")
 
 (defun register-engine (name constructor)
   "CONSTRUCTOR is called with ROWS, COLUMNS and engine initargs."
-  (setf (gethash (normalize-backend-name name) *engine-constructors*)
+  (setf (gethash (normalize-frontend-name name) *engine-constructors*)
         constructor)
-  (normalize-backend-name name))
+  (normalize-frontend-name name))
 
 (defun available-engines (&key probe)
   "The registered engines.  With PROBE, first try loading the engines in
@@ -184,7 +184,7 @@ for example, when a native library has not been built)."
   (declare (ignore rows columns))
   (if (typep designator 'engine)
       designator
-      (let* ((name (normalize-backend-name (or designator (default-engine))))
+      (let* ((name (normalize-frontend-name (or designator (default-engine))))
              (constructor (or (gethash name *engine-constructors*)
                               (and (load-engine-system name)
                                    (gethash name *engine-constructors*)))))

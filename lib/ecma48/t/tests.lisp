@@ -200,8 +200,25 @@ and return copies of the events."
           (unless (find-if (lambda (c) (member (char-code c) '(7 24))) input)
             (is (equal input raw))))))))
 
+(defun test-text-scans ()
+  ;; The vector scans agree with the byte-at-a-time one wherever the
+  ;; control falls and however the run is aligned.
+  (let ((*random-state* (sb-ext:seed-random-state 48)))
+    (dotimes (trial 2000)
+      (let* ((length (random 70))
+             (octets (make-array length :element-type '(unsigned-byte 8)))
+             (start (random (1+ length))))
+        (dotimes (i length)
+          (setf (aref octets i) (+ 32 (random 224))))
+        (when (and (plusp length) (zerop (random 3)))
+          (setf (aref octets (random length)) (if (zerop (random 2)) 127 (random 32))))
+        (let ((expected (ecma48::scan-text-scalar octets start length)))
+          #+sbcl (is (= expected (ecma48::scan-text-swar octets start length)))
+          #+ecma48-neon (is (= expected (ecma48::scan-text-neon octets start length))))))))
+
 (defun run-tests ()
   (setf *failures* 0)
+  (test-text-scans)
   (test-basics)
   (test-strings)
   (test-utf-8-and-c1)

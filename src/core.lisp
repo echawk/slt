@@ -10,7 +10,7 @@ executable runs, where ASDF has no source registry.")
 (defun system-version ()
   *version*)
 
-;;; X11-style modifier bits, which backends normalize their events to.
+;;; X11-style modifier bits, which frontends normalize their events to.
 (defconstant +shift-mask+ #x01)
 (defconstant +control-mask+ #x04)
 (defconstant +mod1-mask+ #x08)
@@ -49,6 +49,20 @@ executable runs, where ASDF has no source registry.")
     ("Up" . :up))
   "X11 keysym names mapped to key keywords understood by ENGINE-ENCODE-KEY.")
 
+(defparameter *modifier-keysym-map*
+  '(("Shift_L" . :left-shift) ("Shift_R" . :right-shift)
+    ("Control_L" . :left-control) ("Control_R" . :right-control)
+    ("Alt_L" . :left-alt) ("Alt_R" . :right-alt)
+    ("Super_L" . :left-super) ("Super_R" . :right-super)
+    ("Meta_L" . :left-meta) ("Meta_R" . :right-meta)
+    ("Hyper_L" . :left-hyper) ("Hyper_R" . :right-hyper)
+    ("Caps_Lock" . :caps-lock) ("Num_Lock" . :num-lock))
+  "X11 keysym names of modifier keys, which only the Kitty keyboard protocol
+reports.")
+
+(defun modifier-key-p (key)
+  (and (rassoc key *modifier-keysym-map*) t))
+
 (defun decode-modifier-state (state)
   (let (modifiers)
     (when (logtest +shift-mask+ state)
@@ -66,6 +80,8 @@ executable runs, where ASDF has no source registry.")
     ((null keysym) nil)
     ((assoc keysym *keysym-map* :test #'string=)
      (cdr (assoc keysym *keysym-map* :test #'string=)))
+    ((assoc keysym *modifier-keysym-map* :test #'string=)
+     (cdr (assoc keysym *modifier-keysym-map* :test #'string=)))
     ((and (> (length keysym) 1)
           (char= (aref keysym 0) #\F)
           (every #'digit-char-p (subseq keysym 1)))
@@ -88,13 +104,13 @@ executable runs, where ASDF has no source registry.")
     (t nil)))
 
 (defun event-key (char keysym)
-  "The key for a backend event: a key keyword, a character, or NIL."
+  "The key for a frontend event: a key keyword, a character, or NIL."
   (let ((special (keysym->terminal-key keysym)))
     (or special (event-character char keysym))))
 
 (defun translate-key-event (engine char keysym state)
-  "Encode a backend key event for the child process using ENGINE."
+  "Encode a frontend key event for the child process using ENGINE."
   (let ((key (event-key char keysym))
         (modifiers (decode-modifier-state state)))
-    (when key
+    (when (and key (not (modifier-key-p key)))
       (engine-encode-key engine key modifiers))))

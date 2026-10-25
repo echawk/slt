@@ -20,3 +20,7 @@ slt's conformance suite (`conformance/cases.lisp`).
   object, so the cursor was reset to the saved position.  It also moves
   the right terminal's cursor (`:term` was missing from `tmoveto`) and
   slides lines up rather than down when shrinking below the cursor.
+- Erased cells hold `#\Nul` rather than a space, so a printed space can be
+  told apart from a blank (slt erases SIXEL images under printed text).
+- `term-line-length` reads a line's length from the line vector; it took
+  the screen for a two-dimensional array.

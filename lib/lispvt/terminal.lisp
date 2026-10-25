@@ -33,6 +33,8 @@
   (fg 0 :type (unsigned-byte 32))
   (bg 0 :type (unsigned-byte 32))
   (attrs 0 :type (unsigned-byte 16))
+  ;; Underline color (SGR 58), 0 for the foreground's.
+  (ul 0 :type (unsigned-byte 32))
   (cursor-shape :block :type (member :block :underline :bar))
   ;; Modes with behavior of their own; the rest live in MODES.
   (autowrap t :type boolean)
@@ -117,6 +119,7 @@ BOTTOM rows and COUNT (positive upward) of every scroll."
           (terminal-fg term) 0
           (terminal-bg term) 0
           (terminal-attrs term) 0
+          (terminal-ul term) 0
           (terminal-cursor-shape term) :block
           (terminal-autowrap term) t
           (terminal-origin term) nil
@@ -224,13 +227,12 @@ of the primary screen go to scrollback."
     (dotimes (i count)
       (let ((line (svref lines top)))
         (replace lines lines :start1 top :start2 (1+ top) :end2 (1+ bottom))
-        (let ((fresh (if keep
-                         (let ((old (history-push screen line)))
-                           (if (and old (= (line-length old) columns))
-                               old
-                               (make-line columns)))
-                         line)))
-          (setf (svref lines bottom) (clear-line fresh bg)))))
+        (let ((recycled (if keep
+                            (let ((old (history-push screen line)))
+                              (and old (= (line-length old) columns) old))
+                            line)))
+          (setf (svref lines bottom)
+                (if recycled (clear-line recycled bg) (make-line columns bg))))))
     (note-scroll term top bottom count)
     (when (and keep (plusp (terminal-viewport-offset term)))
       (setf (terminal-viewport-offset term)
@@ -388,6 +390,10 @@ to whole wide characters."
                (fill (line-fg line) fg :start column :end stop)
                (fill (line-bg line) bg :start column :end stop)
                (fill (line-attrs line) attrs :start column :end stop)
+               (note-extent line stop)
+               (let ((ul (terminal-ul term)))
+                 (when (or (/= ul 0) (line-ul line))
+                   (fill (the color-vector (ensure-line-ul line)) ul :start column :end stop)))
                (mark-row-dirty term row)
                (incf i count)
                (if (>= stop columns)
@@ -454,7 +460,11 @@ to whole wide characters."
           (setf (aref (line-codes line) (1+ column)) 0
                 (aref (line-fg line) (1+ column)) fg
                 (aref (line-bg line) (1+ column)) bg
-                (aref (line-attrs line) (1+ column)) (logior attrs +attr-wide-spacer+))))
+                (aref (line-attrs line) (1+ column)) (logior attrs +attr-wide-spacer+)))
+        (note-extent line (+ column width))
+        (let ((ul (terminal-ul term)))
+          (when (or (/= ul 0) (line-ul line))
+            (fill (ensure-line-ul line) ul :start column :end (+ column width)))))
       (mark-row-dirty term (terminal-cursor-row term))
       (setf (terminal-last-char term) code)
       (let ((next (+ column width)))
@@ -480,7 +490,9 @@ end up outside [START, LIMIT)."
     (when (and (plusp column) (logtest (aref (line-attrs line) column) +attr-wide-spacer+))
       (erase-cells line (1- column) (1+ column) (terminal-bg term)))
     (shift-combining line column count columns)
-    (dolist (vector (list (line-codes line) (line-fg line) (line-bg line) (line-attrs line)))
+    (note-extent line columns)
+    (dolist (vector (list* (line-codes line) (line-fg line) (line-bg line) (line-attrs line)
+                           (and (line-ul line) (list (line-ul line)))))
       (replace vector vector :start1 (+ column count) :start2 column :end2 (- columns count)))
     (when (logtest (aref (line-attrs line) (1- columns)) +attr-wide+)
       (erase-cells line (1- columns) columns (terminal-bg term)))
@@ -494,7 +506,8 @@ end up outside [START, LIMIT)."
       (erase-cells line (1- column) (1+ column) (terminal-bg term)))
     (line-remove-combining line column (+ column count))
     (shift-combining line (+ column count) (- count) columns)
-    (dolist (vector (list (line-codes line) (line-fg line) (line-bg line) (line-attrs line)))
+    (dolist (vector (list* (line-codes line) (line-fg line) (line-bg line) (line-attrs line)
+                           (and (line-ul line) (list (line-ul line)))))
       (replace vector vector :start1 column :start2 (+ column count)))
     (when (logtest (aref (line-attrs line) column) +attr-wide-spacer+)
       (erase-cells line column (1+ column) (terminal-bg term)))
@@ -528,7 +541,8 @@ end up outside [START, LIMIT)."
                 (terminal-pending-wrap term)
                 (terminal-fg term) (terminal-bg term) (terminal-attrs term)
                 (terminal-origin term)
-                (terminal-g0 term) (terminal-g1 term) (terminal-gl term))))
+                (terminal-g0 term) (terminal-g1 term) (terminal-gl term)
+                (terminal-ul term))))
 
 (defun restore-cursor (term)
   (let ((saved (screen-saved-cursor (terminal-screen term))))
@@ -544,11 +558,12 @@ end up outside [START, LIMIT)."
                 (terminal-origin term) (svref saved 6)
                 (terminal-g0 term) (svref saved 7)
                 (terminal-g1 term) (svref saved 8)
-                (terminal-gl term) (svref saved 9)))
+                (terminal-gl term) (svref saved 9)
+                (terminal-ul term) (svref saved 10)))
         (progn
           (set-cursor term 0 0)
           (setf (terminal-fg term) 0 (terminal-bg term) 0 (terminal-attrs term) 0
-                (terminal-origin term) nil)))))
+                (terminal-ul term) 0 (terminal-origin term) nil)))))
 
 ;;; Escape sequences
 
@@ -589,7 +604,8 @@ end up outside [START, LIMIT)."
   "DECALN: fill the screen with E."
   (loop for line across (screen-lines (terminal-screen term))
         do (clear-line line 0)
-           (fill (line-codes line) (char-code #\E)))
+           (fill (line-codes line) (char-code #\E))
+           (note-extent line (line-length line)))
   (setf (terminal-scroll-top term) 0
         (terminal-scroll-bottom term) (1- (terminal-rows term)))
   (set-cursor term 0 0)
@@ -689,7 +705,8 @@ Return the color or NIL, and the number of parameters consumed."
         (i 0))
     (declare (type fixnum count i))
     (when (zerop count)
-      (setf (terminal-fg term) 0 (terminal-bg term) 0 (terminal-attrs term) 0))
+      (setf (terminal-fg term) 0 (terminal-bg term) 0 (terminal-attrs term) 0
+            (terminal-ul term) 0))
     (macrolet ((set-attr (mask) `(setf (terminal-attrs term) (logior (terminal-attrs term) ,mask)))
                (clear-attr (mask) `(setf (terminal-attrs term)
                                          (logandc2 (terminal-attrs term) ,mask))))
@@ -697,29 +714,33 @@ Return the color or NIL, and the number of parameters consumed."
             do (let ((p (aref params i)))
                  (incf i)
                  (case p
-                   (0 (setf (terminal-fg term) 0 (terminal-bg term) 0 (terminal-attrs term) 0))
+                   (0 (setf (terminal-fg term) 0 (terminal-bg term) 0 (terminal-attrs term) 0
+                            (terminal-ul term) 0))
                    (1 (set-attr +attr-bold+))
                    (2 (set-attr +attr-faint+))
                    (3 (set-attr +attr-italic+))
                    (4 (if (and (< i count) (= 1 (sbit (terminal-colons term) i)))
                           (let ((style (aref params i)))
                             (incf i)
-                            (clear-attr (logior +attr-underline+ +attr-double-underline+))
+                            (clear-attr +attr-underlines+)
                             (case style
                               (0)
                               (2 (set-attr +attr-double-underline+))
+                              (3 (set-attr +attr-curly-underline+))
+                              (4 (set-attr +attr-dotted-underline+))
+                              (5 (set-attr +attr-dashed-underline+))
                               (t (set-attr +attr-underline+))))
-                          (progn (clear-attr +attr-double-underline+)
+                          (progn (clear-attr +attr-underlines+)
                                  (set-attr +attr-underline+))))
                    ((5 6) (set-attr +attr-blink+))
                    (7 (set-attr +attr-inverse+))
                    (8 (set-attr +attr-invisible+))
                    (9 (set-attr +attr-strike+))
-                   (21 (clear-attr +attr-underline+)
+                   (21 (clear-attr +attr-underlines+)
                     (set-attr +attr-double-underline+))
                    (22 (clear-attr (logior +attr-bold+ +attr-faint+)))
                    (23 (clear-attr +attr-italic+))
-                   (24 (clear-attr (logior +attr-underline+ +attr-double-underline+)))
+                   (24 (clear-attr +attr-underlines+))
                    (25 (clear-attr +attr-blink+))
                    (27 (clear-attr +attr-inverse+))
                    (28 (clear-attr +attr-invisible+))
@@ -731,13 +752,15 @@ Return the color or NIL, and the number of parameters consumed."
                     (setf (terminal-bg term) (palette-color (- p 92))))
                    (39 (setf (terminal-fg term) 0))
                    (49 (setf (terminal-bg term) 0))
+                   (59 (setf (terminal-ul term) 0))
                    ((38 48 58)
                     (multiple-value-bind (color consumed) (extended-color term (1- i))
                       (incf i (1- consumed))
                       (when color
                         (case p
                           (38 (setf (terminal-fg term) color))
-                          (48 (setf (terminal-bg term) color)))))))))))
+                          (48 (setf (terminal-bg term) color))
+                          (58 (setf (terminal-ul term) color)))))))))))
   (values))
 
 (defun set-alternate-screen (term on &key clear)
@@ -783,7 +806,7 @@ Return the color or NIL, and the number of parameters consumed."
         (terminal-insert term) nil
         (terminal-scroll-top term) 0
         (terminal-scroll-bottom term) (1- (terminal-rows term))
-        (terminal-fg term) 0 (terminal-bg term) 0 (terminal-attrs term) 0
+        (terminal-fg term) 0 (terminal-bg term) 0 (terminal-attrs term) 0 (terminal-ul term) 0
         (terminal-g0 term) :ascii (terminal-g1 term) :ascii (terminal-gl term) 0
         (screen-saved-cursor (terminal-screen term)) nil
         (terminal-pending-wrap term) nil)

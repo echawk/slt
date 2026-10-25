@@ -143,7 +143,7 @@
              (char (3bst::c glyph))
              (code (if char (char-code char) 0)))
         (grid-set-cell grid (+ base column)
-                       (if (= code 32) 0 code)
+                       code
                        (3bst-color->color (3bst::fg glyph) default-fg)
                        (3bst-color->color (3bst::bg glyph) default-bg)
                        (3bst-mode->attributes (3bst::mode glyph)))))))

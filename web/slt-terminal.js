@@ -1,4 +1,4 @@
-// slt-terminal.js — browser client for slt's web backend.
+// slt-terminal.js — browser client for slt's web frontend.
 //
 // Usage from any web app:
 //
@@ -18,7 +18,7 @@
 // fonts can also come from the CSS custom properties --slt-font-family,
 // --slt-font-size and --slt-line-height on the container.
 //
-// No dependencies; the protocol is documented in src/web/web-backend.lisp.
+// No dependencies; the protocol is documented in src/web/web-frontend.lisp.
 
 export const DEFAULT_THEME = Object.freeze({
   // A soft, low-glare dark theme (the same as slt's native default).
@@ -41,6 +41,7 @@ export const DEFAULT_THEME = Object.freeze({
 const ATTR = {
   bold: 1, faint: 2, italic: 4, underline: 8, blink: 16, inverse: 32,
   invisible: 64, strike: 128, wide: 256, wideSpacer: 512, doubleUnderline: 1024,
+  curlyUnderline: 2048, dottedUnderline: 4096, dashedUnderline: 8192,
 };
 
 const KEYSYMS = {
@@ -48,6 +49,14 @@ const KEYSYMS = {
   Home: "Home", End: "End", PageUp: "Prior", PageDown: "Next",
   Insert: "Insert", Delete: "Delete", Backspace: "BackSpace", Tab: "Tab",
   Enter: "Return", Escape: "Escape",
+};
+
+// Modifier keys, by physical key; slt reports them only to programs that
+// ask the Kitty keyboard protocol for every key.
+const MODIFIER_KEYSYMS = {
+  ShiftLeft: "Shift_L", ShiftRight: "Shift_R", ControlLeft: "Control_L",
+  ControlRight: "Control_R", AltLeft: "Alt_L", AltRight: "Alt_R",
+  MetaLeft: "Super_L", MetaRight: "Super_R", CapsLock: "Caps_Lock", NumLock: "Num_Lock",
 };
 for (let i = 1; i <= 12; i++) KEYSYMS["F" + i] = "F" + i;
 
@@ -106,8 +115,13 @@ export class SltTerminal extends EventTarget {
     this.cursor = [0, 0, true, "block"];
     this.lines = []; // runs per row, as received
     this.socket = null;
+    // The theme set here, the colors the program changed (OSC 4, 10-19),
+    // and the two combined, which is what is drawn.
+    this._userTheme = { ...DEFAULT_THEME };
+    this._userPalette = xtermPalette(this._userTheme.palette);
+    this._colors = null;
     this._theme = { ...DEFAULT_THEME };
-    this._palette = xtermPalette(this._theme.palette);
+    this._palette = this._userPalette.slice();
     this._cell = { w: 8, h: 16 };
     this.mouseTracking = false;
     this._build();
@@ -148,13 +162,14 @@ export class SltTerminal extends EventTarget {
 
   /** Merge THEME into the current theme and redraw. */
   setTheme(theme) {
-    this._theme = { ...this._theme, ...theme };
+    this._userTheme = { ...this._userTheme, ...theme };
     if (theme.palette) {
       const base = DEFAULT_THEME.palette.map((c, i) => theme.palette[i] ?? c);
-      this._palette = xtermPalette(base);
+      this._userPalette = xtermPalette(base);
       // Allow full 256-entry palettes too.
-      for (let i = 16; i < Math.min(256, theme.palette.length); i++) this._palette[i] = theme.palette[i];
+      for (let i = 16; i < Math.min(256, theme.palette.length); i++) this._userPalette[i] = theme.palette[i];
     }
+    this._applyColors();
     const style = this.root.style;
     const computed = getComputedStyle(this.container instanceof ShadowRoot ? this.container.host : this.container);
     const fontFamily = this._theme.fontFamily
@@ -166,9 +181,6 @@ export class SltTerminal extends EventTarget {
       || computed.getPropertyValue("--slt-line-height").trim() || 1.2);
     style.setProperty("--slt-resolved-font-family", fontFamily);
     style.setProperty("--slt-resolved-font-size", fontSize);
-    style.setProperty("--slt-fg", this._theme.foreground);
-    style.setProperty("--slt-bg", this._theme.background);
-    style.setProperty("--slt-selection", this._theme.selection);
     this._lineHeight = lineHeight;
     this._measure();
     this._redrawAll();
@@ -177,6 +189,23 @@ export class SltTerminal extends EventTarget {
 
   get theme() {
     return { ...this._theme };
+  }
+
+  /** Combine the theme with the colors the program changed. */
+  _applyColors() {
+    const colors = this._colors || {};
+    this._theme = { ...this._userTheme };
+    for (const key of ["foreground", "background", "cursor", "selection"]) {
+      if (colors[key]) this._theme[key] = colors[key];
+    }
+    this._palette = this._userPalette.slice();
+    for (const [index, color] of Object.entries(colors.palette || {})) {
+      this._palette[Number(index)] = color;
+    }
+    const style = this.root.style;
+    style.setProperty("--slt-fg", this._theme.foreground);
+    style.setProperty("--slt-bg", this._theme.background);
+    style.setProperty("--slt-selection", this._theme.selection);
   }
 
   /** Recompute rows/columns from the container size and tell the server. */
@@ -206,9 +235,10 @@ export class SltTerminal extends EventTarget {
     this._send({ t: "paste", text });
   }
 
-  /** Send a key in slt's backend form: CHAR, X11 KEYSYM and modifier STATE. */
-  sendKey(char, keysym, state = 0) {
-    this._send({ t: "key", char, keysym, state });
+  /** Send a key in slt's frontend form: CHAR, X11 KEYSYM and modifier STATE;
+   *  EVENT is "press", "repeat" or "release". */
+  sendKey(char, keysym, state = 0, event = "press") {
+    this._send({ t: "key", char, keysym, state, event });
   }
 
   focus() {
@@ -256,6 +286,7 @@ export class SltTerminal extends EventTarget {
     }));
     root.addEventListener("focus", () => this.focus());
     input.addEventListener("keydown", (e) => this._onKeyDown(e));
+    input.addEventListener("keyup", (e) => this._onKeyUp(e));
     input.addEventListener("input", () => {
       // Text from IME composition or dead keys arrives here.
       if (input.value && !this._composing) {
@@ -383,6 +414,11 @@ export class SltTerminal extends EventTarget {
       case "images":
         this._drawImages(message.sources || [], message.items || []);
         break;
+      case "colors":
+        this._colors = message;
+        this._applyColors();
+        this._redrawAll();
+        break;
       case "title":
         this.title = message.title;
         this._emit("title", this.title);
@@ -425,7 +461,7 @@ export class SltTerminal extends EventTarget {
     return foreground ? this._theme.foreground : this._theme.background;
   }
 
-  _styleRun(span, fg, bg, attrs, cursorHere) {
+  _styleRun(span, fg, bg, attrs, cursorHere, ul) {
     let fgColor = this._color(fg, true, attrs & ATTR.bold);
     let bgColor = this._color(bg, false, false);
     if (attrs & ATTR.inverse) [fgColor, bgColor] = [bgColor, fgColor];
@@ -441,11 +477,17 @@ export class SltTerminal extends EventTarget {
     if (attrs & ATTR.italic) s.fontStyle = "italic";
     if (attrs & ATTR.faint) s.opacity = "0.6";
     const lines = [];
-    if (attrs & (ATTR.underline | ATTR.doubleUnderline)) lines.push("underline");
+    const underlines = ATTR.underline | ATTR.doubleUnderline | ATTR.curlyUnderline
+      | ATTR.dottedUnderline | ATTR.dashedUnderline;
+    if (attrs & underlines) lines.push("underline");
     if (attrs & ATTR.strike) lines.push("line-through");
     if (lines.length) {
       s.textDecorationLine = lines.join(" ");
       if (attrs & ATTR.doubleUnderline) s.textDecorationStyle = "double";
+      else if (attrs & ATTR.curlyUnderline) s.textDecorationStyle = "wavy";
+      else if (attrs & ATTR.dottedUnderline) s.textDecorationStyle = "dotted";
+      else if (attrs & ATTR.dashedUnderline) s.textDecorationStyle = "dashed";
+      if (ul && (attrs & underlines)) s.textDecorationColor = this._color(ul, true, false);
     }
   }
 
@@ -457,11 +499,11 @@ export class SltTerminal extends EventTarget {
     const cursorColumn = cursorVisible && cursorRow === row ? cursorCol : -1;
     const fragment = document.createDocumentFragment();
     let column = 0;
-    const addSpan = (text, fg, bg, attrs, cursorHere) => {
+    const addSpan = (text, fg, bg, attrs, cursorHere, ul) => {
       const span = document.createElement("span");
       span.textContent = text;
       if (attrs & ATTR.wide) span.className = "slt-wide";
-      this._styleRun(span, fg, bg, attrs, cursorHere && cursorShape === "block");
+      this._styleRun(span, fg, bg, attrs, cursorHere && cursorShape === "block", ul);
       if (cursorHere && cursorShape !== "block") {
         span.style.boxShadow = cursorShape === "bar"
           ? `inset 2px 0 0 ${this._theme.cursor}`
@@ -469,20 +511,20 @@ export class SltTerminal extends EventTarget {
       }
       fragment.append(span);
     };
-    for (const [text, fg, bg, attrs] of runs) {
+    for (const [text, fg, bg, attrs, ul] of runs) {
       const width = attrs & ATTR.wide ? 2 : [...text].length;
       if (cursorColumn >= column && cursorColumn < column + width) {
         if (attrs & ATTR.wide) {
-          addSpan(text, fg, bg, attrs, true);
+          addSpan(text, fg, bg, attrs, true, ul);
         } else {
           const chars = [...text];
           const offset = cursorColumn - column;
-          if (offset > 0) addSpan(chars.slice(0, offset).join(""), fg, bg, attrs, false);
-          addSpan(chars[offset], fg, bg, attrs, true);
-          if (offset + 1 < chars.length) addSpan(chars.slice(offset + 1).join(""), fg, bg, attrs, false);
+          if (offset > 0) addSpan(chars.slice(0, offset).join(""), fg, bg, attrs, false, ul);
+          addSpan(chars[offset], fg, bg, attrs, true, ul);
+          if (offset + 1 < chars.length) addSpan(chars.slice(offset + 1).join(""), fg, bg, attrs, false, ul);
         }
       } else {
-        addSpan(text, fg, bg, attrs, false);
+        addSpan(text, fg, bg, attrs, false, ul);
       }
       column += width;
     }
@@ -529,19 +571,18 @@ export class SltTerminal extends EventTarget {
     }
   }
 
-  _onKeyDown(e) {
-    if (e.isComposing || this._composing) return;
-    // Leave the platform's copy/paste and other shortcuts alone.
-    if (e.metaKey && !e.ctrlKey) return;
+  /** The [char, keysym, state] slt expects for key event E, or null. */
+  _keyData(e) {
     let state = 0;
     if (e.ctrlKey) state |= MOD_CONTROL;
     if (e.altKey) state |= MOD_META;
     if (e.metaKey) state |= MOD_SUPER;
-    const keysym = KEYSYMS[e.key];
+    const keysym = KEYSYMS[e.key] || MODIFIER_KEYSYMS[e.code];
     if (keysym) {
       if (e.shiftKey) state |= MOD_SHIFT;
-      this.sendKey("", keysym, state);
-    } else if (e.key.length === 1 || [...e.key].length === 1) {
+      return ["", keysym, state];
+    }
+    if (e.key.length === 1 || [...e.key].length === 1) {
       let char = e.key;
       // With Alt (Option on macOS) the browser composes characters; use the
       // physical key instead so Alt behaves as Meta.
@@ -551,11 +592,25 @@ export class SltTerminal extends EventTarget {
       } else if (e.altKey && /^Digit[0-9]$/.test(e.code)) {
         char = e.code.slice(5);
       }
-      this.sendKey(char, char, state);
-    } else {
-      return; // Modifier-only and unknown keys.
+      return [char, char, state];
     }
+    return null; // Unknown keys.
+  }
+
+  _onKeyDown(e) {
+    if (e.isComposing || this._composing) return;
+    // Leave the platform's copy/paste and other shortcuts alone.
+    if (e.metaKey && !e.ctrlKey && !MODIFIER_KEYSYMS[e.code]) return;
+    const data = this._keyData(e);
+    if (!data) return;
+    this.sendKey(...data, e.repeat ? "repeat" : "press");
     e.preventDefault();
+  }
+
+  _onKeyUp(e) {
+    if (e.isComposing || this._composing) return;
+    const data = this._keyData(e);
+    if (data) this.sendKey(...data, "release");
   }
 }
 

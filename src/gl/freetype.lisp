@@ -1,6 +1,6 @@
 (in-package #:slt)
 
-;;;; Glyph rasterization for the gl backend on Linux and the BSDs (macOS
+;;;; Glyph rasterization for the gl frontend on Linux and the BSDs (macOS
 ;;;; uses CoreText, src/macos/coretext.lisp).  font-discovery (fontconfig)
 ;;;; finds the family's files; characters the family lacks come from the
 ;;;; first font in *FONT-FALLBACK-FAMILIES*, then any installed font, that

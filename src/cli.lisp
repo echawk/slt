@@ -1,6 +1,6 @@
 (in-package #:slt)
 
-(defun web-backend-loaded-p ()
+(defun web-frontend-loaded-p ()
   (boundp '*web-host*))
 
 (defun repl-server-loaded-p ()
@@ -11,10 +11,10 @@
    nil
    (list
     (clingon:make-option :string
-                         :key :backend
-                         :short-name #\b
-                         :long-name "backend"
-                         :description "GUI backend to use.")
+                         :key :frontend
+                         :short-name #\f
+                         :long-name "frontend"
+                         :description "GUI frontend to use.")
     (clingon:make-option :string
                          :key :engine
                          :short-name #\e
@@ -60,16 +60,16 @@
                          :key :title
                          :long-name "title"
                          :description "Window title.")
-    (when (web-backend-loaded-p)
+    (when (web-frontend-loaded-p)
       (clingon:make-option :string
                            :key :web-host
                            :long-name "web-host"
-                           :description "Address the web backend listens on (default 127.0.0.1)."))
-    (when (web-backend-loaded-p)
+                           :description "Address the web frontend listens on (default 127.0.0.1)."))
+    (when (web-frontend-loaded-p)
       (clingon:make-option :integer
                            :key :web-port
                            :long-name "web-port"
-                           :description "Port the web backend listens on (default 8080)."))
+                           :description "Port the web frontend listens on (default 8080)."))
     (when (repl-server-loaded-p)
       (clingon:make-option :choice
                            :key :repl-server
@@ -105,11 +105,11 @@
                          :long-name "list-engines"
                          :description "Print the available terminal engines and exit.")
     (clingon:make-option :flag
-                         :key :list-backends
-                         :long-name "list-backends"
-                         :description "Print the available GUI backends and exit."))))
+                         :key :list-frontends
+                         :long-name "list-frontends"
+                         :description "Print the available GUI frontends and exit."))))
 
-(defun cli-backend-argument (command)
+(defun cli-frontend-argument (command)
   (let ((free-arguments (clingon:command-arguments command)))
     (when (= (length free-arguments) 1)
       (first free-arguments))))
@@ -122,9 +122,9 @@
 (defun command-launch-arguments (command)
   (let ((arguments '()))
     (setf arguments (%append-keyword-argument arguments
-                                              :backend
-                                              (or (clingon:getopt command :backend nil)
-                                                  (cli-backend-argument command))))
+                                              :frontend
+                                              (or (clingon:getopt command :frontend nil)
+                                                  (cli-frontend-argument command))))
     (setf arguments (%append-keyword-argument arguments
                                               :engine
                                               (clingon:getopt command :engine nil)))
@@ -170,19 +170,19 @@
 (defun handle-cli-command (command &key (launcher #'launch-terminal)
                                       (stream *standard-output*))
   (cond
-    ((clingon:getopt command :list-backends nil)
-     (dolist (backend (available-backends :probe t))
-       (format stream "~(~a~)~%" backend))
+    ((clingon:getopt command :list-frontends nil)
+     (dolist (frontend (available-frontends :probe t))
+       (format stream "~(~a~)~%" frontend))
      t)
     ((clingon:getopt command :list-engines nil)
      (dolist (engine (available-engines :probe t))
        (format stream "~(~a~)~%" engine))
      t)
     (t
-     ;; The web backend and REPL servers are in the slt system, which a
+     ;; The web frontend and REPL servers are in the slt system, which a
      ;; lean build (slt/app alone) leaves out; their variables are only
      ;; touched when it is loaded.
-     (let ((web-variables (and (web-backend-loaded-p) '(*web-host* *web-port*)))
+     (let ((web-variables (and (web-frontend-loaded-p) '(*web-host* *web-port*)))
            (repl-server (clingon:getopt command :repl-server nil)))
        (when (clingon:getopt command :config nil)
          (setf *config-file* (clingon:getopt command :config nil)))
@@ -205,11 +205,11 @@
 (defun make-cli-command ()
   (clingon:make-command
    :name "slt"
-   :description "A terminal emulator with pluggable engines and GUI backends."
+   :description "A terminal emulator with pluggable engines and GUI frontends."
    :version (system-version)
    :authors '("Ethan Hawk <ethhawk@iu.edu>")
    :license "MIT"
-   :usage "[OPTIONS] [BACKEND]"
+   :usage "[OPTIONS] [FRONTEND]"
    :options (cli-options)
    :handler #'cli-command-handler))
 

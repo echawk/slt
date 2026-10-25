@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
-# Smoke-test the gl backend (t/gl-snapshot.lisp).  Needs a display: on
-# Linux CI run it under xvfb-run, or under `weston --backend=headless` with
+# Smoke-test the gl frontend (t/gl-snapshot.lisp).  Needs a display: on
+# Linux CI run it under xvfb-run, or under `weston --frontend=headless` with
 # WAYLAND_DISPLAY set.  SLT_ENGINE picks the engine (default 3bst).
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)

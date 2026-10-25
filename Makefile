@@ -4,9 +4,9 @@
 #   make run ARGS='--engine 3bst' build, then run bin/slt with ARGS
 #   make check                    unit tests and engine conformance
 #   make install                  install into $(DESTDIR)$(PREFIX)
-#   make lean [install]           bin/ with only this system's GUI backend and
+#   make lean [install]           bin/ with only this system's GUI frontend and
 #                                 the pure-Lisp lispvt engine (= LEAN=1)
-#   make tiny [install]           the same with the Tk (ltk) backend (= TINY=1)
+#   make tiny [install]           the same with the Tk (ltk) frontend (= TINY=1)
 #   make app                      macOS: build/slt.app around bin/
 #   make install-app              macOS: install slt.app into $(APPDIR)
 #
@@ -37,28 +37,28 @@ export SBCL
 # ghostty downloads Zig and Ghostty to build; libvterm needs only a C compiler.
 ENGINES ?= ghostty libvterm
 
-# Backends outside the slt system: on Linux and the BSDs the GLFW/OpenGL one.
+# Frontends outside the slt system: on Linux and the BSDs the GLFW/OpenGL one.
 # (macOS always has cocoa, plus ltk, web and headless everywhere.)
 ifeq ($(shell uname -s),Darwin)
-BACKENDS ?=
+FRONTENDS ?=
 else
-BACKENDS ?= gl
+FRONTENDS ?= gl
 endif
 
-# The slt system: the ltk and web backends, the REPL servers and the 3bst
+# The slt system: the ltk and web frontends, the REPL servers and the 3bst
 # engine.  bin/slt is the command line over slt/core plus BASE, ENGINES and
-# BACKENDS.
+# FRONTENDS.
 BASE ?= slt
 
-# LEAN=1: only the native GUI backend (cocoa on macOS, gl elsewhere) and the
+# LEAN=1: only the native GUI frontend (cocoa on macOS, gl elsewhere) and the
 # lispvt engine, which lives in slt/core.  Its Lisp dependencies are fetched
 # on their own into build/lean/ocicl (scripts/fetch-lean), and no native
-# engine is built.  TINY=1: the same with the ltk backend instead, which
+# engine is built.  TINY=1: the same with the ltk frontend instead, which
 # needs only Tk's wish at run time; its dependencies go to build/tiny/ocicl.
 ifeq ($(shell uname -s),Darwin)
-NATIVE_BACKEND = cocoa
+NATIVE_FRONTEND = cocoa
 else
-NATIVE_BACKEND = gl
+NATIVE_FRONTEND = gl
 endif
 ifneq ($(filter lean,$(MAKECMDGOALS)),)
 LEAN = 1
@@ -68,10 +68,10 @@ TINY = 1
 endif
 ifdef TINY
 LEAN_DIR = build/tiny
-BACKENDS = ltk
+FRONTENDS = ltk
 else ifdef LEAN
 LEAN_DIR = build/lean
-BACKENDS = $(NATIVE_BACKEND)
+FRONTENDS = $(NATIVE_FRONTEND)
 endif
 ifdef LEAN_DIR
 BASE =
@@ -87,9 +87,9 @@ SOURCES = slt.asd ocicl.csv $(shell find src lib conformance -name '*.lisp' -o -
 STAMPS  = $(ENGINES:%=build/stamp/%)
 GHOSTTY_DIR = $(dir ocicl/$(shell awk -F', ' '$$1 == "ghostty-vt" {print $$3}' ocicl.csv))
 
-# Rebuild when ENGINES or BACKENDS change: build/stamp/config holds the
+# Rebuild when ENGINES or FRONTENDS change: build/stamp/config holds the
 # configuration bin/ was built with, and a different one discards bin/.
-CONFIG := $(BASE) / $(ENGINES) / $(BACKENDS)
+CONFIG := $(BASE) / $(ENGINES) / $(FRONTENDS)
 $(shell mkdir -p build/stamp && \
         (echo '$(CONFIG)' | cmp -s - build/stamp/config || \
          { echo '$(CONFIG)' > build/stamp/config; rm -rf bin; }))
@@ -99,7 +99,7 @@ $(shell mkdir -p build/stamp && \
 all: bin/slt
 
 bin/slt: $(DEPS_STAMP) $(STAMPS) $(SOURCES)
-	SLT_SYSTEMS="$(BASE) $(ENGINES:%=slt/%) $(BACKENDS:%=slt/%)" scripts/build
+	SLT_SYSTEMS="$(BASE) $(ENGINES:%=slt/%) $(FRONTENDS:%=slt/%)" scripts/build
 
 lean tiny: bin/slt
 
@@ -110,7 +110,7 @@ ocicl/.stamp: ocicl.csv
 	touch $@
 
 build/lean/.stamp build/tiny/.stamp: ocicl.csv slt.asd
-	OCICL=$(OCICL) scripts/fetch-lean $(@D) slt/app $(BACKENDS:%=slt/%)
+	OCICL=$(OCICL) scripts/fetch-lean $(@D) slt/app $(FRONTENDS:%=slt/%)
 	touch $@
 
 # Native engine libraries; the scripts skip work that is already done.
@@ -142,15 +142,15 @@ conformance: ocicl/.stamp $(STAMPS)
 web-test: ocicl/.stamp
 	scripts/web-test
 
-# gl backend smoke test; needs a display (on Linux CI: xvfb-run make gl-test).
+# gl frontend smoke test; needs a display (on Linux CI: xvfb-run make gl-test).
 gl-test: ocicl/.stamp
 	scripts/gl-test
 
-# gtk backend smoke test; needs a display and GTK 3 (on Linux CI: xvfb-run).
+# gtk frontend smoke test; needs a display and GTK 3 (on Linux CI: xvfb-run).
 gtk-test: ocicl/.stamp
 	scripts/gtk-test
 
-# clx backend smoke test; needs an X server with 24-bit TrueColor (on Linux
+# clx frontend smoke test; needs an X server with 24-bit TrueColor (on Linux
 # CI: xvfb-run -s '-screen 0 1024x768x24').
 clx-test: ocicl/.stamp
 	scripts/clx-test

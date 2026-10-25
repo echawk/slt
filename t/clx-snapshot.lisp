@@ -1,4 +1,4 @@
-;;;; Smoke test for the clx backend: run a shell that prints styled text,
+;;;; Smoke test for the clx frontend: run a shell that prints styled text,
 ;;;; read the window's pixels back from the X server and check them.  Run
 ;;;; with scripts/clx-test; on Linux CI, under Xvfb (24-bit depth).  Leaves
 ;;;; build/clx-test/snapshot.ppm for inspection.
@@ -80,17 +80,17 @@
 
 (add-hook '*after-init-hook*
           (lambda (emulator)
-            (let ((backend (terminal-emulator-backend emulator))
+            (let ((frontend (terminal-emulator-frontend emulator))
                   (view (terminal-emulator-view emulator)))
-              (backend-schedule backend view 1500
+              (frontend-schedule frontend view 1500
                                 (lambda ()
                                   (render-emulator emulator :force t)
                                   (handler-case (check-snapshot view)
                                     (error (condition)
                                       (check nil (format nil "snapshot: ~a" condition))))
                                   (destroy-emulator emulator)
-                                  (backend-request-exit backend view))))))
+                                  (frontend-request-exit frontend view))))))
 
-(launch-terminal :backend :clx :engine (or (uiop:getenv "SLT_ENGINE") :3bst)
+(launch-terminal :frontend :clx :engine (or (uiop:getenv "SLT_ENGINE") :3bst)
                  :shell *script* :rows 10 :columns 50 :load-config nil)
 (uiop:quit (if *failures* 1 0))

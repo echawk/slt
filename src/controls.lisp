@@ -48,10 +48,20 @@ session, so that scrolling them into the scrollback changes nothing."
   "The screen row of a STORED row; negative rows are in the scrollback."
   (if (eq screen :primary) (- stored (terminal-emulator-row-origin emulator)) stored))
 
-(defun prompt-mark-rows (emulator)
-  "The screen rows of the remembered prompts, newest first."
-  (mapcar (lambda (row) (screen-row emulator row :primary))
-          (terminal-emulator-prompt-marks emulator)))
+(defstruct command-mark
+  "A command run at a shell prompt, from OSC 133 marks: the stored rows
+(see STORED-ROW) of its prompt and of the first and last lines of its
+output, and its exit status."
+  prompt output last status)
+
+(defun prompt-mark-rows (emulator &key failed)
+  "The screen rows of the remembered prompts, newest first: only those of
+commands that failed, with FAILED."
+  (loop for mark in (terminal-emulator-prompt-marks emulator)
+        when (or (not failed)
+                 (let ((status (command-mark-status mark)))
+                   (and status (/= status 0))))
+          collect (screen-row emulator (command-mark-prompt mark) :primary)))
 
 (defun stream-screen (engine)
   (if (engine-mode engine :alternate-screen) :alternate :primary))
@@ -67,15 +77,25 @@ session, so that scrolling them into the scrollback changes nothing."
         (parser (terminal-emulator-stream-parser emulator)))
     (destructuring-bind (kind &rest arguments) event
       (case kind
+        ;; Images are decoded with the engine lock released: a large one
+        ;; would otherwise hold up rendering and typing.  Decoding touches
+        ;; neither the engine nor what the renderer reads.
         (:sixel
          (graphics-guard ("drawing a SIXEL image")
-           (handle-sixel-command store (first arguments) engine))
+           (let ((decoded (without-engine-lock (emulator)
+                            (decode-sixel-payload (first arguments)))))
+             (handle-sixel-command store (first arguments) engine :decoded decoded)))
          ;; Erasures later in this same input may now hit the image.
          (setf (terminal-stream-parser-erase-events-p parser) t))
         (:kitty
          (reply-to-child emulator
                          (graphics-guard ("handling a Kitty graphics command")
-                           (handle-kitty-command store (first arguments) engine))))
+                           (multiple-value-bind (command reply decoded)
+                               (without-engine-lock (emulator)
+                                 (prepare-kitty-command store (first arguments)))
+                             (if command
+                                 (run-kitty-command store command engine decoded)
+                                 reply)))))
         (:osc
          (graphics-guard ("handling an OSC string")
            (destructuring-bind (number text terminator) arguments
@@ -167,8 +187,11 @@ session, so that scrolling them into the scrollback changes nothing."
            (setf (terminal-emulator-hyperlink emulator) uri
                  (terminal-stream-parser-text-events-p (terminal-emulator-stream-parser emulator))
                  (and uri t)))))
-    (133 (when (eq (terminal-osc:parse-semantic-prompt text) :prompt-start)
-           (note-prompt emulator)))
+    (133 (multiple-value-bind (kind status) (terminal-osc:parse-semantic-prompt text)
+           (case kind
+             (:prompt-start (note-prompt emulator))
+             (:command-start (note-command-output emulator :start))
+             (:command-end (note-command-output emulator :end status)))))
     ((9 777) (let ((notification (terminal-osc:parse-notification number text)))
                (when (and notification (getf notification :body))
                  (notify emulator (getf notification :title) (getf notification :body)))))
@@ -201,6 +224,7 @@ session, so that scrolling them into the scrollback changes nothing."
 (defun set-emulator-palette (emulator palette)
   "Draw EMULATOR with PALETTE (NIL for the default) from now on."
   (setf (terminal-emulator-palette emulator) palette)
+  (set-image-store-palette (terminal-emulator-image-store emulator) palette)
   (invoke-on-ui emulator
                 (lambda ()
                   (setf (view-palette (terminal-emulator-view emulator)) palette)
@@ -297,7 +321,7 @@ indices, or a dynamic color number (10, 11, 12, 17)."
     (return-from handle-clipboard-osc))
   (multiple-value-bind (selections data) (terminal-osc:parse-clipboard-request text)
     (when selections
-      (let ((backend (terminal-emulator-backend emulator))
+      (let ((frontend (terminal-emulator-frontend emulator))
             (view (terminal-emulator-view emulator)))
         (cond
           ((null *clipboard-access*))
@@ -308,15 +332,15 @@ indices, or a dynamic color number (10, 11, 12, 17)."
                              (reply-to-child
                               emulator
                               (terminal-osc:encode-clipboard-reply
-                               selections (or (backend-clipboard-text backend view) "")
+                               selections (or (frontend-clipboard-text frontend view) "")
                                terminator))))))
           ((stringp data)
            (when (<= (length data) *clipboard-limit*)
              (invoke-on-ui emulator
-                           (lambda () (backend-set-clipboard-text backend view data)))))
+                           (lambda () (frontend-set-clipboard-text frontend view data)))))
           ((eq data :clear)
            (invoke-on-ui emulator
-                         (lambda () (backend-set-clipboard-text backend view "")))))))))
+                         (lambda () (frontend-set-clipboard-text frontend view "")))))))))
 
 ;;; Notifications (OSC 9, 777, 99)
 
@@ -336,7 +360,7 @@ limit allow."
           (push now recent)
           (invoke-on-ui emulator
                         (lambda ()
-                          (backend-notify (terminal-emulator-backend emulator)
+                          (frontend-notify (terminal-emulator-frontend emulator)
                                           (terminal-emulator-view emulator)
                                           (and title (subseq title 0 (min 256 (length title))))
                                           (and body (subseq body 0 (min 1024 (length body))))))))
@@ -350,22 +374,40 @@ limit allow."
     (when (eq :primary (stream-screen engine))
       (let ((row (stored-row emulator (engine-cursor-position engine) :primary))
             (marks (terminal-emulator-prompt-marks emulator)))
-        (unless (eql row (first marks))
-          (push row marks)
+        (unless (and marks (eql row (command-mark-prompt (first marks))))
+          (push (make-command-mark :prompt row) marks)
           (when (> (length marks) *prompt-mark-limit*)
             (setf marks (subseq marks 0 *prompt-mark-limit*)))
           (setf (terminal-emulator-prompt-marks emulator) marks))))))
 
-(defun jump-to-prompt (emulator direction)
+(defun note-command-output (emulator what &optional status)
+  "The newest command's output starts (WHAT :START, OSC 133 C) or ends
+(:END, OSC 133 D, with its exit STATUS) at the cursor."
+  (let ((engine (terminal-emulator-engine emulator))
+        (mark (first (terminal-emulator-prompt-marks emulator))))
+    (when (and mark (eq :primary (stream-screen engine)))
+      (multiple-value-bind (row column) (engine-cursor-position engine)
+        (if (eq what :start)
+            (setf (command-mark-output mark) (stored-row emulator row :primary)
+                  (command-mark-last mark) nil)
+            (when (command-mark-output mark)
+              ;; D comes at the start of the line after the output.
+              (setf (command-mark-last mark)
+                    (max (command-mark-output mark)
+                         (stored-row emulator (if (zerop column) (1- row) row) :primary))
+                    (command-mark-status mark) status)))))))
+
+(defun jump-to-prompt (emulator direction &key failed)
   "Scroll the view so the previous (DIRECTION :UP) or next (:DOWN) prompt
-is at the top.  Return true when there was one."
+is at the top: only prompts of commands that failed, with FAILED.  Return
+true when there was one."
   (with-engine (engine emulator)
     (let* ((offset (engine-viewport-offset engine))
            (top (and offset (- offset)))
            (candidates (and top
                             (remove-if-not (lambda (row)
                                              (if (eq direction :up) (< row top) (> row top)))
-                                           (prompt-mark-rows emulator))))
+                                           (prompt-mark-rows emulator :failed failed))))
            (target (and candidates
                         (reduce (if (eq direction :up) #'max #'min) candidates))))
       (when target
@@ -375,6 +417,53 @@ is at the top.  Return true when there was one."
             (engine-scroll engine :bottom)
             (engine-scroll engine (+ offset target)))
         t))))
+
+(defun screen-rows-text (emulator engine first last)
+  "The text of screen rows FIRST to LAST (negative rows are in the
+scrollback), read through the engine's viewport a screenful at a time.
+The engine lock must be held.  Rows the engine keeps no more are left out."
+  (let* ((rows (engine-rows engine))
+         (columns (engine-columns engine))
+         (grid (make-grid rows columns))
+         (saved (or (engine-viewport-offset engine) 0))
+         (lines '()))
+    (unwind-protect
+         (loop for top from first to last by rows
+               do (engine-scroll engine :bottom)
+                  (when (minusp top)
+                    (engine-scroll engine top))
+                  (engine-update-grid engine grid :force t)
+                  ;; Where row TOP really is: the engine may not scroll so far.
+                  (let ((shown-top (- (or (engine-viewport-offset engine) 0))))
+                    (loop for row from (max top shown-top) to (min last (+ top rows -1))
+                          for index = (- row shown-top)
+                          when (< -1 index rows)
+                            do (push (grid-row-text grid index) lines))))
+      (engine-scroll engine :bottom)
+      (when (plusp saved)
+        (engine-scroll engine (- saved)))
+      ;; The reads consumed the engine's dirty rows.
+      (setf (terminal-image-store-force-render-p (terminal-emulator-image-store emulator)) t))
+    (format nil "~{~a~^~%~}" (nreverse lines))))
+
+(defun last-command-output (emulator)
+  "The text of the output of the newest command that finished, or NIL."
+  (with-engine (engine emulator)
+    (let ((mark (find-if #'command-mark-last (terminal-emulator-prompt-marks emulator))))
+      (when mark
+        (screen-rows-text emulator engine
+                          (screen-row emulator (command-mark-output mark) :primary)
+                          (screen-row emulator (command-mark-last mark) :primary))))))
+
+(defun copy-last-command-output (emulator)
+  "Copy the output of the newest command that finished to the clipboard.
+Return true when there was one."
+  (let ((text (last-command-output emulator)))
+    (when text
+      (frontend-set-clipboard-text (terminal-emulator-frontend emulator)
+                                  (terminal-emulator-view emulator)
+                                  text)
+      t)))
 
 ;;; Hyperlinks (OSC 8)
 
@@ -458,6 +547,12 @@ or those in the :SCROLLBACK."
     (hyperlink-at-locked emulator engine row column)))
 
 (defun hyperlink-at-locked (emulator engine row column)
+  (let ((span (hyperlink-span-at-locked emulator engine row column)))
+    (and span (link-span-uri span))))
+
+(defun hyperlink-span-at-locked (emulator engine row column)
+  "The span of the hyperlink shown at ROW, COLUMN, if its text is still
+there."
   (let* ((grid (terminal-emulator-grid emulator))
          (offset (engine-viewport-offset engine))
          (screen (stream-screen engine)))
@@ -477,7 +572,44 @@ or those in the :SCROLLBACK."
                                          do (write-string
                                              (grid-cell-string grid (grid-index grid row c))
                                              out)))))
-                return (link-span-uri span))))))
+                return span)))))
+
+(defun apply-link-hover (emulator engine grid)
+  "Underline the hyperlink under the pointer, as kitty does.  Called by
+RENDER-EMULATOR with the engine lock held, once GRID is up to date.  Cells
+underlined here carry +ATTR-HOVER+, which engines never set, so they can be
+told from cells the engine underlined until it rewrites them."
+  (let* ((old (terminal-emulator-hover-link emulator))
+         (row (terminal-emulator-pointer-row emulator))
+         (span (and (terminal-emulator-links emulator)
+                    (terminal-emulator-pointer-known-p emulator)
+                    (hyperlink-span-at-locked emulator engine row
+                                              (terminal-emulator-pointer-column emulator))))
+         (new (and span
+                   (list row (link-span-column span)
+                         (min (1- (grid-columns grid))
+                              (+ (link-span-column span) (link-span-width span) -1))))))
+    (flet ((update (extent function)
+             (destructuring-bind (row first last) extent
+               (when (< row (grid-rows grid))
+                 (loop for column from first to last
+                       for index = (grid-index grid row column)
+                       for attrs = (aref (grid-attrs grid) index)
+                       for changed = (funcall function attrs)
+                       unless (= changed attrs)
+                         do (setf (aref (grid-attrs grid) index) changed
+                                  (sbit (grid-dirty grid) row) 1))))))
+      (when (and old (not (equal old new)))
+        (update old (lambda (attrs)
+                      (if (logtest attrs +attr-hover+)
+                          (logandc2 attrs (logior +attr-hover+ +attr-underline+))
+                          attrs))))
+      (setf (terminal-emulator-hover-link emulator) new)
+      (when new
+        (update new (lambda (attrs)
+                      (if (logtest attrs +attr-underlines+)
+                          attrs
+                          (logior attrs +attr-underline+ +attr-hover+))))))))
 
 ;;; Scrolling of remembered rows
 
@@ -508,19 +640,29 @@ of SCREEN by COUNT (upward when positive) on a screen of ROWS rows."
           (setf (terminal-emulator-link-count emulator)
                 (length (terminal-emulator-links emulator)))
           (when (eq screen :primary)
-            (setf (terminal-emulator-prompt-marks emulator)
-                  (loop for stored in (terminal-emulator-prompt-marks emulator)
-                        for new = (moved (screen-row emulator stored :primary))
-                        when new collect (stored-row emulator new :primary))))))))
+            (flet ((move (stored)
+                     (let ((new (and stored (moved (screen-row emulator stored :primary)))))
+                       (and new (stored-row emulator new :primary)))))
+              (setf (terminal-emulator-prompt-marks emulator)
+                    (loop for mark in (terminal-emulator-prompt-marks emulator)
+                          for prompt = (move (command-mark-prompt mark))
+                          when prompt
+                            collect (let ((output (move (command-mark-output mark)))
+                                          (last (move (command-mark-last mark))))
+                                      (setf (command-mark-prompt mark) prompt
+                                            (command-mark-output mark) output
+                                            (command-mark-last mark) (and output last))
+                                      mark)))))))))
 
 ;;; Keys
 
 (defparameter *kitty-modifiers* '((:shift . :shift) (:meta . :alt) (:control . :control)
                                   (:super . :super)))
 
-(defun kitty-key-input (emulator key modifiers)
+(defun kitty-key-input (emulator key modifiers &optional (event :press))
   "What to send for KEY with MODIFIERS when the child enabled the Kitty
-keyboard protocol on this screen, or :LEGACY to encode it the usual way."
+keyboard protocol on this screen, or :LEGACY to encode it the usual way.
+EVENT is :PRESS, :REPEAT or :RELEASE."
   (let* ((engine (terminal-emulator-engine emulator))
          (flags (kitty-keyboard:keyboard-flags (terminal-emulator-keyboard emulator)
                                                (stream-screen engine))))
@@ -537,10 +679,11 @@ keyboard protocol on this screen, or :LEGACY to encode it the usual way."
                                 (t (code-char (+ 64 code)))))
                         key))
                (text (and (characterp key)
+                          (not (eq event :release))
                           (not (intersection modifiers '(:control :alt :super)))
                           (string key)))
                (base key))
-          ;; Backends fold Shift into the character (A, !): recover the
+          ;; Frontends fold Shift into the character (A, !): recover the
           ;; key and the modifier.
           (when (characterp key)
             (multiple-value-bind (unshifted shifted) (kitty-keyboard:unshifted-key key)
@@ -548,7 +691,7 @@ keyboard protocol on this screen, or :LEGACY to encode it the usual way."
               (when shifted (pushnew :shift modifiers))))
           (if (or (characterp base) (kitty-keyboard:functional-key-p base))
               (or (kitty-keyboard:encode-key
-                   flags base :modifiers modifiers :text text
+                   flags base :modifiers modifiers :text text :event event
                               :shifted-key (and (characterp key) (char/= key base) key)
                               :application-cursor-keys (engine-mode engine :application-cursor))
                   "")

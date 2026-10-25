@@ -1,31 +1,12 @@
-scrollback & resizing need to be much more responsive
- - when resizing window with a program like htop open, program does not resize immediately
-
-add support for user configuration via a config file (just a source we load on boot, can run arbitrary code; similar to stumpwm's config file).
-
-support both libsixel and kitty graphics protocol;
-  - both should start out as a lib here and eventually be able to be extracted into their own
-    project, which others can then use
-  - Kitty: placeholder placement ids (needs underline color in the grid); indexed-color
-    images should follow palette changes
+graphics and escape sequences: known limits
+  - lib/cl-libsixel and lib/kitty-graphics (and ecma48, kitty-keyboard, terminal-osc)
+    should eventually be extracted into their own projects
   - ghostty reports only scrolls that grow its scrollback; region and alternate-screen
-    scrolls are inferred from the screen
-  - 3bst stores a printed space as a blank cell, so a space written over a SIXEL
-    cell does not erase it
-  - images are decoded on the reader thread with the engine lock held (a 24 MB Kitty
-    upload holds it ~0.4 s)
-  - SIXEL: pixel aspect ratio (libsixel's decoder ignores it)
-  - images under text (negative z) only on the Metal, GL and web backends
-
-escape sequences (doc/escape-sequences.md):
-  - backends report key presses only: the Kitty keyboard protocol cannot send release
-    events or tell repeats apart
-  - draw OSC 8 hyperlinks distinctly (underline on hover)
-  - use the other OSC 133 marks (select a command's output, jump to failed commands)
-  - styled and colored underlines (SGR 4:x, 58) in the engines and renderers
-  - the web backend should follow OSC color changes
-
-support drag and drop in both macos & X11 at the beginning
-
-rename `backend` to frontend; idk why it is a `gui backend` as opposed to a `gui frontend`
-engine can stay the same name though.
+    scrolls are inferred from the screen.  libghostty-vt's tracked grid refs follow
+    index scrolls but not RI/IL/DL/SD, and a discarded row's ref lands ambiguously on
+    a live row, so they cannot replace the inference
+  - SDL2 draws every negative-z image below the cell backgrounds (one cached grid
+    texture; a middle layer needs a second texture with alpha)
+  - ltk draws no underlines and reports key presses only
+  - underline styles and colors: libvterm has no underline color or dotted/dashed,
+    3bst only plain underlines

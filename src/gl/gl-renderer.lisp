@@ -6,7 +6,7 @@
 ;;;; PACK-GRID, and glyphs come from an R8 atlas texture.
 ;;;;
 ;;;; GL calls go through cl-opengl.  Its entry points are resolved with
-;;;; glfwGetProcAddress (see GL-BACKEND), which works for EGL (used on X11
+;;;; glfwGetProcAddress (see GL-FRONTEND), which works for EGL (used on X11
 ;;;; and Wayland) and NSGL alike.
 
 (defparameter *gl-vertex-shader-source* "
@@ -19,6 +19,7 @@ flat out vec3 fg;
 flat out vec3 bg;
 flat out uint flags;
 flat out uint slot;
+flat out float bg_alpha;
 out vec2 atlas_px;
 out vec2 local_px;
 
@@ -35,9 +36,11 @@ void main() {
   gl_Position = vec4(px.x / viewport.x * 2.0 - 1.0, 1.0 - px.y / viewport.y * 2.0, 0.0, 1.0);
   fg = unpack_rgb(cell.x);
   bg = unpack_rgb(cell.y);
-  slot = cell.z;
+  // The top bit marks the default background, transparent in layer 0.
+  slot = cell.z & 0x7FFFFFFFu;
+  bg_alpha = (cell.z >> 31) != 0u ? 0.0 : 1.0;
   flags = cell.w;
-  atlas_px = (vec2(float(cell.z % atlas_columns), float(cell.z / atlas_columns)) + corner) * cell_size;
+  atlas_px = (vec2(float(slot % atlas_columns), float(slot / atlas_columns)) + corner) * cell_size;
   local_px = corner * cell_size;
 }
 ")
@@ -46,26 +49,52 @@ void main() {
 uniform vec2 cell_size;
 uniform vec4 cursor_color;
 uniform sampler2D atlas;
+// 2 draws whole cells.  Under images with negative z the cells are drawn
+// in two layers instead: 0, the backgrounds (the default one transparent),
+// then 1, the text and decorations alone.
+uniform uint layer;
 flat in vec3 fg;
 flat in vec3 bg;
 flat in uint flags;
 flat in uint slot;
+flat in float bg_alpha;
 in vec2 atlas_px;
 in vec2 local_px;
 out vec4 color_out;
 
 void main() {
-  float coverage = slot == 0u ? 0.0 : texelFetch(atlas, ivec2(atlas_px), 0).r;
+  if (layer == 0u) { color_out = vec4(bg, bg_alpha); return; }
+  float ink = slot == 0u ? 0.0 : texelFetch(atlas, ivec2(atlas_px), 0).r;
   float h = cell_size.y;
   float t = max(1.0, floor(h / 18.0));
   float y = local_px.y;
-  if ((flags & 1u) != 0u && y >= h - 2.0 * t && y < h - t) coverage = 1.0;
-  if ((flags & 2u) != 0u && ((y >= h - t) || (y >= h - 3.0 * t && y < h - 2.0 * t))) coverage = 1.0;
-  if ((flags & 4u) != 0u && abs(y - h * 0.55) < t * 0.5 + 0.25) coverage = 1.0;
-  vec3 color = mix(bg, fg, coverage);
-  if ((flags & 8u) != 0u && local_px.x < 2.0 * t) color = cursor_color.rgb;
-  if ((flags & 16u) != 0u && y >= h - 2.0 * t) color = cursor_color.rgb;
-  color_out = vec4(color, 1.0);
+  if ((flags & 4u) != 0u && abs(y - h * 0.55) < t * 0.5 + 0.25) ink = 1.0;
+  // Underlines, in their own color; patterns follow the window's x so
+  // they run on across cells.
+  float x = gl_FragCoord.x;
+  float band = (y >= h - 2.0 * t && y < h - t) ? 1.0 : 0.0;
+  float line = 0.0;
+  if ((flags & 1u) != 0u) line = band;
+  if ((flags & 2u) != 0u && ((y >= h - t) || (y >= h - 3.0 * t && y < h - 2.0 * t))) line = 1.0;
+  if ((flags & 32u) != 0u) {
+    float amplitude = max(1.0, t);
+    float centre = h - 1.5 * t - amplitude;
+    float wave = centre + amplitude * sin(x * 6.2831853 / max(6.0, 8.0 * amplitude));
+    line = clamp(t * 0.5 + 0.75 - abs(y - wave), 0.0, 1.0);
+  }
+  if ((flags & 64u) != 0u && mod(floor(x / (2.0 * t)), 2.0) < 1.0) line = band;
+  if ((flags & 128u) != 0u && mod(x, 8.0 * t) < 6.0 * t) line = band;
+  float cursor = (((flags & 8u) != 0u && local_px.x < 2.0 * t)
+                  || ((flags & 16u) != 0u && y >= h - 2.0 * t)) ? 1.0 : 0.0;
+  vec3 underline = vec3(float((flags >> 24) & 255u), float((flags >> 16) & 255u),
+                        float((flags >> 8) & 255u)) / 255.0;
+  if (layer == 1u) {
+    vec3 color = cursor > 0.0 ? cursor_color.rgb : (line > ink ? underline : fg);
+    color_out = vec4(color, max(max(ink, line), cursor));
+    return;
+  }
+  vec3 color = mix(mix(bg, fg, ink), underline, line);
+  color_out = vec4(cursor > 0.0 ? cursor_color.rgb : color, 1.0);
 }
 ")
 
@@ -140,7 +169,8 @@ precision highp int;
                    :api api :program (gl-link-program api)
                    :image-program (gl-link-program api *gl-image-vertex-shader-source*
                                                    *gl-image-fragment-shader-source*))))
-    (dolist (name '("cell_size" "viewport" "columns" "atlas_columns" "cursor_color" "atlas"))
+    (dolist (name '("cell_size" "viewport" "columns" "atlas_columns" "cursor_color" "atlas"
+                    "layer"))
       (setf (gethash name (gl-renderer-uniforms renderer))
             (gl:get-uniform-location (gl-renderer-program renderer) name)))
     (setf (gl-renderer-vertex-array renderer) (gl:gen-vertex-array)
@@ -287,29 +317,34 @@ precision highp int;
       (gl:clear-color (channel background 16) (channel background 8) (channel background 0) 1.0)
       (gl:clear :color-buffer-bit)
       (gl-prune-image-textures renderer image-records)
-      (gl-draw-images renderer
-                      (remove-if-not (lambda (record)
-                                       (minusp (terminal-image-placement-z-index (first record))))
-                                     image-records)
-                      width height)
       (when (plusp cell-count)
         (gl-upload-atlas renderer atlas)
-        (gl-upload-instances renderer instances)
-        (gl:use-program (gl-renderer-program renderer))
-        (gl:uniformf (uniform "cell_size") (float cell-width 1.0) (float cell-height 1.0))
-        (gl:uniformf (uniform "viewport") (float (max 1 width) 1.0) (float (max 1 height) 1.0))
-        (%gl:uniform-1ui (uniform "columns") columns)
-        (%gl:uniform-1ui (uniform "atlas_columns") (glyph-atlas-slots-per-row atlas))
-        (gl:uniformf (uniform "cursor_color")
-                     (channel cursor 16) (channel cursor 8) (channel cursor 0) 1.0)
-        (gl:uniformi (uniform "atlas") 0)
-        (gl:bind-vertex-array (gl-renderer-vertex-array renderer))
-        (%gl:draw-arrays-instanced :triangles 0 6 cell-count))
-      (gl-draw-images renderer
-                      (remove-if (lambda (record)
-                                   (minusp (terminal-image-placement-z-index (first record))))
-                                 image-records)
-                      width height))))
+        (gl-upload-instances renderer instances))
+      (multiple-value-bind (below-backgrounds below-text above) (image-layers image-records)
+        (flet ((cells (layer)
+                 (when (plusp cell-count)
+                   (gl:use-program (gl-renderer-program renderer))
+                   (gl:uniformf (uniform "cell_size") (float cell-width 1.0) (float cell-height 1.0))
+                   (gl:uniformf (uniform "viewport")
+                                (float (max 1 width) 1.0) (float (max 1 height) 1.0))
+                   (%gl:uniform-1ui (uniform "columns") columns)
+                   (%gl:uniform-1ui (uniform "atlas_columns") (glyph-atlas-slots-per-row atlas))
+                   (%gl:uniform-1ui (uniform "layer") layer)
+                   (gl:uniformf (uniform "cursor_color")
+                                (channel cursor 16) (channel cursor 8) (channel cursor 0) 1.0)
+                   (gl:uniformi (uniform "atlas") 0)
+                   (gl:bind-vertex-array (gl-renderer-vertex-array renderer))
+                   (if (= layer 2)
+                       (gl:disable :blend)
+                       (progn (gl:enable :blend)
+                              (gl:blend-func :src-alpha :one-minus-src-alpha)))
+                   (%gl:draw-arrays-instanced :triangles 0 6 cell-count)
+                   (gl:disable :blend))))
+          (gl-draw-images renderer below-backgrounds width height)
+          (if (or below-backgrounds below-text)
+              (progn (cells 0) (gl-draw-images renderer below-text width height) (cells 1))
+              (cells 2))
+          (gl-draw-images renderer above width height))))))
 
 (defun gl-snapshot (renderer instances columns cell-count cell-width cell-height
                     width height atlas palette &optional image-records)

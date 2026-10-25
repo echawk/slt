@@ -11,7 +11,7 @@
 (deftype grid-index () '(integer 0 #.(1- array-total-size-limit)))
 (deftype grid-dimension () '(integer 0 65535))
 
-;;; Colors are tagged so engines need not agree on a palette: the frontend
+;;; Colors are tagged so engines need not agree on a palette: the emulator
 ;;; resolves them with a user-configurable PALETTE at render time.
 ;;;   tag 0 : the default foreground or background
 ;;;   tag 1 : palette index in the low 8 bits
@@ -59,6 +59,15 @@
 (defconstant +attr-wide+ (ash 1 8))
 (defconstant +attr-wide-spacer+ (ash 1 9))
 (defconstant +attr-double-underline+ (ash 1 10))
+(defconstant +attr-curly-underline+ (ash 1 11))
+(defconstant +attr-dotted-underline+ (ash 1 12))
+(defconstant +attr-dashed-underline+ (ash 1 13))
+;; Set by the emulator, never by engines, on the hyperlink under the pointer.
+(defconstant +attr-hover+ (ash 1 14))
+(defconstant +attr-underlines+
+  (logior +attr-underline+ +attr-double-underline+ +attr-curly-underline+
+          +attr-dotted-underline+ +attr-dashed-underline+)
+  "The underline styles (SGR 4:1 to 4:5); a cell has at most one.")
 
 (defparameter *attribute-names*
   `((:bold . ,+attr-bold+)
@@ -71,7 +80,22 @@
     (:strike . ,+attr-strike+)
     (:wide . ,+attr-wide+)
     (:wide-spacer . ,+attr-wide-spacer+)
-    (:double-underline . ,+attr-double-underline+)))
+    (:double-underline . ,+attr-double-underline+)
+    (:curly-underline . ,+attr-curly-underline+)
+    (:dotted-underline . ,+attr-dotted-underline+)
+    (:dashed-underline . ,+attr-dashed-underline+)))
+
+(declaim (inline underline-style))
+(defun underline-style (attributes)
+  "The underline style ATTRIBUTES ask for: NIL, :SINGLE, :DOUBLE, :CURLY,
+:DOTTED or :DASHED."
+  (declare (type attributes attributes))
+  (cond ((not (logtest attributes +attr-underlines+)) nil)
+        ((logtest attributes +attr-curly-underline+) :curly)
+        ((logtest attributes +attr-double-underline+) :double)
+        ((logtest attributes +attr-dotted-underline+) :dotted)
+        ((logtest attributes +attr-dashed-underline+) :dashed)
+        (t :single)))
 
 (defun attributes->list (attributes)
   (loop for (name . mask) in *attribute-names*
@@ -97,6 +121,9 @@
    :type (simple-array color (*)))
   (attrs (make-array 0 :element-type 'attributes)
    :type (simple-array attributes (*)))
+  ;; Underline colors (SGR 58); default means the foreground's.
+  (ul (make-array 0 :element-type 'color)
+   :type (simple-array color (*)))
   ;; Extra codepoints (combining marks, ZWJ sequences) keyed by cell index.
   (combining (make-hash-table) :type hash-table)
   (dirty (make-array 0 :element-type 'bit) :type simple-bit-vector)
@@ -125,6 +152,8 @@
                                           :initial-element +color-default+)
           (grid-attrs grid) (make-array size :element-type 'attributes
                                              :initial-element 0)
+          (grid-ul grid) (make-array size :element-type 'color
+                                          :initial-element +color-default+)
           (grid-dirty grid) (make-array rows :element-type 'bit
                                              :initial-element 1)
           (grid-cursor-row grid) (min (grid-cursor-row grid) (max 0 (1- rows)))
@@ -141,17 +170,18 @@
   (the grid-index (+ (* row (grid-columns grid)) column)))
 
 (declaim (inline grid-set-cell))
-(defun grid-set-cell (grid index code fg bg attrs)
+(defun grid-set-cell (grid index code fg bg attrs &optional (ul +color-default+))
   (declare (type grid grid)
            (type grid-index index)
            (type codepoint code)
-           (type color fg bg)
+           (type color fg bg ul)
            (type attributes attrs)
            (optimize (speed 3) (safety 0)))
   (setf (aref (grid-codes grid) index) code
         (aref (grid-fg grid) index) fg
         (aref (grid-bg grid) index) bg
-        (aref (grid-attrs grid) index) attrs)
+        (aref (grid-attrs grid) index) attrs
+        (aref (grid-ul grid) index) ul)
   (values))
 
 (defun grid-set-combining (grid index string)
@@ -378,3 +408,14 @@ taking bold-brightening, faint, inverse video and the cursor into account."
       (setf bg (palette-cursor palette)
             fg (resolve-color (aref (grid-bg grid) index) palette nil)))
     (values fg bg)))
+
+(declaim (inline cell-underline-rgb))
+(defun cell-underline-rgb (grid index palette fg)
+  "The RGB of the underline at INDEX: its SGR 58 color, else FG (the
+cell's resolved foreground)."
+  (declare (type grid grid)
+           (type grid-index index)
+           (type palette palette)
+           (type rgb fg))
+  (let ((ul (aref (grid-ul grid) index)))
+    (if (color-default-p ul) fg (resolve-color ul palette t))))

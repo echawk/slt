@@ -14,15 +14,15 @@ defining it (see scripts/build)."
 
 (define-optional-library "CFFI" "LIBFFI" :dont-deploy t)
 
-;;; macOS system frameworks, loaded by the cocoa backend (and the gl
-;;; backend's CoreText glyphs).
+;;; macOS system frameworks, loaded by the cocoa frontend (and the gl
+;;; frontend's CoreText glyphs).
 (dolist (name '("FOUNDATION" "APPKIT" "COCOA"))
   (define-optional-library "ORG.SHIRAKUMO.COCOAS.CFFI" name :dont-deploy t))
 (dolist (name '("METAL-FRAMEWORK" "QUARTZ-CORE-FRAMEWORK"
                 "CORE-TEXT-FRAMEWORK" "CORE-GRAPHICS-FRAMEWORK"))
   (define-optional-library "SLT" name :dont-deploy t))
 
-;;; The gtk backend: GTK and the libraries under it belong to the system
+;;; The gtk frontend: GTK and the libraries under it belong to the system
 ;;; (they need their own data files and modules), and cl-cffi-gtk runs
 ;;; gtk_init from SBCL's init hooks, which run before Deploy reopens
 ;;; libraries; run it from a boot hook instead.
@@ -75,7 +75,7 @@ defining it (see scripts/build)."
 ;;; path.
 (define-optional-library "GHOSTTY-VT.FFI" "LIBGHOSTTY-VT" :dont-deploy t :dont-open t)
 
-;;; The gl backend: fontconfig belongs to the system.  GLFW is deployed.
+;;; The gl frontend: fontconfig belongs to the system.  GLFW is deployed.
 (define-optional-library "ORG.SHIRAKUMO.FONT-DISCOVERY" "FONTCONFIG" :dont-deploy t)
 
 ;;; The engines' C shims resolve their library's symbols at load time, so

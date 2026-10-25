@@ -53,6 +53,9 @@
    #:grid-mark-all-dirty
    #:attributes->list
    #:list->attributes
+   #:grid-ul
+   #:underline-style
+   #:cell-underline-rgb
    #:palette-color
    #:rgb-color
    #:+color-default+
@@ -100,28 +103,28 @@
    #:engine-bell-function
    #:xterm-encode-key
    #:xterm-encode-mouse
-   ;; Backends
-   #:terminal-backend
-   #:register-backend
-   #:available-backends
-   #:make-backend
-   #:backend-render-grid
-   #:backend-render-images
-   #:default-backend
-   #:backend-bind-paste
-   #:backend-bind-mouse
-   #:backend-clipboard-text
-   #:backend-notify
+   ;; Frontends
+   #:terminal-frontend
+   #:register-frontend
+   #:available-frontends
+   #:make-frontend
+   #:frontend-render-grid
+   #:frontend-render-images
+   #:default-frontend
+   #:frontend-bind-paste
+   #:frontend-bind-mouse
+   #:frontend-clipboard-text
+   #:frontend-notify
    #:view-palette
    #:with-view-palette
-   #:backend-set-clipboard-text
-   #:backend-bind-scroll
-   #:backend-bind-menu
-   #:backend-bind-commands
-   #:backend-bind-focus
-   #:backend-bind-drop
-   #:backend-set-font-size
-   #:backend-bell
+   #:frontend-set-clipboard-text
+   #:frontend-bind-scroll
+   #:frontend-bind-menu
+   #:frontend-bind-commands
+   #:frontend-bind-focus
+   #:frontend-bind-drop
+   #:frontend-set-font-size
+   #:frontend-bell
    #:*window-padding*
    #:*commands*
    #:command-key-handler
@@ -180,8 +183,8 @@
    #:toggle-repl-server
    #:repl-server-running-p
    #:repl-server-key-handler
-   ;; Headless backend
-   #:headless-backend
+   ;; Headless frontend
+   #:headless-frontend
    #:headless-view
    #:headless-view-grid
    #:headless-view-image-store
@@ -199,22 +202,22 @@
    #:headless-resize-window
    #:headless-resize-cells
    #:headless-close
-   ;; Web backend
-   #:web-backend
+   ;; Web frontend
+   #:web-frontend
    #:web-url
    #:*web-host*
    #:*web-port*
    #:*web-token*
    #:*web-allowed-origins*
    #:*option-as-meta*
-   ;; gl backend
-   #:gl-backend
+   ;; gl frontend
+   #:gl-frontend
    #:*gl-api*
    #:*gl-vsync*
    #:*gl-scroll-rows*
    #:*gl-window-visible*
    #:snapshot-gl-view
-   ;; Frontend
+   ;; Emulator
    #:launch-terminal
    #:terminal-emulator
    #:write-input

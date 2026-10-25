@@ -1,10 +1,10 @@
 (in-package #:slt)
 
-;;;; The gl backend: a GLFW window, an OpenGL 3.3 core (or OpenGL ES 3.0)
+;;;; The gl frontend: a GLFW window, an OpenGL 3.3 core (or OpenGL ES 3.0)
 ;;;; renderer and FreeType glyphs.  GLFW picks X11 or Wayland at run time on
 ;;;; Linux and the BSDs, and runs on macOS too, where it is useful for
-;;;; testing (the cocoa backend, on Metal, is the one to use there).  All
-;;;; sizes the frontend sees are framebuffer pixels.
+;;;; testing (the cocoa frontend, on Metal, is the one to use there).  All
+;;;; sizes the emulator sees are framebuffer pixels.
 
 (defvar *gl-api* :auto
   "Which API to ask GLFW for: :GL (OpenGL 3.3 core), :GLES (OpenGL ES 3.0),
@@ -28,7 +28,12 @@ steps, so it uses a smaller multiplier.")
     (:down . "Down") (:up . "Up") (:page-up . "Prior") (:page-down . "Next")
     (:home . "Home") (:end . "End") (:kp-enter . "KP_Enter")
     (:f1 . "F1") (:f2 . "F2") (:f3 . "F3") (:f4 . "F4") (:f5 . "F5") (:f6 . "F6")
-    (:f7 . "F7") (:f8 . "F8") (:f9 . "F9") (:f10 . "F10") (:f11 . "F11") (:f12 . "F12"))
+    (:f7 . "F7") (:f8 . "F8") (:f9 . "F9") (:f10 . "F10") (:f11 . "F11") (:f12 . "F12")
+    (:left-shift . "Shift_L") (:right-shift . "Shift_R")
+    (:left-control . "Control_L") (:right-control . "Control_R")
+    (:left-alt . "Alt_L") (:right-alt . "Alt_R")
+    (:left-super . "Super_L") (:right-super . "Super_R")
+    (:caps-lock . "Caps_Lock") (:num-lock . "Num_Lock"))
   "GLFW keys the terminal sees as X11 keysyms rather than text.")
 
 (defun gl-libraries-available-p ()
@@ -38,16 +43,16 @@ steps, so it uses a smaller multiplier.")
    #-darwin (load-freetype)
    t))
 
-(defclass gl-backend (terminal-backend)
-  ((view :initform nil :accessor gl-backend-view)
-   (timers :initform '() :accessor gl-backend-timers)
-   (timer-seq :initform 0 :accessor gl-backend-timer-seq)
-   (quit-p :initform nil :accessor gl-backend-quit-p)
-   (wake-lock :initform (bt:make-lock "slt gl wakeup") :reader gl-backend-wake-lock)
-   (wake-thunks :initform '() :accessor gl-backend-wake-thunks)))
+(defclass gl-frontend (terminal-frontend)
+  ((view :initform nil :accessor gl-frontend-view)
+   (timers :initform '() :accessor gl-frontend-timers)
+   (timer-seq :initform 0 :accessor gl-frontend-timer-seq)
+   (quit-p :initform nil :accessor gl-frontend-quit-p)
+   (wake-lock :initform (bt:make-lock "slt gl wakeup") :reader gl-frontend-wake-lock)
+   (wake-thunks :initform '() :accessor gl-frontend-wake-thunks)))
 
 (defclass gl-view (glfw:window)
-  ((backend :initarg :backend :reader gl-view-backend)
+  ((frontend :initarg :frontend :reader gl-view-frontend)
    (api :initarg :api :reader gl-view-api)
    (renderer :initform nil :accessor gl-view-renderer)
    (font :initform nil :accessor gl-view-font)
@@ -62,6 +67,7 @@ steps, so it uses a smaller multiplier.")
    (cell-height :initform 1 :accessor gl-view-cell-height)
    (resize-callback :initform nil :accessor gl-view-resize-callback)
    (keypress-callback :initform nil :accessor gl-view-keypress-callback)
+   (drop-callback :initform nil :accessor gl-view-drop-callback)
    (scroll-callback :initform nil :accessor gl-view-scroll-callback)
    (mouse-callback :initform nil :accessor gl-view-mouse-callback)
    ;; Primary button state, and the last press for counting multi-clicks.
@@ -76,7 +82,9 @@ steps, so it uses a smaller multiplier.")
    (key-modifiers :initform '() :accessor gl-view-key-modifiers)
    ;; Set when the key callback already handled the press, so the character
    ;; callback that follows must not send it again.
-   (suppress-char :initform nil :accessor gl-view-suppress-char)))
+   (suppress-char :initform nil :accessor gl-view-suppress-char)
+   ;; :PRESS or :REPEAT: the action of the key whose character follows.
+   (key-event :initform :press :accessor gl-view-key-event)))
 
 (defmacro with-live-view ((view) &body body)
   "Run BODY for an open VIEW, reporting rather than unwinding through
@@ -159,33 +167,44 @@ the character callback."
         (meta (and (member :alt modifiers) (uiop:os-macosx-p) *option-as-meta*)))
     (cond
       (keysym (list "" keysym state))
-      ;; Super combinations go to the frontend for its shortcuts.
+      ;; Super combinations go to the emulator for its shortcuts.
       ((and code (or (member :control modifiers) (member :super modifiers) meta))
        (let ((text (gl-key-text key code scan-code modifiers)))
          ;; Shift is reflected in the character.
          (list text text (logand state (lognot +shift-mask+)))))
       (t nil))))
 
-(defun deliver-gl-key (view data)
+(defun deliver-gl-key (view data &optional (event :press))
   (when (gl-view-keypress-callback view)
-    (apply (gl-view-keypress-callback view) data)))
+    (apply (gl-view-keypress-callback view) (append data (list event)))))
 
 (defmethod glfw:key-changed ((view gl-view) key scan-code action modifiers)
-  (unless (eq action :release)
-    (with-live-view (view)
-      (setf (gl-view-key-modifiers view) modifiers
-            (gl-view-suppress-char view) nil)
-      (let ((data (gl-key-data key scan-code modifiers)))
-        (when data
-          (setf (gl-view-suppress-char view) t)
-          (deliver-gl-key view data))))))
+  (with-live-view (view)
+    (if (eq action :release)
+        ;; Releases have no character event: name the key from the layout.
+        (let ((data (or (gl-key-data key scan-code modifiers)
+                        (let ((code (gl-printable-key-code key)))
+                          (and code
+                               (let ((text (gl-key-text key code scan-code modifiers)))
+                                 (list text text (logand (glfw-modifiers->state modifiers)
+                                                         (lognot +shift-mask+)))))))))
+          (when data
+            (deliver-gl-key view data :release)))
+        (progn
+          (setf (gl-view-key-modifiers view) modifiers
+                (gl-view-suppress-char view) nil
+                (gl-view-key-event view) action)
+          (let ((data (gl-key-data key scan-code modifiers)))
+            (when data
+              (setf (gl-view-suppress-char view) t)
+              (deliver-gl-key view data action)))))))
 
 (defmethod glfw:char-entered ((view gl-view) code-point)
   (with-live-view (view)
     (unless (gl-view-suppress-char view)
       (let ((text (string (code-char code-point)))
             (state (if (member :alt (gl-view-key-modifiers view)) +mod1-mask+ 0)))
-        (deliver-gl-key view (list text text state))))))
+        (deliver-gl-key view (list text text state) (gl-view-key-event view))))))
 
 ;;; Mouse
 
@@ -261,7 +280,7 @@ one quickly at the same cell."
       ;; live-resize loop, where timers do not run.  Then run work the
       ;; reader thread posted, so the program's redraw shows while dragging.
       (funcall (gl-view-resize-callback view) t)
-      (run-gl-wake-thunks (gl-view-backend view)))
+      (run-gl-wake-thunks (gl-view-frontend view)))
     (redraw-gl-view view)))
 
 (defmethod glfw:window-refreshed ((view gl-view))
@@ -283,38 +302,38 @@ one quickly at the same cell."
     (setf (gl-view-closed-p view) t)
     (when (gl-view-close-callback view)
       (funcall (gl-view-close-callback view)))
-    (setf (gl-backend-quit-p (gl-view-backend view)) t)))
+    (setf (gl-frontend-quit-p (gl-view-frontend view)) t)))
 
 ;;; Event loop
 
-(defmethod backend-wakeup ((backend gl-backend) view thunk)
+(defmethod frontend-wakeup ((frontend gl-frontend) view thunk)
   (declare (ignore view))
-  (bt:with-lock-held ((gl-backend-wake-lock backend))
-    (push thunk (gl-backend-wake-thunks backend)))
+  (bt:with-lock-held ((gl-frontend-wake-lock frontend))
+    (push thunk (gl-frontend-wake-thunks frontend)))
   ;; Thread-safe: unblocks the main thread's wait for events.
   (%glfw:post-empty-event)
   t)
 
-(defun run-gl-wake-thunks (backend)
-  (let ((thunks (bt:with-lock-held ((gl-backend-wake-lock backend))
-                  (shiftf (gl-backend-wake-thunks backend) '()))))
+(defun run-gl-wake-thunks (frontend)
+  (let ((thunks (bt:with-lock-held ((gl-frontend-wake-lock frontend))
+                  (shiftf (gl-frontend-wake-thunks frontend) '()))))
     (dolist (thunk (nreverse thunks))
       (funcall thunk))))
 
-(defun run-gl-timers (backend)
+(defun run-gl-timers (frontend)
   (let ((now (get-internal-real-time))
         (due '()))
-    (setf (gl-backend-timers backend)
+    (setf (gl-frontend-timers frontend)
           (remove-if (lambda (timer)
                        (when (<= (first timer) now)
                          (push timer due)
                          t))
-                     (gl-backend-timers backend)))
+                     (gl-frontend-timers frontend)))
     (dolist (timer (sort due #'< :key #'first))
       (funcall (third timer)))))
 
-(defun gl-next-timeout (backend)
-  (let ((timers (gl-backend-timers backend)))
+(defun gl-next-timeout (frontend)
+  (let ((timers (gl-frontend-timers frontend)))
     (if timers
         (max 0 (/ (- (reduce #'min timers :key #'first) (get-internal-real-time))
                   internal-time-units-per-second))
@@ -330,17 +349,17 @@ particular) trips over."
       (unwind-protect (funcall thunk)
         (glfw:shutdown)))))
 
-(defmethod backend-call-with-event-loop ((backend gl-backend) thunk)
+(defmethod frontend-call-with-event-loop ((frontend gl-frontend) thunk)
   (call-with-glfw
    (lambda ()
      (unwind-protect
           (progn
             (funcall thunk)
-            (loop until (gl-backend-quit-p backend)
-                  do (glfw:poll-events :timeout (min 0.25 (gl-next-timeout backend)))
-                     (run-gl-wake-thunks backend)
-                     (run-gl-timers backend)))
-       (let ((view (gl-backend-view backend)))
+            (loop until (gl-frontend-quit-p frontend)
+                  do (glfw:poll-events :timeout (min 0.25 (gl-next-timeout frontend)))
+                     (run-gl-wake-thunks frontend)
+                     (run-gl-timers frontend)))
+       (let ((view (gl-frontend-view frontend)))
          (when view
            (destroy-gl-view view)))))))
 
@@ -402,7 +421,7 @@ height, after writing them to PATHNAME as a PPM when given."
    (unless (uiop:os-macosx-p)
      '(:context-creation-api :egl-context-api))))
 
-(defun make-gl-view (backend width height title font-options scale)
+(defun make-gl-view (frontend width height title font-options scale)
   "Create the window with the first API in *GL-API* that works."
   (dolist (api (ecase *gl-api*
                  (:auto (if (uiop:os-macosx-p) '(:gl) '(:gl :gles)))
@@ -413,7 +432,7 @@ height, after writing them to PATHNAME as a PPM when given."
                     (apply #'make-instance 'gl-view
                            ;; Lets the wrapper tell our initargs from hints.
                            :allow-other-keys t
-                           :backend backend :api api :font-options font-options
+                           :frontend frontend :api api :font-options font-options
                            :width width :height height :title title
                            :visible *gl-window-visible*
                            ;; Window sizes are in screen coordinates; let
@@ -427,14 +446,14 @@ height, after writing them to PATHNAME as a PPM when given."
         (setf (gl-view-scale view) scale)
         (return view)))))
 
-(defmethod backend-available-font-families ((backend gl-backend))
+(defmethod frontend-available-font-families ((frontend gl-frontend))
   #+darwin '()
   #-darwin (or (ignore-errors (font-monospace-families)) '()))
 
-(defmethod backend-resolve-font-size ((backend gl-backend) font-size)
+(defmethod frontend-resolve-font-size ((frontend gl-frontend) font-size)
   (abs (or font-size 15)))
 
-(defmethod backend-create-view ((backend gl-backend)
+(defmethod frontend-create-view ((frontend gl-frontend)
                                 &key rows columns font-family font-size
                                   cell-width cell-height title)
   (let* ((options (list font-family font-size cell-width cell-height))
@@ -446,7 +465,7 @@ height, after writing them to PATHNAME as a PPM when given."
                  (nth-value 0 (glyph-font-cell-size font))))
          (ch (or (and cell-height (round (* cell-height scale)))
                  (nth-value 1 (glyph-font-cell-size font))))
-         (view (make-gl-view backend
+         (view (make-gl-view frontend
                              (max 1 (round (* columns cw) scale))
                              (max 1 (round (* rows ch) scale))
                              (or title "slt") options scale)))
@@ -454,7 +473,7 @@ height, after writing them to PATHNAME as a PPM when given."
     (glfw:make-current view)
     (setf (glfw:swap-interval view) (if *gl-vsync* 1 0)
           (gl-view-renderer view) (make-gl-renderer (gl-view-api view))
-          (gl-backend-view backend) view)
+          (gl-frontend-view frontend) view)
     ;; The window may have opened on a display with another scale.
     (gl-view-set-font view (gl-view-content-scale view))
     view))
@@ -469,73 +488,81 @@ height, after writing them to PATHNAME as a PPM when given."
     (setf (gl-view-font view) nil))
   (setf (gl-view-closed-p view) t))
 
-(defmethod backend-view-cell-width ((backend gl-backend) (view gl-view))
+(defmethod frontend-view-cell-width ((frontend gl-frontend) (view gl-view))
   (gl-view-cell-width view))
 
-(defmethod backend-view-cell-height ((backend gl-backend) (view gl-view))
+(defmethod frontend-view-cell-height ((frontend gl-frontend) (view gl-view))
   (gl-view-cell-height view))
 
-(defmethod backend-view-window-size ((backend gl-backend) (view gl-view))
+(defmethod frontend-view-window-size ((frontend gl-frontend) (view gl-view))
   (gl-view-pixel-size view))
 
-(defmethod backend-resize-view ((backend gl-backend) (view gl-view) rows columns)
+(defmethod frontend-resize-view ((frontend gl-frontend) (view gl-view) rows columns)
   (declare (ignore rows columns))
   view)
 
-(defmethod backend-render-grid ((backend gl-backend) (view gl-view) grid)
+(defmethod frontend-render-grid ((frontend gl-frontend) (view gl-view) grid)
   (setf (gl-view-grid view) grid)
   (redraw-gl-view view))
 
-(defmethod backend-render-images ((backend gl-backend) (view gl-view) store)
-  (declare (ignore backend))
+(defmethod frontend-render-images ((frontend gl-frontend) (view gl-view) store)
+  (declare (ignore frontend))
   (setf (gl-view-image-store view) store)
   (redraw-gl-view view))
 
-(defmethod backend-set-title ((backend gl-backend) (view gl-view) title)
+(defmethod frontend-set-title ((frontend gl-frontend) (view gl-view) title)
   (unless (gl-view-closed-p view)
     (setf (glfw:title view) title)))
 
-(defmethod backend-schedule ((backend gl-backend) (view gl-view) delay-ms thunk)
-  (let ((token (incf (gl-backend-timer-seq backend))))
+(defmethod frontend-schedule ((frontend gl-frontend) (view gl-view) delay-ms thunk)
+  (let ((token (incf (gl-frontend-timer-seq frontend))))
     (push (list (+ (get-internal-real-time)
                    (round (* (max 0 delay-ms) internal-time-units-per-second) 1000))
                 token
                 thunk)
-          (gl-backend-timers backend))
+          (gl-frontend-timers frontend))
     token))
 
-(defmethod backend-cancel-scheduled ((backend gl-backend) (view gl-view) token)
-  (setf (gl-backend-timers backend)
-        (remove token (gl-backend-timers backend) :key #'second)))
+(defmethod frontend-cancel-scheduled ((frontend gl-frontend) (view gl-view) token)
+  (setf (gl-frontend-timers frontend)
+        (remove token (gl-frontend-timers frontend) :key #'second)))
 
-(defmethod backend-bind-resize ((backend gl-backend) (view gl-view) callback)
+(defmethod frontend-bind-resize ((frontend gl-frontend) (view gl-view) callback)
   (setf (gl-view-resize-callback view) callback))
 
-(defmethod backend-bind-keypress ((backend gl-backend) (view gl-view) callback)
+(defmethod frontend-bind-keypress ((frontend gl-frontend) (view gl-view) callback)
   (setf (gl-view-keypress-callback view) callback))
 
-(defmethod backend-bind-scroll ((backend gl-backend) (view gl-view) callback)
+(defmethod frontend-bind-drop ((frontend gl-frontend) (view gl-view) callback)
+  (setf (gl-view-drop-callback view) callback))
+
+(defmethod glfw:file-dropped ((view gl-view) paths)
+  (with-live-view (view)
+    (when (and paths (gl-view-drop-callback view))
+      (funcall (gl-view-drop-callback view) paths))))
+
+(defmethod frontend-bind-scroll ((frontend gl-frontend) (view gl-view) callback)
   (setf (gl-view-scroll-callback view) callback))
 
-(defmethod backend-bind-mouse ((backend gl-backend) (view gl-view) callback)
+(defmethod frontend-bind-mouse ((frontend gl-frontend) (view gl-view) callback)
   (setf (gl-view-mouse-callback view) callback))
 
-(defmethod backend-clipboard-text ((backend gl-backend) (view gl-view))
+(defmethod frontend-clipboard-text ((frontend gl-frontend) (view gl-view))
   (glfw:clipboard-string view))
 
-(defmethod backend-set-clipboard-text ((backend gl-backend) (view gl-view) text)
+(defmethod frontend-set-clipboard-text ((frontend gl-frontend) (view gl-view) text)
   (setf (glfw:clipboard-string view) text))
 
-(defmethod backend-on-close ((backend gl-backend) (view gl-view) callback)
+(defmethod frontend-on-close ((frontend gl-frontend) (view gl-view) callback)
   (setf (gl-view-close-callback view) callback))
 
-(defmethod backend-focus ((backend gl-backend) (view gl-view))
+(defmethod frontend-focus ((frontend gl-frontend) (view gl-view))
   (when *gl-window-visible*
     (glfw:show view)
     (glfw:focus view)))
 
-(defmethod backend-request-exit ((backend gl-backend) (view gl-view))
-  (setf (gl-backend-quit-p backend) t)
+(defmethod frontend-request-exit ((frontend gl-frontend) (view gl-view))
+  (setf (gl-frontend-quit-p frontend) t)
   (setf (gl-view-closed-p view) t))
 
-(register-backend :gl (lambda () (make-instance 'gl-backend)))
+(register-frontend :gl (lambda () (make-instance 'gl-frontend)))

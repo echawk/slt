@@ -1,6 +1,6 @@
 (in-package #:slt)
 
-(defclass ltk-backend (terminal-backend) ())
+(defclass ltk-frontend (terminal-frontend) ())
 
 (defstruct (ltk-view
             (:constructor %make-ltk-view))
@@ -136,20 +136,20 @@
                           :height (* rows cell-height))
     view))
 
-(defmethod backend-call-with-event-loop ((backend ltk-backend) thunk)
-  (declare (ignore backend))
+(defmethod frontend-call-with-event-loop ((frontend ltk-frontend) thunk)
+  (declare (ignore frontend))
   (ltk:with-ltk ()
     (funcall thunk)))
 
-(defmethod backend-available-font-families ((backend ltk-backend))
-  (declare (ignore backend))
+(defmethod frontend-available-font-families ((frontend ltk-frontend))
+  (declare (ignore frontend))
   (or (ignore-errors (ltk:font-families))
       '()))
 
-(defmethod backend-create-view ((backend ltk-backend)
+(defmethod frontend-create-view ((frontend ltk-frontend)
                                 &key rows columns font-family font-size
                                   cell-width cell-height title)
-  (declare (ignore backend))
+  (declare (ignore frontend))
   (let* ((root ltk:*tk*)
          (font-name "slt-terminal-font")
          (canvas nil)
@@ -180,25 +180,25 @@
     (ltk-rebuild-grid view rows columns)
     view))
 
-(defmethod backend-view-cell-width ((backend ltk-backend) (view ltk-view))
-  (declare (ignore backend))
+(defmethod frontend-view-cell-width ((frontend ltk-frontend) (view ltk-view))
+  (declare (ignore frontend))
   (ltk-view-cell-width view))
 
-(defmethod backend-view-cell-height ((backend ltk-backend) (view ltk-view))
-  (declare (ignore backend))
+(defmethod frontend-view-cell-height ((frontend ltk-frontend) (view ltk-view))
+  (declare (ignore frontend))
   (ltk-view-cell-height view))
 
-(defmethod backend-view-window-size ((backend ltk-backend) (view ltk-view))
-  (declare (ignore backend))
+(defmethod frontend-view-window-size ((frontend ltk-frontend) (view ltk-view))
+  (declare (ignore frontend))
   (values (ltk:window-width (ltk-view-canvas view))
           (ltk:window-height (ltk-view-canvas view))))
 
-(defmethod backend-resize-view ((backend ltk-backend) (view ltk-view) rows columns)
-  (declare (ignore backend))
+(defmethod frontend-resize-view ((frontend ltk-frontend) (view ltk-view) rows columns)
+  (declare (ignore frontend))
   (ltk-rebuild-grid view rows columns))
 
-(defmethod backend-render-grid ((backend ltk-backend) (view ltk-view) grid)
-  (declare (ignore backend))
+(defmethod frontend-render-grid ((frontend ltk-frontend) (view ltk-view) grid)
+  (declare (ignore frontend))
   (ltk:format-wish "~A"
                    (with-output-to-string (out)
                      (loop for row below (min (grid-rows grid)
@@ -240,8 +240,8 @@
                                  (floor (+ (* (aref rgba (+ index 2)) alpha)
                                            (* (ldb (byte 8 0) background) inverse)) 255))))))
 
-(defmethod backend-render-images ((backend ltk-backend) (view ltk-view) store)
-  (declare (ignore backend))
+(defmethod frontend-render-images ((frontend ltk-frontend) (view ltk-view) store)
+  (declare (ignore frontend))
   (setf (ltk-view-image-store view) store)
   (ltk-clear-images view)
   (dolist (record (terminal-image-render-list
@@ -254,20 +254,20 @@
         (push photo (ltk-view-image-photos view)))))
   view)
 
-(defmethod backend-set-title ((backend ltk-backend) (view ltk-view) title)
-  (declare (ignore backend))
+(defmethod frontend-set-title ((frontend ltk-frontend) (view ltk-view) title)
+  (declare (ignore frontend))
   (setf (ltk:title (ltk-view-root view)) title))
 
-(defmethod backend-schedule ((backend ltk-backend) (view ltk-view) delay-ms thunk)
-  (declare (ignore backend view))
+(defmethod frontend-schedule ((frontend ltk-frontend) (view ltk-view) delay-ms thunk)
+  (declare (ignore frontend view))
   (ltk:after delay-ms thunk))
 
-(defmethod backend-cancel-scheduled ((backend ltk-backend) (view ltk-view) token)
-  (declare (ignore backend view))
+(defmethod frontend-cancel-scheduled ((frontend ltk-frontend) (view ltk-view) token)
+  (declare (ignore frontend view))
   (ltk:after-cancel token))
 
-(defmethod backend-bind-resize ((backend ltk-backend) (view ltk-view) callback)
-  (declare (ignore backend))
+(defmethod frontend-bind-resize ((frontend ltk-frontend) (view ltk-view) callback)
+  (declare (ignore frontend))
   (let ((name (ltk::create-name)))
     (ltk::add-callback name
                        (lambda ()
@@ -278,8 +278,8 @@
      name)
     view))
 
-(defmethod backend-bind-keypress ((backend ltk-backend) (view ltk-view) callback)
-  (declare (ignore backend))
+(defmethod frontend-bind-keypress ((frontend ltk-frontend) (view ltk-view) callback)
+  (declare (ignore frontend))
   (let ((name (ltk::create-name)))
     (ltk::add-callback name
                        (lambda (char keysym state)
@@ -317,8 +317,8 @@
     (funcall callback action (first cell) (second cell) (ltk-view-click-count view)
              button state)))
 
-(defmethod backend-bind-mouse ((backend ltk-backend) (view ltk-view) callback)
-  (declare (ignore backend))
+(defmethod frontend-bind-mouse ((frontend ltk-frontend) (view ltk-view) callback)
+  (declare (ignore frontend))
   (let ((path (ltk:widget-path (ltk-view-canvas view))))
     ;; Motion events have no button (%b is "??").
     (loop for (event action button) in '(("ButtonPress" :press "%b")
@@ -335,8 +335,8 @@
                               path event name button))
     view))
 
-(defmethod backend-bind-scroll ((backend ltk-backend) (view ltk-view) callback)
-  (declare (ignore backend))
+(defmethod frontend-bind-scroll ((frontend ltk-frontend) (view ltk-view) callback)
+  (declare (ignore frontend))
   (let ((path (ltk:widget-path (ltk-view-canvas view)))
         (name (ltk::create-name)))
     (ltk::add-callback name
@@ -352,17 +352,17 @@
                               path event name direction))
     view))
 
-(defmethod backend-on-close ((backend ltk-backend) (view ltk-view) callback)
-  (declare (ignore backend))
+(defmethod frontend-on-close ((frontend ltk-frontend) (view ltk-view) callback)
+  (declare (ignore frontend))
   (ltk:on-close (ltk-view-root view)
                 callback))
 
-(defmethod backend-focus ((backend ltk-backend) (view ltk-view))
-  (declare (ignore backend))
+(defmethod frontend-focus ((frontend ltk-frontend) (view ltk-view))
+  (declare (ignore frontend))
   (ltk:focus (ltk-view-canvas view)))
 
-(defmethod backend-request-exit ((backend ltk-backend) (view ltk-view))
-  (declare (ignore backend view))
+(defmethod frontend-request-exit ((frontend ltk-frontend) (view ltk-view))
+  (declare (ignore frontend view))
   (setf ltk:*exit-mainloop* t))
 
-(register-backend :ltk (lambda () (make-instance 'ltk-backend)))
+(register-frontend :ltk (lambda () (make-instance 'ltk-frontend)))

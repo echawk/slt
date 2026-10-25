@@ -1,22 +1,22 @@
 # slt web frontend
 
 `slt-terminal.js` is a dependency-free ES module that renders an slt
-terminal in the browser. slt's `web` backend serves it, together with a
+terminal in the browser. slt's `web` frontend serves it, together with a
 WebSocket carrying the screen to the browser and input back to slt. You can
 use the bundled page, or embed the terminal in your own web app.
 
 ## Running
 
 ```sh
-slt --backend web                       # prints http://127.0.0.1:8080/?token=...
-slt --backend web --web-port 9000
+slt --frontend web                       # prints http://127.0.0.1:8080/?token=...
+slt --frontend web --web-port 9000
 ```
 
 From Lisp:
 
 ```lisp
 (setf slt:*web-port* 9000)
-(slt:launch-terminal :backend :web)
+(slt:launch-terminal :frontend :web)
 ```
 
 ## Security
@@ -102,7 +102,7 @@ You can also set fonts with CSS custom properties on the container:
 ## Protocol
 
 The server and browser exchange JSON text frames over `/ws?token=...`.
-`src/web/web-backend.lisp` documents the messages. In short, the server sends
+`src/web/web-frontend.lisp` documents the messages. In short, the server sends
 `hello`, `frame` (changed rows as runs of `[text, fg, bg, attrs]` plus the
 cursor), `resize`, `title`, `bell` and `exit`. The client sends `key`,
 `paste`, `scroll` and `resize`. Any client that speaks this protocol can drive slt.

@@ -1,6 +1,6 @@
 (in-package #:slt)
 
-;;;; Web frontend: a headless backend that serves a browser client over
+;;;; Web frontend: a headless frontend that serves a browser client over
 ;;;; HTTP and streams the grid to it over a WebSocket.
 ;;;;
 ;;;; The browser side is web/slt-terminal.js, an ES module (an SltTerminal
@@ -17,8 +17,13 @@
 ;;;;     {"t":"title","title":S}  {"t":"bell"}  {"t":"exit"}
 ;;;;     {"t":"mouse","tracking":B}   (whether the program wants mouse events)
 ;;;;     {"t":"images","items":[...]} (RGBA image placements)
+;;;;     {"t":"colors","palette":{N:"#RRGGBB",...},"foreground":S,"background":S,
+;;;;      "cursor":S,"selection":S}
+;;;;       Colors the program changed (OSC 4, 10-19), each key only when it
+;;;;       differs from the defaults; the client keeps its own theme for the rest.
 ;;;;   client -> server
-;;;;     {"t":"key","char":S,"keysym":S,"state":N}   (X11 keysyms/modifier bits)
+;;;;     {"t":"key","char":S,"keysym":S,"state":N,"event":S}
+;;;;         (X11 keysyms/modifier bits; event "press", "repeat" or "release")
 ;;;;     {"t":"paste","text":S}
 ;;;;     {"t":"scroll","rows":N}                     (negative scrolls back)
 ;;;;     {"t":"mouse","action":A,"row":R,"col":C,"button":B,"state":N}
@@ -60,28 +65,30 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
   (with-open-file (in "/dev/urandom" :element-type '(unsigned-byte 8))
     (format nil "~(~{~2,'0x~}~)" (loop repeat 16 collect (read-byte in)))))
 
-(defclass web-backend (headless-backend)
-  ((host :initarg :host :initform *web-host* :reader web-backend-host)
-   (port :initarg :port :initform *web-port* :reader web-backend-port)
-   (token :initarg :token :initform (or *web-token* (random-token)) :reader web-backend-token)
-   (acceptor :initform nil :accessor web-backend-acceptor)
-   (resource :initform nil :accessor web-backend-resource)
-   (dispatcher :initform nil :accessor web-backend-dispatcher)))
+(defclass web-frontend (headless-frontend)
+  ((host :initarg :host :initform *web-host* :reader web-frontend-host)
+   (port :initarg :port :initform *web-port* :reader web-frontend-port)
+   (token :initarg :token :initform (or *web-token* (random-token)) :reader web-frontend-token)
+   (acceptor :initform nil :accessor web-frontend-acceptor)
+   (resource :initform nil :accessor web-frontend-resource)
+   (dispatcher :initform nil :accessor web-frontend-dispatcher)
+   ;; The palette whose colors the clients were last sent.
+   (sent-palette :initform nil :accessor web-frontend-sent-palette)))
 
 (defclass web-acceptor (hunchensocket:websocket-acceptor)
-  ((backend :initarg :backend :reader web-acceptor-backend)))
+  ((frontend :initarg :frontend :reader web-acceptor-frontend)))
 
 (defclass web-resource (hunchensocket:websocket-resource)
-  ((backend :initarg :backend :reader web-resource-backend))
+  ((frontend :initarg :frontend :reader web-resource-frontend))
   (:default-initargs :client-class 'hunchensocket:websocket-client))
 
-(defun web-url (backend)
+(defun web-url (frontend)
   (format nil "http://~a:~d/?token=~a"
-          (web-backend-host backend) (web-backend-port backend) (web-backend-token backend)))
+          (web-frontend-host frontend) (web-frontend-port frontend) (web-frontend-token frontend)))
 
-(defun token-valid-p (backend request)
+(defun token-valid-p (frontend request)
   (let ((token (hunchentoot:get-parameter "token" request)))
-    (and token (string= token (web-backend-token backend)))))
+    (and token (string= token (web-frontend-token frontend)))))
 
 ;;; HTTP
 
@@ -93,7 +100,7 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
   (web-asset name))
 
 (defmethod hunchentoot:acceptor-dispatch-request ((acceptor web-acceptor) request)
-  (let ((backend (web-acceptor-backend acceptor))
+  (let ((frontend (web-acceptor-frontend acceptor))
         (path (hunchentoot:script-name request)))
     (cond
       ((string-equal "websocket" (or (hunchentoot:header-in :upgrade request) ""))
@@ -101,7 +108,7 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
       ((string= path "/slt-terminal.js")
        ;; Not secret: served to any origin so other apps can import it.
        (serve-web-asset "slt-terminal.js" "text/javascript; charset=utf-8" :cors t))
-      ((not (token-valid-p backend request))
+      ((not (token-valid-p frontend request))
        (setf (hunchentoot:return-code*) hunchentoot:+http-forbidden+)
        "slt: missing or wrong ?token=")
       ((string= path "/")
@@ -117,8 +124,8 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
       (hunchensocket:send-text-message client (com.inuoe.jzon:stringify object))
     (error () nil)))
 
-(defun web-broadcast (backend object)
-  (let ((resource (web-backend-resource backend)))
+(defun web-broadcast (frontend object)
+  (let ((resource (web-frontend-resource frontend)))
     (when resource
       (let ((message (com.inuoe.jzon:stringify object)))
         (dolist (client (hunchensocket:clients resource))
@@ -133,14 +140,19 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
     table))
 
 (defun grid-row-runs (grid row)
-  "ROW as a vector of [TEXT FG BG ATTRS] runs of identically styled cells."
+  "ROW as a vector of [TEXT FG BG ATTRS] runs of identically styled cells,
+with a fifth element, the underline color, when it is not the default."
   (let ((runs (make-array 0 :adjustable t :fill-pointer t))
         (text (make-string-output-stream))
         (style nil))
     (flet ((flush ()
              (when style
-               (vector-push-extend (vector (get-output-stream-string text)
-                                           (first style) (second style) (third style))
+               (vector-push-extend (if (zerop (fourth style))
+                                       (vector (get-output-stream-string text)
+                                               (first style) (second style) (third style))
+                                       (vector (get-output-stream-string text)
+                                               (first style) (second style) (third style)
+                                               (fourth style)))
                                    runs))
              (setf style nil)))
       (dotimes (column (grid-columns grid))
@@ -149,7 +161,8 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
           (unless (logtest attrs +attr-wide-spacer+)
             (let ((cell-style (list (aref (grid-fg grid) index)
                                     (aref (grid-bg grid) index)
-                                    attrs)))
+                                    attrs
+                                    (aref (grid-ul grid) index))))
               (when (or (logtest attrs +attr-wide+)
                         (and style (logtest (third style) +attr-wide+))
                         (not (equal style cell-style)))
@@ -178,12 +191,13 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
           "mouse" (headless-view-mouse-tracking view)))
 
 (defmethod hunchensocket:client-connected ((resource web-resource) client)
-  (let ((backend (web-resource-backend resource)))
-    (headless-call backend
+  (let ((frontend (web-resource-frontend resource)))
+    (headless-call frontend
                    (lambda ()
-                     (let ((view (headless-backend-view backend)))
+                     (let ((view (headless-frontend-view frontend)))
                        (when view
                          (web-send client (web-hello view))
+                         (web-send client (web-colors-message view))
                          (when (headless-view-grid view)
                            (web-send client (web-frame (headless-view-grid view) :all t)))
                          (when (headless-view-image-store view)
@@ -204,15 +218,18 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
 
 (defmethod hunchensocket:text-message-received ((resource web-resource) client message)
   (declare (ignore client))
-  (let* ((backend (web-resource-backend resource))
-         (view (headless-backend-view backend))
+  (let* ((frontend (web-resource-frontend resource))
+         (view (headless-frontend-view frontend))
          (data (ignore-errors (com.inuoe.jzon:parse message))))
     (when (and view (hash-table-p data))
       (let ((type (gethash "t" data)))
         (cond
           ((equal type "key")
            (headless-key view (json-string data "char") (json-string data "keysym")
-                         (json-integer data "state")))
+                         (json-integer data "state")
+                         (cond ((equal (gethash "event" data) "repeat") :repeat)
+                               ((equal (gethash "event" data) "release") :release)
+                               (t :press))))
           ((equal type "paste")
            (headless-paste view (json-string data "text")))
           ((equal type "scroll")
@@ -242,11 +259,35 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
       (member (hunchentoot:header-in :origin request) *web-allowed-origins*
               :test #'equal)))
 
-;;; Backend protocol
+;;; Frontend protocol
 
-(defmethod headless-present ((backend web-backend) view grid)
-  (declare (ignore view))
-  (web-broadcast backend (web-frame grid)))
+(defun web-colors-message (view)
+  "The colors VIEW's palette changed from the default one."
+  (let* ((palette (view-palette view))
+         (default *palette*)
+         (changed (make-hash-table :test #'equal))
+         (message (json-object "t" "colors" "palette" changed)))
+    (unless (eq palette default)
+      (dotimes (index 256)
+        (let ((rgb (aref (palette-colors palette) index)))
+          (unless (= rgb (aref (palette-colors default) index))
+            (setf (gethash (princ-to-string index) changed) (rgb->hex rgb)))))
+      (loop for (key reader) in '(("foreground" palette-foreground)
+                                  ("background" palette-background)
+                                  ("cursor" palette-cursor)
+                                  ("selection" palette-selection))
+            for rgb = (funcall reader palette)
+            unless (= rgb (funcall reader default))
+              do (setf (gethash key message) (rgb->hex rgb))))
+    message))
+
+(defmethod headless-present ((frontend web-frontend) view grid)
+  ;; Programs' color changes reach the clients before the cells using them.
+  (let ((palette (view-palette view)))
+    (unless (eq palette (web-frontend-sent-palette frontend))
+      (setf (web-frontend-sent-palette frontend) palette)
+      (web-broadcast frontend (web-colors-message view))))
+  (web-broadcast frontend (web-frame grid)))
 
 (defun web-image-record (record)
   (destructuring-bind (placement image x y width height) record
@@ -283,59 +324,59 @@ many placements and placement fragments draw it."
                 'vector)
      "items" (coerce (mapcar #'web-image-record records) 'vector))))
 
-(defmethod backend-render-images :after ((backend web-backend) (view headless-view) store)
-  (web-broadcast backend
+(defmethod frontend-render-images :after ((frontend web-frontend) (view headless-view) store)
+  (web-broadcast frontend
                  (web-images-message
                   (terminal-image-render-list store (headless-view-cell-width view)
                                               (headless-view-cell-height view)))))
 
-(defmethod backend-set-title :after ((backend web-backend) view title)
+(defmethod frontend-set-title :after ((frontend web-frontend) view title)
   (declare (ignore view))
-  (web-broadcast backend (json-object "t" "title" "title" title)))
+  (web-broadcast frontend (json-object "t" "title" "title" title)))
 
-(defmethod backend-resize-view :after ((backend web-backend) view rows columns)
+(defmethod frontend-resize-view :after ((frontend web-frontend) view rows columns)
   (declare (ignore view))
-  (web-broadcast backend (json-object "t" "resize" "rows" rows "cols" columns)))
+  (web-broadcast frontend (json-object "t" "resize" "rows" rows "cols" columns)))
 
-(defmethod backend-set-mouse-tracking :after ((backend web-backend) view tracking)
+(defmethod frontend-set-mouse-tracking :after ((frontend web-frontend) view tracking)
   (declare (ignore view))
-  (web-broadcast backend (json-object "t" "mouse" "tracking" tracking)))
+  (web-broadcast frontend (json-object "t" "mouse" "tracking" tracking)))
 
-(defmethod backend-request-exit :before ((backend web-backend) view)
+(defmethod frontend-request-exit :before ((frontend web-frontend) view)
   (declare (ignore view))
-  (web-broadcast backend (json-object "t" "exit")))
+  (web-broadcast frontend (json-object "t" "exit")))
 
-(defun start-web-server (backend)
-  (let* ((resource (make-instance 'web-resource :backend backend))
+(defun start-web-server (frontend)
+  (let* ((resource (make-instance 'web-resource :frontend frontend))
          (dispatcher (lambda (request)
                        (and (string= (hunchentoot:script-name request) "/ws")
-                            (token-valid-p backend request)
+                            (token-valid-p frontend request)
                             (web-origin-allowed-p request)
                             resource)))
          (acceptor (make-instance 'web-acceptor
-                                  :backend backend
-                                  :address (web-backend-host backend)
-                                  :port (web-backend-port backend)
+                                  :frontend frontend
+                                  :address (web-frontend-host frontend)
+                                  :port (web-frontend-port frontend)
                                   :access-log-destination nil)))
-    (setf (web-backend-resource backend) resource
-          (web-backend-dispatcher backend) dispatcher
-          (web-backend-acceptor backend) acceptor)
+    (setf (web-frontend-resource frontend) resource
+          (web-frontend-dispatcher frontend) dispatcher
+          (web-frontend-acceptor frontend) acceptor)
     (push dispatcher hunchensocket:*websocket-dispatch-table*)
     (hunchentoot:start acceptor)
-    (format t "~&slt: serving on ~a~%" (web-url backend))
+    (format t "~&slt: serving on ~a~%" (web-url frontend))
     (finish-output)
-    backend))
+    frontend))
 
-(defun stop-web-server (backend)
+(defun stop-web-server (frontend)
   (setf hunchensocket:*websocket-dispatch-table*
-        (remove (web-backend-dispatcher backend) hunchensocket:*websocket-dispatch-table*))
-  (when (web-backend-acceptor backend)
-    (ignore-errors (hunchentoot:stop (web-backend-acceptor backend) :soft t))
-    (setf (web-backend-acceptor backend) nil)))
+        (remove (web-frontend-dispatcher frontend) hunchensocket:*websocket-dispatch-table*))
+  (when (web-frontend-acceptor frontend)
+    (ignore-errors (hunchentoot:stop (web-frontend-acceptor frontend) :soft t))
+    (setf (web-frontend-acceptor frontend) nil)))
 
-(defmethod backend-call-with-event-loop ((backend web-backend) thunk)
-  (start-web-server backend)
+(defmethod frontend-call-with-event-loop ((frontend web-frontend) thunk)
+  (start-web-server frontend)
   (unwind-protect (call-next-method)
-    (stop-web-server backend)))
+    (stop-web-server frontend)))
 
-(register-backend :web (lambda () (make-instance 'web-backend)))
+(register-frontend :web (lambda () (make-instance 'web-frontend)))

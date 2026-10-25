@@ -39,7 +39,7 @@
 
 (defun time-engine (engine-name octets &key (rows 50) (columns 160) (chunk 65536))
   "Feed OCTETS in CHUNK-sized reads, updating a grid after each read as the
-frontend does.  Return megabytes per second."
+emulator does.  Return megabytes per second."
   (let ((engine (make-engine engine-name :rows rows :columns columns))
         (grid (make-grid rows columns)))
     (unwind-protect
