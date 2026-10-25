@@ -4,8 +4,8 @@
 ;;;; the C0 controls (00-1F) and DEL (7F) is text, and text is most of the
 ;;;; input, so this scan is the scanner's innermost loop.  It tests 16 bytes
 ;;;; per step when SBCL has the sb-simd contrib: with NEON on arm64 and SSE2,
-;;;; which every x86-64 processor has, on x86-64.  Otherwise it tests 8 bytes
-;;;; per step within a 64-bit word.
+;;;; which every x86-64 processor has, on x86-64, where processors with AVX2
+;;;; test 32.  Otherwise it tests 8 bytes per step within a 64-bit word.
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   #+(and sbcl arm64)
@@ -82,6 +82,28 @@ or equal to #x7F (zero once XORed with #x7F)."
                    (return))))
     (scan-text-scalar octets i end)))
 
+
+;;; AVX2 is not part of the x86-64 baseline, so it is chosen at run time,
+;;; and again whenever a saved image starts, perhaps on another processor.
+;;; sb-simd's own INSTRUCTION-SET-CASE is not enough: an sb-simd built where
+;;; AVX2 was missing has AVX2 functions that only signal an error.
+
+#+ecma48-sse2
+(progn
+  (sb-ext:defglobal **avx2** nil)
+
+  (defun avx2-usable-p ()
+    "True when the processor has AVX2 and sb-simd's AVX2 functions work."
+    (and (sb-simd-internals:avx2-supported-p)
+         (handler-case (progn (sb-simd-avx2:u8.32-movemask (sb-simd-avx2:u8.32 0)) t)
+           (error () nil))))
+
+  (defun note-avx2 ()
+    (setf **avx2** (avx2-usable-p)))
+
+  (note-avx2)
+  (pushnew 'note-avx2 sb-ext:*init-hooks*))
+
 #+ecma48-sse2
 (defun scan-text-sse2 (octets start end)
   (declare (type octets octets)
@@ -100,11 +122,31 @@ or equal to #x7F (zero once XORed with #x7F)."
                    (return))))
     (scan-text-scalar octets i end)))
 
+#+ecma48-sse2
+(defun scan-text-avx2 (octets start end)
+  (declare (type octets octets)
+           (type index start end)
+           (optimize speed (safety 0)))
+  (let ((i start)
+        (space (sb-simd-avx2:u8.32 #x20))
+        (del (sb-simd-avx2:u8.32 #x7F)))
+    (declare (type index i))
+    (loop while (<= (+ i 32) end)
+          do (let ((v (sb-simd-avx2:u8.32-aref octets i)))
+               (if (zerop (sb-simd-avx2:u8.32-movemask
+                           (sb-simd-avx2:u8.32-or (sb-simd-avx2:u8.32< v space)
+                                                  (sb-simd-avx2:u8.32= v del))))
+                   (incf i 32)
+                   (return))))
+    (scan-text-sse2 octets i end)))
+
 (declaim (inline scan-text))
 (defun scan-text (octets start end)
   "The index of the first C0 control or DEL in OCTETS from START to END, or
 END."
   #+ecma48-neon (scan-text-neon octets start end)
-  #+ecma48-sse2 (scan-text-sse2 octets start end)
+  #+ecma48-sse2 (if **avx2**
+                    (scan-text-avx2 octets start end)
+                    (scan-text-sse2 octets start end))
   #-(or ecma48-neon ecma48-sse2) #+sbcl (scan-text-swar octets start end)
   #-(or ecma48-neon ecma48-sse2 sbcl) (scan-text-scalar octets start end))

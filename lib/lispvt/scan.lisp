@@ -5,8 +5,8 @@
 ;;;; for the next control or non-ASCII byte is the innermost loop.  It
 ;;;; tests 16 bytes per step when SBCL has the sb-simd contrib (some builds,
 ;;;; such as Alpine's, do not): with NEON on arm64 and SSE2, which every
-;;;; x86-64 processor has, on x86-64.  Otherwise it tests 8 bytes per step
-;;;; within a 64-bit word.
+;;;; x86-64 processor has, on x86-64, where processors with AVX2 test 32.
+;;;; Otherwise it tests 8 bytes per step within a 64-bit word.
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   #+(and sbcl arm64)
@@ -80,6 +80,28 @@ byte is below #x20 or above #x7E."
                    (return))))
     (scan-printable-scalar octets i end)))
 
+
+;;; AVX2 is not part of the x86-64 baseline, so it is chosen at run time,
+;;; and again whenever a saved image starts, perhaps on another processor.
+;;; sb-simd's own INSTRUCTION-SET-CASE is not enough: an sb-simd built where
+;;; AVX2 was missing has AVX2 functions that only signal an error.
+
+#+lispvt-sse2
+(progn
+  (sb-ext:defglobal **avx2** nil)
+
+  (defun avx2-usable-p ()
+    "True when the processor has AVX2 and sb-simd's AVX2 functions work."
+    (and (sb-simd-internals:avx2-supported-p)
+         (handler-case (progn (sb-simd-avx2:u8.32-movemask (sb-simd-avx2:u8.32 0)) t)
+           (error () nil))))
+
+  (defun note-avx2 ()
+    (setf **avx2** (avx2-usable-p)))
+
+  (note-avx2)
+  (pushnew 'note-avx2 sb-ext:*init-hooks*))
+
 #+lispvt-sse2
 (defun scan-printable-sse2 (octets start end)
   (declare (type octets octets)
@@ -98,10 +120,30 @@ byte is below #x20 or above #x7E."
                    (return))))
     (scan-printable-scalar octets i end)))
 
+#+lispvt-sse2
+(defun scan-printable-avx2 (octets start end)
+  (declare (type octets octets)
+           (type index start end)
+           (optimize speed (safety 0)))
+  (let ((i start)
+        (low (sb-simd-avx2:u8.32 #x20))
+        (high (sb-simd-avx2:u8.32 #x7E)))
+    (declare (type index i))
+    (loop while (<= (+ i 32) end)
+          do (let ((v (sb-simd-avx2:u8.32-aref octets i)))
+               (if (zerop (sb-simd-avx2:u8.32-movemask
+                           (sb-simd-avx2:u8.32-or (sb-simd-avx2:u8.32< v low)
+                                                  (sb-simd-avx2:u8.32> v high))))
+                   (incf i 32)
+                   (return))))
+    (scan-printable-sse2 octets i end)))
+
 (declaim (inline scan-printable))
 (defun scan-printable (octets start end)
   "The index of the first octet of OCTETS in [START, END) outside printable
 ASCII (#x20-#x7E), or END."
   #+lispvt-neon (scan-printable-neon octets start end)
-  #+lispvt-sse2 (scan-printable-sse2 octets start end)
+  #+lispvt-sse2 (if **avx2**
+                    (scan-printable-avx2 octets start end)
+                    (scan-printable-sse2 octets start end))
   #-(or lispvt-neon lispvt-sse2) (scan-printable-swar octets start end))

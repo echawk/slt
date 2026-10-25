@@ -215,7 +215,9 @@ and return copies of the events."
         (let ((expected (ecma48::scan-text-scalar octets start length)))
           #+sbcl (is (= expected (ecma48::scan-text-swar octets start length)))
           #+ecma48-neon (is (= expected (ecma48::scan-text-neon octets start length)))
-          #+ecma48-sse2 (is (= expected (ecma48::scan-text-sse2 octets start length))))))))
+          #+ecma48-sse2 (is (= expected (ecma48::scan-text-sse2 octets start length)))
+          #+ecma48-sse2 (when ecma48::**avx2**
+                          (is (= expected (ecma48::scan-text-avx2 octets start length)))))))))
 
 (defun run-tests ()
   (setf *failures* 0)

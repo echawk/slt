@@ -38,7 +38,12 @@
         (let ((start (random (1+ length) random)))
           (let ((expected (lispvt::scan-printable-scalar data start length)))
             (check (= expected (scan-printable data start length)))
-            (check (= expected (lispvt::scan-printable-swar data start length)))))))))
+            (check (= expected (lispvt::scan-printable-swar data start length)))
+            #+lispvt-sse2
+            (progn
+              (check (= expected (lispvt::scan-printable-sse2 data start length)))
+              (when lispvt::**avx2**
+                (check (= expected (lispvt::scan-printable-avx2 data start length)))))))))))
 
 (defun test-widths ()
   (check (= 1 (char-width (char-code #\a))))
