@@ -107,7 +107,8 @@ monitor); `src/gl/gl-frontend.lisp` defines them itself.
 
 ## Glyphs on Linux and the BSDs
 
-`src/gl/freetype.lisp`:
+`src/glyphs/freetype.lisp`, in the `slt/glyphs` system the `clx` frontend
+shares:
 
 - [font-discovery](https://codeberg.org/shinmera/font-discovery) (fontconfig)
   finds the family's regular, bold and italic files. In a collection

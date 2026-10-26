@@ -136,7 +136,10 @@ double click, ...), and optionally BUTTON (1, 2 or 3 for left, middle and
 right; 1 when omitted) and the modifier STATE (as for keypresses), when a
 mouse button is used.  Frontends that see the pointer move with no button
 held may also call it with ACTION :MOTION.  ROW and COLUMN are the cell
-under the pointer and may lie outside the grid.")
+under the pointer and may lie outside the grid.  Frontends that know the
+pointer's pixel position pass it as X and Y after STATE, from the grid's
+top left in the units of the cell size, for children that ask for mouse
+reports in pixels (mode 1016).")
   (:method (frontend view callback)
     (declare (ignore frontend view callback))
     nil))

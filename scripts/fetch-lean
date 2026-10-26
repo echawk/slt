@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
-# Fetch only the Lisp dependencies of a lean or tiny build (make LEAN=1,
-# make TINY=1) into DIR/ocicl, at the versions pinned in ocicl.csv.
+# Fetch only the Lisp dependencies of a lean build (make lean-FRONTEND,
+# make LEAN=1) into DIR/ocicl, at the versions pinned in ocicl.csv.
 # Usage: scripts/fetch-lean DIR SYSTEM...
 #
 # `ocicl install` would fetch everything in ocicl.csv (ghostty-vt, ltk, the

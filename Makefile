@@ -6,17 +6,19 @@
 #   make install                  install into $(DESTDIR)$(PREFIX)
 #   make lean [install]           bin/ with only this system's GUI frontend and
 #                                 the pure-Lisp lispvt engine (= LEAN=1)
-#   make tiny [install]           the same with the Tk (ltk) frontend (= TINY=1)
+#   make lean-FRONTEND [install]  the same with FRONTEND: cocoa, gl, gtk, clx,
+#                                 ltk or web (= LEAN=FRONTEND)
+#   make tiny [install]           the same as make lean-ltk (= TINY=1)
 #   make app                      macOS: build/slt.app around bin/
 #   make install-app              macOS: install slt.app into $(APPDIR)
 #
 # Packagers: `make deps` fetches the Lisp dependencies (the only step that
 # needs the network besides building native engines), then
 #   make ENGINES='...' && make install DESTDIR=... PREFIX=/usr
-# For a lean package, pass LEAN=1 (or TINY=1) to every step: `make deps
-# LEAN=1` fetches only what that build loads (no Zig, Ghostty or web stack),
-# then
-#   make LEAN=1 && make install LEAN=1 DESTDIR=... PREFIX=/usr
+# For a lean package, pass LEAN=1 (or LEAN=FRONTEND) to every step: `make
+# deps LEAN=gtk` fetches only what that build loads (no Zig, Ghostty or
+# other frontends), then
+#   make LEAN=gtk && make install LEAN=gtk DESTDIR=... PREFIX=/usr
 # bin/ is self-contained: the executable finds its libraries next to it, so
 # it is installed into $(LIBDIR)/slt with a symlink in $(BINDIR).
 #
@@ -49,28 +51,37 @@ endif
 # is the command line over slt/core plus BASE, ENGINES and FRONTENDS.
 BASE ?= slt
 
-# LEAN=1: only the native GUI frontend (cocoa on macOS, gl elsewhere) and the
-# lispvt engine, which lives in slt/core.  Its Lisp dependencies are fetched
-# on their own into build/lean/ocicl (scripts/fetch-lean), and no native
-# engine is built.  TINY=1: the same with the ltk frontend instead, which
-# needs only Tk's wish at run time; its dependencies go to build/tiny/ocicl.
+# LEAN=FRONTEND: only FRONTEND and the lispvt engine, which lives in
+# slt/core.  LEAN=1 means the native GUI frontend (cocoa on macOS, gl
+# elsewhere), and TINY=1 means LEAN=ltk, which needs only Tk's wish at run
+# time.  Each frontend's Lisp dependencies are fetched on their own into
+# build/lean-FRONTEND/ocicl (scripts/fetch-lean), and no native engine is
+# built.
+LEAN_FRONTENDS = cocoa gl gtk clx ltk web
 ifeq ($(shell uname -s),Darwin)
 NATIVE_FRONTEND = cocoa
 else
 NATIVE_FRONTEND = gl
 endif
-ifneq ($(filter lean,$(MAKECMDGOALS)),)
-LEAN = 1
+LEAN_GOAL := $(firstword $(filter lean-%,$(MAKECMDGOALS)))
+ifneq ($(LEAN_GOAL),)
+LEAN_FRONTEND := $(LEAN_GOAL:lean-%=%)
+else ifneq ($(filter tiny,$(MAKECMDGOALS)),)
+LEAN_FRONTEND := ltk
+else ifdef TINY
+LEAN_FRONTEND := ltk
+else ifneq ($(filter lean,$(MAKECMDGOALS))$(filter 1,$(LEAN)),)
+# `make lean FRONTENDS=gtk` still picks the frontend.
+LEAN_FRONTEND := $(if $(filter command,$(origin FRONTENDS)),$(firstword $(FRONTENDS)),$(NATIVE_FRONTEND))
+else
+LEAN_FRONTEND := $(LEAN)
 endif
-ifneq ($(filter tiny,$(MAKECMDGOALS)),)
-TINY = 1
+ifneq ($(LEAN_FRONTEND),)
+ifeq ($(filter $(LEAN_FRONTEND),$(LEAN_FRONTENDS)),)
+$(error LEAN=$(LEAN_FRONTEND): pick one of $(LEAN_FRONTENDS))
 endif
-ifdef TINY
-LEAN_DIR = build/tiny
-FRONTENDS = ltk
-else ifdef LEAN
-LEAN_DIR = build/lean
-FRONTENDS = $(NATIVE_FRONTEND)
+LEAN_DIR = build/lean-$(LEAN_FRONTEND)
+override FRONTENDS = $(LEAN_FRONTEND)
 endif
 ifdef LEAN_DIR
 BASE =
@@ -93,14 +104,14 @@ $(shell mkdir -p build/stamp && \
         (echo '$(CONFIG)' | cmp -s - build/stamp/config || \
          { echo '$(CONFIG)' > build/stamp/config; rm -rf bin; }))
 
-.PHONY: all lean tiny deps run check test conformance web-test gl-test gtk-test clx-test install uninstall app install-app uninstall-app icon clean distclean
+.PHONY: all lean tiny $(LEAN_FRONTENDS:%=lean-%) deps run check test conformance web-test gl-test gtk-test clx-test install uninstall app install-app uninstall-app icon clean distclean
 
 all: bin/slt
 
 bin/slt: $(DEPS_STAMP) $(STAMPS) $(SOURCES)
 	SLT_SYSTEMS="$(BASE) $(ENGINES:%=slt/%) $(FRONTENDS:%=slt/%)" scripts/build
 
-lean tiny: bin/slt
+lean tiny $(LEAN_FRONTENDS:%=lean-%): bin/slt
 
 deps: $(DEPS_STAMP)
 
@@ -108,7 +119,7 @@ ocicl/.stamp: ocicl.csv
 	$(OCICL) install
 	touch $@
 
-build/lean/.stamp build/tiny/.stamp: ocicl.csv slt.asd
+$(LEAN_FRONTENDS:%=build/lean-%/.stamp): ocicl.csv slt.asd
 	OCICL=$(OCICL) scripts/fetch-lean $(@D) slt/app $(FRONTENDS:%=slt/%)
 	touch $@
 
@@ -148,8 +159,8 @@ gl-test: ocicl/.stamp
 gtk-test: ocicl/.stamp
 	scripts/gtk-test
 
-# clx frontend smoke test; needs an X server with 24-bit TrueColor (on Linux
-# CI: xvfb-run -s '-screen 0 1024x768x24').
+# clx frontend smoke test; needs an X server with the RENDER extension (on
+# Linux CI: xvfb-run -s '-screen 0 1024x768x24').
 clx-test: ocicl/.stamp
 	scripts/clx-test
 
@@ -163,7 +174,7 @@ uninstall:
 	rm -rf $(DESTDIR)$(LIBDIR)/slt
 
 # macOS application bundle.  `make lean app` and `make lean install-app`
-# bundle the lean build.
+# bundle the lean build (`make lean-gl app` another lean one).
 app: build/slt.app
 
 build/slt.app: bin/slt macos/Info.plist macos/slt.icns scripts/make-app

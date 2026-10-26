@@ -42,6 +42,34 @@
                    text)
   (normalize-font-metric (ltk::read-data)))
 
+;;; Fonts.  LTK's FONT-CREATE passes the family to Tk unquoted, so a family
+;;; with a space (most of them) makes a malformed command, and LTK then
+;;; waits for an answer that never comes.  The font is created here instead,
+;;; with a family Tk has: the one asked for, else that of Tk's own fixed
+;;; font, which every Tk has.
+
+(defvar *ltk-font-count* 0)
+
+(defun ltk-fixed-font-family ()
+  (ltk:format-wish "senddatastring [font actual TkFixedFont -family]")
+  (ltk::read-data))
+
+(defun ltk-font-family (family)
+  "FAMILY when Tk has it, else the family of Tk's fixed font."
+  (let ((families (ignore-errors (ltk:font-families))))
+    (if (and family (member family families :test #'string-equal))
+        family
+        (ltk-fixed-font-family))))
+
+(defun ltk-create-font (family size)
+  "A new Tk font of FAMILY (see LTK-FONT-FAMILY) and SIZE; return its name."
+  (let ((name (format nil "slt-terminal-font-~d" (incf *ltk-font-count*))))
+    (ltk:format-wish "senddatastring [font create ~a -family \"~a\" -size ~d]"
+                     name (escape-tcl-text (ltk-font-family family))
+                     (round (or size (terminal-font-size nil))))
+    (ltk::read-data)
+    name))
+
 (defun measure-font-grid (font-name &key cell-width cell-height)
   (let* ((metrics (ltk:font-metrics font-name))
          (character-width (max 1 (font-measure font-name "M")))
@@ -61,7 +89,8 @@
              (write-char char out))))
 
 (defun render-text-command (canvas-path handle font-name foreground text)
-  (format nil "~A itemconfigure ~A -fill {~A} -font {~A} -text {~A}"
+  ;; In double quotes, unlike braces, Tcl undoes ESCAPE-TCL-TEXT's escapes.
+  (format nil "~A itemconfigure ~A -fill {~A} -font {~A} -text \"~A\""
           canvas-path
           handle
           foreground
@@ -81,6 +110,8 @@
              (background (aref (ltk-view-background-items view) row column))
              (text (aref (ltk-view-text-items view) row column)))
         (multiple-value-bind (fg bg) (cell-rgb grid index palette)
+          (when (grid-selected-p grid index)
+            (setf bg (palette-selection palette)))
           (let ((bg-hex (rgb-hex bg)))
             (format out "~A itemconfigure ~A -fill {~A} -outline {~A}~%"
                     (ltk:widget-path (ltk::canvas background))
@@ -151,14 +182,11 @@
                                   cell-width cell-height title)
   (declare (ignore frontend))
   (let* ((root ltk:*tk*)
-         (font-name "slt-terminal-font")
+         (font-name (ltk-create-font font-family font-size))
          (canvas nil)
          (resolved-cell-width nil)
          (resolved-cell-height nil)
          (view nil))
-    (ltk:font-create font-name
-                     :family font-family
-                     :size font-size)
     (multiple-value-setq (resolved-cell-width resolved-cell-height)
       (measure-font-grid font-name
                          :cell-width cell-width

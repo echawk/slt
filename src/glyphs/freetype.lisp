@@ -1,7 +1,7 @@
 (in-package #:slt)
 
-;;;; Glyph rasterization for the gl frontend on Linux and the BSDs (macOS
-;;;; uses CoreText, src/macos/coretext.lisp).  font-discovery (fontconfig)
+;;;; Glyph rasterization for the gl and clx frontends on Linux and the BSDs
+;;;; (macOS uses CoreText, src/macos/coretext.lisp).  font-discovery (fontconfig)
 ;;;; finds the family's files; characters the family lacks come from the
 ;;;; first font in *FONT-FALLBACK-FAMILIES*, then any installed font, that
 ;;;; has them.  Combining marks are placed without shaping (no HarfBuzz yet).

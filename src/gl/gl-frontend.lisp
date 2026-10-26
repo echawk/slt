@@ -38,10 +38,8 @@ steps, so it uses a smaller multiplier.")
 
 (defun gl-libraries-available-p ()
   "True when GLFW and the glyph rasterizer's libraries load."
-  (ignore-errors
-   (cffi:load-foreign-library '%glfw::glfw)
-   #-darwin (load-freetype)
-   t))
+  (and (ignore-errors (cffi:load-foreign-library '%glfw::glfw) t)
+       (glyph-libraries-available-p)))
 
 ;;; GLFW 3.2 and 3.3 calls and window hints cl-glfw3 does not bind.
 
@@ -129,23 +127,7 @@ whose window it is.  ARGUMENTS follow the window, as in DEFCALLBACK."
          (when ,view
            (with-live-view (,view) ,@body))))))
 
-;;; Fonts: CoreText on macOS, FreeType elsewhere.  Sizes are pixels.
-
-(defun open-glyph-font (family pixel-size)
-  #+darwin (make-coretext-font family pixel-size)
-  #-darwin (make-ft-font family pixel-size))
-
-(defun glyph-font-cell-size (font)
-  #+darwin (values (coretext-font-cell-width font) (coretext-font-cell-height font))
-  #-darwin (values (ft-font-cell-width font) (ft-font-cell-height font)))
-
-(defun glyph-font-rasterizer (font)
-  #+darwin (coretext-rasterizer font)
-  #-darwin (freetype-rasterizer font))
-
-(defun close-glyph-font (font)
-  #+darwin (free-coretext-font font)
-  #-darwin (free-ft-font font))
+;;; Fonts come from slt/glyphs.  Sizes are pixels.
 
 (defun gl-view-set-font (view scale)
   "Open the view's font for SCALE and size its cells and atlas."
@@ -246,12 +228,17 @@ to leave it to the character callback."
 (defvar *multi-click-seconds* 0.4
   "The longest gap between clicks of a double or triple click.")
 
-(defun gl-pointer-cell (view x y)
-  "The (ROW COLUMN) under window coordinates X, Y."
+(defun gl-pointer-pixels (view x y)
+  "Window coordinates X, Y as framebuffer pixels, the grid's units."
   (let ((scale (/ (first (glfw:get-framebuffer-size (gl-view-pointer view)))
                  (max 1 (first (glfw:get-window-size (gl-view-pointer view)))))))
-    (list (floor (* y scale) (gl-view-cell-height view))
-          (floor (* x scale) (gl-view-cell-width view)))))
+    (list (* x scale) (* y scale))))
+
+(defun gl-pointer-cell (view x y)
+  "The (ROW COLUMN) under window coordinates X, Y."
+  (destructuring-bind (px py) (gl-pointer-pixels view x y)
+    (list (floor py (gl-view-cell-height view))
+          (floor px (gl-view-cell-width view)))))
 
 (defun count-gl-click (view cell)
   "Count a press at CELL as part of a multi-click when it follows the last
@@ -268,10 +255,14 @@ one quickly at the same cell."
           (gl-view-last-click view) (cons now cell))
     (gl-view-click-count view)))
 
-(defun deliver-gl-mouse (view action cell clicks button state)
+(defun deliver-gl-mouse (view action position clicks button state)
+  "Pass a mouse event at window coordinates POSITION, (X Y), to the view's
+callback."
   (when (gl-view-mouse-callback view)
-    (funcall (gl-view-mouse-callback view) action (first cell) (second cell) clicks
-             button state)))
+    (destructuring-bind (row column) (apply #'gl-pointer-cell view position)
+      (destructuring-bind (x y) (apply #'gl-pointer-pixels view position)
+        (funcall (gl-view-mouse-callback view) action row column clicks
+                 button state x y)))))
 
 (define-gl-callback gl-mouse-button-changed (view (button :int)
                                                  (action %glfw::key-action)
@@ -279,21 +270,21 @@ one quickly at the same cell."
   ;; GLFW numbers the left, right and middle buttons 0, 1 and 2.
   (let ((number (case button (0 1) (2 2) (1 3))))
     (when number
-      (let ((cell (apply #'gl-pointer-cell view
-                         (glfw:get-cursor-position (gl-view-pointer view))))
-            (state (glfw-modifiers->state modifiers)))
+      (let* ((position (glfw:get-cursor-position (gl-view-pointer view)))
+             (cell (apply #'gl-pointer-cell view position))
+             (state (glfw-modifiers->state modifiers)))
         (case action
           (:press
            (setf (gl-view-button view) number)
-           (deliver-gl-mouse view :press cell (count-gl-click view cell) number state))
+           (deliver-gl-mouse view :press position (count-gl-click view cell) number state))
           (:release
            (setf (gl-view-button view) nil)
-           (deliver-gl-mouse view :release cell (gl-view-click-count view)
+           (deliver-gl-mouse view :release position (gl-view-click-count view)
                              number state)))))))
 
 (define-gl-callback gl-mouse-moved (view (x :double) (y :double))
   (let ((button (gl-view-button view)))
-    (deliver-gl-mouse view (if button :drag :motion) (gl-pointer-cell view x y)
+    (deliver-gl-mouse view (if button :drag :motion) (list x y)
                       (gl-view-click-count view) button
                       0)))
 
@@ -513,8 +504,7 @@ height, after writing them to PATHNAME as a PPM when given."
           (return view))))))
 
 (defmethod frontend-available-font-families ((frontend gl-frontend))
-  #+darwin '()
-  #-darwin (or (ignore-errors (font-monospace-families)) '()))
+  (glyph-font-families))
 
 (defmethod frontend-resolve-font-size ((frontend gl-frontend) font-size)
   (abs (or font-size 15)))

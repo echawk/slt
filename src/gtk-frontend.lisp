@@ -301,11 +301,12 @@ repeats, so a press of a key already down is one."
               1)
           (gtk-view-last-click view) (cons now cell))))
 
-(defun gtk-deliver-mouse (view action cell button flags)
+(defun gtk-deliver-mouse (view action cell button flags x y)
+  "Pass a mouse event at CELL, pixel X, Y, to the view's callback."
   (when (gtk-view-mouse-callback view)
     (funcall (gtk-view-mouse-callback view)
              action (first cell) (second cell) (gtk-view-click-count view)
-             button (gtk-modifier-state flags))))
+             button (gtk-modifier-state flags) x y)))
 
 (defun gtk-button-event (view event action)
   ;; GTK reports double and triple clicks as extra events; count our own.
@@ -319,7 +320,8 @@ repeats, so a press of a key already down is one."
         (when (eq action :press)
           (gtk:gtk-widget-grab-focus (gtk-view-area view))
           (gtk-count-click view cell))
-        (gtk-deliver-mouse view action cell button (gdk:gdk-event-button-state event)))))
+        (gtk-deliver-mouse view action cell button (gdk:gdk-event-button-state event)
+                           (gdk:gdk-event-button-x event) (gdk:gdk-event-button-y event)))))
   t)
 
 (defun gtk-scroll (view event)
@@ -407,7 +409,9 @@ repeats, so a press of a key already down is one."
                                                       (gdk:gdk-event-motion-x event)
                                                       (gdk:gdk-event-motion-y event))
                                                      button
-                                                     (gdk:gdk-event-motion-state event)))
+                                                     (gdk:gdk-event-motion-state event)
+                                                     (gdk:gdk-event-motion-x event)
+                                                     (gdk:gdk-event-motion-y event)))
                                 t))
     (gobject:g-signal-connect area "scroll-event"
                               (lambda (widget event)

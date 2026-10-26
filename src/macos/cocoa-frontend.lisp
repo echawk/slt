@@ -230,18 +230,20 @@ event (:PRESS, :REPEAT or :RELEASE)."
       (multiple-value-bind (x y) (objc-point event "locationInWindow")
         (multiple-value-bind (left bottom width height) (objc-rect self "frame")
           (declare (ignore left bottom width))
-          (let ((scale (cocoa-view-scale view))
-                (padding (cocoa-view-padding view)))
-            ;; Window coordinates start at the bottom left.  Between rows
-            ;; (smooth scrolling) the grid is drawn lower.
+          (let* ((scale (cocoa-view-scale view))
+                 (padding (cocoa-view-padding view))
+                 ;; Window coordinates start at the bottom left.  Between
+                 ;; rows (smooth scrolling) the grid is drawn lower.
+                 (px (- (* x scale) padding))
+                 (py (- (* (- height y) scale) padding (cocoa-view-smooth-offset view))))
             (funcall (cocoa-view-mouse-callback view)
                      action
-                     (max 0 (floor (- (* (- height y) scale) padding (cocoa-view-smooth-offset view))
-                                   (cocoa-view-cell-height view)))
-                     (floor (- (* x scale) padding) (cocoa-view-cell-width view))
+                     (max 0 (floor py (cocoa-view-cell-height view)))
+                     (floor px (cocoa-view-cell-width view))
                      (if (eq action :motion) 0 (msg event "clickCount" :long))
                      button
-                     (ns-modifiers->state (msg event "modifierFlags" :unsigned-long)))))))))
+                     (ns-modifiers->state (msg event "modifierFlags" :unsigned-long))
+                     px py)))))))
 
 (defmacro define-cocoa-mouse-callbacks (&rest definitions)
   "Define view callbacks from (NAME ACTION BUTTON); BUTTON :OTHER is the

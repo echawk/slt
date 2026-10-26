@@ -81,6 +81,12 @@
   (pointer-column 0 :type fixnum)
   ;; True once a mouse event has placed the pointer.
   (pointer-known-p nil)
+  ;; The pointer's pixel from the grid's top left, for reports in pixels.
+  (pointer-x 0 :type fixnum)
+  (pointer-y 0 :type fixnum)
+  ;; Whether the child asked for mouse reports in pixels (SGR-Pixels, mode
+  ;; 1016).  Engines do not implement it, so it is tracked here.
+  (mouse-pixels nil)
   ;; The font size now, and the one the window opened with.
   (font-size 15)
   (initial-font-size 15))
@@ -635,19 +641,22 @@ unless the child asked the Kitty keyboard protocol for them."
                         (kitty-key-input emulator key modifiers event))))
            (unless (eq input :legacy)
              (write-input emulator input)))))
-      ((and (not (run-hook-until-success '*key-hook* emulator key modifiers))
-            ;; Super (Command) combinations are shortcuts, not input.
-            (not (member :super modifiers)))
-       ;; Typing returns the view to the live screen and ends a selection.
-       (scroll-viewport emulator :bottom)
-       (clear-selection emulator)
-       (setf (gethash (key-identity key) (terminal-emulator-keys-down emulator)) t)
-       (write-input emulator
-                    (with-engine (engine emulator)
+      ((not (run-hook-until-success '*key-hook* emulator key modifiers))
+       (let ((input (with-engine (engine emulator)
                       (let ((kitty (kitty-key-input emulator key modifiers event)))
-                        (if (eq kitty :legacy)
-                            (engine-encode-key engine key modifiers)
-                            kitty))))))))
+                        (cond ((not (eq kitty :legacy)) kitty)
+                              ;; Super (Command) combinations the shortcuts
+                              ;; did not take reach only children using the
+                              ;; Kitty keyboard protocol: the legacy encoding
+                              ;; has no Super.
+                              ((member :super modifiers) nil)
+                              (t (engine-encode-key engine key modifiers)))))))
+         (when input
+           ;; Typing returns the view to the live screen and ends a selection.
+           (scroll-viewport emulator :bottom)
+           (clear-selection emulator)
+           (setf (gethash (key-identity key) (terminal-emulator-keys-down emulator)) t)
+           (write-input emulator input)))))))
 
 ;;; Selection and the clipboard
 
@@ -714,7 +723,8 @@ part of a word, so that paths and URLs are selected whole.")
 
 (defun report-mouse (emulator action button row column modifiers &key (send t))
   "Report a mouse event to the child at the cell ROW, COLUMN, kept inside
-the grid, unless SEND is false.  Return true when the child tracks the
+the grid, unless SEND is false; in pixels (the pointer's, see HANDLE-MOUSE)
+when the child asked for them.  Return true when the child tracks the
 mouse."
   (let ((grid (terminal-emulator-grid emulator))
         (tracking nil)
@@ -722,20 +732,45 @@ mouse."
     (with-engine (engine emulator)
       (setf tracking (engine-mode engine :mouse-tracking))
       (when (and tracking send)
-        (setf report (engine-encode-mouse engine action button
-                                          (max 0 (min row (1- (grid-rows grid))))
-                                          (max 0 (min column (1- (grid-columns grid))))
-                                          modifiers))))
+        (setf report
+              (if (terminal-emulator-mouse-pixels emulator)
+                  (xterm-encode-mouse action button
+                                      (terminal-emulator-pointer-y emulator)
+                                      (terminal-emulator-pointer-x emulator)
+                                      modifiers :tracking tracking :sgr :pixels)
+                  (engine-encode-mouse engine action button
+                                       (max 0 (min row (1- (grid-rows grid))))
+                                       (max 0 (min column (1- (grid-columns grid))))
+                                       modifiers)))))
     (write-input emulator report)
     tracking))
 
-(defun handle-mouse (emulator action row column clicks &optional (button 1) (state 0))
+(defun note-pointer-pixel (emulator row column x y)
+  "Record the pointer's pixel, X and Y from the grid's top left (the middle
+of the cell ROW, COLUMN when NIL), kept inside the grid.  Return true when
+it changed."
+  (multiple-value-bind (cw ch) (emulator-cell-pixels emulator)
+    (let* ((grid (terminal-emulator-grid emulator))
+           (x (max 0 (min (1- (* (grid-columns grid) cw))
+                          (round (or x (+ (* column cw) (floor cw 2)))))))
+           (y (max 0 (min (1- (* (grid-rows grid) ch))
+                          (round (or y (+ (* row ch) (floor ch 2))))))))
+      (prog1 (or (/= x (terminal-emulator-pointer-x emulator))
+                 (/= y (terminal-emulator-pointer-y emulator)))
+        (setf (terminal-emulator-pointer-x emulator) x
+              (terminal-emulator-pointer-y emulator) y)))))
+
+(defun handle-mouse (emulator action row column clicks &optional (button 1) (state 0) x y)
   "Report the event when the child tracks the mouse and Shift is not held;
 otherwise select with the primary button: drag for characters,
-double-click for words and triple-click for lines."
-  (let ((modifiers (decode-modifier-state state))
-        (moved (or (/= row (terminal-emulator-pointer-row emulator))
-                   (/= column (terminal-emulator-pointer-column emulator)))))
+double-click for words and triple-click for lines.  X and Y are the
+pointer's pixels from the grid's top left, which frontends pass when they
+know them, for children that ask for reports in pixels."
+  (let* ((modifiers (decode-modifier-state state))
+         (pixel-moved (note-pointer-pixel emulator row column x y))
+         (moved (or (/= row (terminal-emulator-pointer-row emulator))
+                    (/= column (terminal-emulator-pointer-column emulator))
+                    (and pixel-moved (terminal-emulator-mouse-pixels emulator)))))
     (setf (terminal-emulator-pointer-row emulator) row
           (terminal-emulator-pointer-column emulator) column
           (terminal-emulator-pointer-known-p emulator) t)
@@ -751,7 +786,8 @@ double-click for words and triple-click for lines."
                  (report-mouse emulator (if (eq action :drag) :motion action)
                                (if (eq action :motion) nil button)
                                row column modifiers
-                               ;; Motion within the same cell is not reported.
+                               ;; Motion within the same cell (or pixel, when
+                               ;; reported in pixels) is not reported.
                                :send (or moved (not (member action '(:drag :motion))))))
       (when (and (eql button 1) (not (eq action :motion)))
         (select-with-mouse emulator action row column clicks)))))
@@ -1291,8 +1327,8 @@ and notice a child that exited without closing the PTY."
                                                               event)))
                     (frontend-bind-mouse
                      frontend-instance view
-                     (lambda (action row column clicks &optional (button 1) (state 0))
-                       (handle-mouse emulator action row column clicks button state)))
+                     (lambda (action row column clicks &optional (button 1) (state 0) x y)
+                       (handle-mouse emulator action row column clicks button state x y)))
                     (frontend-bind-paste frontend-instance view
                                         (lambda (text) (paste-text emulator text)))
                     (frontend-bind-focus frontend-instance view

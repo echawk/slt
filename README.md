@@ -15,7 +15,8 @@ bin/slt              # run it (or: make run ARGS='--engine libvterm')
 make check           # unit tests and engine conformance
 make install         # into /usr/local; PREFIX and DESTDIR are honored
 make lean            # only this system's GUI and the lispvt engine (see below)
-make tiny            # the same with the Tk (ltk) frontend
+make lean-gtk        # the same with another frontend: gl gtk clx ltk web cocoa
+make tiny            # the same as make lean-ltk
 make app             # macOS: build/slt.app (make lean app for the lean build)
 make install-app     # macOS: install slt.app into ~/Applications (APPDIR)
 ```
@@ -38,15 +39,27 @@ For a package, run `make deps` while the network is available (building
 ghostty also downloads Zig and Ghostty), then
 `make && make install DESTDIR="$pkgdir" PREFIX=/usr`.
 
-`make lean` (or `LEAN=1` on any step) builds a smaller slt: the native GUI
-frontend (cocoa on macOS, gl elsewhere), the pure-Lisp `lispvt` engine and the
-headless frontend, without ltk, the web frontend, the REPL servers or other
-engines. `make tiny` (`TINY=1`) is the same with the ltk frontend instead,
-which needs only Tk's `wish` at run time. Each fetches only the Lisp libraries
-its build loads, at the versions pinned in `ocicl.csv`, into
-`build/lean/ocicl` or `build/tiny/ocicl`, and downloads no Zig or Ghostty.
-For a package: `make deps LEAN=1`, then
-`make LEAN=1 && make install LEAN=1 DESTDIR="$pkgdir" PREFIX=/usr`.
+A lean build has one frontend, the pure-Lisp `lispvt` engine and the headless
+frontend, without the other frontends, the REPL servers or other engines. It
+fetches only the Lisp libraries its build loads, at the versions pinned in
+`ocicl.csv`, into `build/lean-FRONTEND/ocicl`, and downloads no Zig or
+Ghostty.
+
+| command | frontend | needs at run time |
+|---|---|---|
+| `make lean` (`LEAN=1`) | the native one: cocoa on macOS, gl elsewhere | |
+| `make lean-cocoa` (`LEAN=cocoa`) | cocoa (macOS only) | |
+| `make lean-gl` (`LEAN=gl`) | gl | GLFW 3.3 or later; FreeType and fontconfig off macOS |
+| `make lean-gtk` (`LEAN=gtk`) | gtk | GTK 3 |
+| `make lean-clx` (`LEAN=clx`) | clx | an X server with RENDER; FreeType and fontconfig |
+| `make lean-ltk` (`LEAN=ltk`, `make tiny`, `TINY=1`) | ltk | Tk's `wish` |
+| `make lean-web` (`LEAN=web`) | web | a browser |
+
+`make lean FRONTENDS=gtk` is the same as `make lean-gtk`. Add the target's
+`LEAN=` setting to the other steps to use the lean build: `make lean-gtk
+install`, `make lean-gl app` on macOS. For a package, pass it to every step:
+`make deps LEAN=gtk`, then
+`make LEAN=gtk && make install LEAN=gtk DESTDIR="$pkgdir" PREFIX=/usr`.
 
 `scripts/lisp` runs SBCL with ASDF limited to this project, for working at a
 REPL: everything is resolved from `ocicl.csv`, `ocicl/` and `lib/`.
@@ -103,7 +116,7 @@ and compares the resulting screens. `slt/bench` measures throughput.
 | frontend | |
 |---|---|
 | `cocoa` | macOS default: AppKit window, Metal renderer, CoreText glyphs |
-| `clx` | X11 window through [CLX](https://github.com/sharplispers/clx), X core fonts, no foreign libraries (`slt/clx`; needs an X server) |
+| `clx` | X11 window through [CLX](https://github.com/sharplispers/clx), the Lisp X protocol library; the `gl` frontend's FreeType glyphs, drawn with the RENDER extension (`slt/clx`; needs an X server) |
 | `gl` | Linux/BSD default: GLFW window (X11 or Wayland), OpenGL 3.3 or OpenGL ES 3.0, FreeType glyphs found through font-discovery; also runs on macOS with CoreText glyphs |
 | `gtk` | GTK 3 window drawn with Cairo and Pango, via [cl-cffi-gtk](https://github.com/crategus/cl-cffi-gtk) (`slt/gtk`; needs GTK 3) |
 | `ltk` | Tk; portable fallback (needs `wish`) where `gl` cannot run |
@@ -189,15 +202,17 @@ cl-opengl. GLFW chooses X11 or Wayland when it starts.
 Vulkan would add.
 
 The `gtk` frontend uses the system's GTK 3 (on macOS, Homebrew's `gtk+3`).
-Build it in with `FRONTENDS=gtk`, for example `make lean FRONTENDS=gtk`.
+Build it in with `FRONTENDS=gtk`, or on its own with `make lean-gtk`.
 `make gtk-test` checks its drawing the same way `make gl-test` does. It
 has no input method support yet, and its font menu lists no families.
 
-The `clx` frontend speaks the X protocol in Lisp, so it needs only an X
-server, with a 24-bit TrueColor visual; build it in with `FRONTENDS=clx`.
-It draws with the server's core fonts (ISO 10646 ones when the server has
-them, which covers the Basic Multilingual Plane only), so glyph coverage
-depends on the server's font path. `make clx-test` checks its drawing.
+The `clx` frontend speaks the X protocol in Lisp, so it needs no X
+libraries, only an X server with the RENDER extension. It finds and
+rasterizes fonts as the `gl` frontend does (FreeType and fontconfig, the
+shared `slt/glyphs` system), packs the grid as the GPU frontends do, and
+draws glyph runs with RENDER, so text and colors match the other frontends.
+It scales with the `Xft.dpi` resource. Build it in with `FRONTENDS=clx`, or
+on its own with `make lean-clx`. `make clx-test` checks its drawing.
 
 ## Connecting from SLIME or SLY
 

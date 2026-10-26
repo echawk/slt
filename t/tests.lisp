@@ -1380,7 +1380,7 @@ emulator wrote back since the last call."
             (escape-tcl-text "$[]\"")))
 
 (deftest render-text-command-escapes-canvas-cell-text-for-tcl ()
-  (is-equal ".c itemconfigure 7 -fill {#FFFFFF} -font {mono} -text {\\{}"
+  (is-equal ".c itemconfigure 7 -fill {#FFFFFF} -font {mono} -text \"\\{\""
             (render-text-command ".c" 7 "mono" "#FFFFFF" "{")))
 
 (deftest replace-environment-variable-updates-existing-values-cleanly ()
@@ -1807,6 +1807,30 @@ emulator wrote back since the last call."
         "default backgrounds are marked")
     (is-equal (char-code #\A) (aref (slt::glyph-atlas-pixels atlas) 2)))))
 
+(deftest packed-row-runs-split-a-row-for-rectangle-frontends ()
+  (let* ((palette (make-palette :ansi :xterm))
+         (grid (engine-grid (feed (make-test-engine :rows 1 :columns 6)
+                                  :esc "[?25l" :esc "[31;4mA" :esc "[0mA"
+                                  (string (code-char #x4E2D)))))
+         (atlas (slt::make-glyph-atlas 2 2 #'fake-rasterizer :width 16 :height 16))
+         (instances (slt::pack-grid grid atlas palette nil))
+         (red (aref (slt::palette-colors palette) 1))
+         (fg (slt::palette-foreground palette))
+         (bg (slt::palette-background palette)))
+    (flet ((slot (column) (ldb (byte 31 0) (aref instances (+ 2 (* 4 column))))))
+      (multiple-value-bind (backgrounds glyphs decorations)
+          (slt::packed-row-runs instances 6 0)
+        (is-equal (list (list 0 6 bg t)) backgrounds)
+        ;; The red A alone, then the plain A and both halves of the wide glyph.
+        (is-equal (list (list 0 red (list (slot 0)))
+                        (list 1 fg (list (slot 1) (slot 2) (1+ (slot 2)))))
+                  (mapcar (lambda (run) (list (first run) (second run)
+                                              (coerce (third run) 'list)))
+                          glyphs))
+        (is-equal (slot 0) (slot 1))
+        (is-equal (list (list 0 1 (logior slt::+gpu-flag-underline+ (ash red 8)) red))
+                  decorations)))))
+
 (deftest pack-grid-recovers-when-the-atlas-fills ()
   (let* ((grid (engine-grid (feed (make-test-engine :rows 1 :columns 8) "abcdefgh")))
          ;; Room for three glyphs besides the blank slot.
@@ -1882,7 +1906,10 @@ emulator wrote back since the last call."
               (xterm-encode-mouse :motion nil 0 0 '() :tracking :any :sgr t))
     (is (null (xterm-encode-mouse :release 1 0 0 '() :tracking :x10)))
     (is (null (xterm-encode-mouse :press 1 0 200 '() :tracking :normal))
-        "legacy coordinates past one octet are dropped")))
+        "legacy coordinates past one octet are dropped")
+    (is-equal (format nil "~c[<0;640;300M" esc)
+              (xterm-encode-mouse :press 1 300 640 '() :tracking :normal :sgr :pixels)
+              "SGR-Pixels reports pixels from 0")))
 
 (deftest engines-report-the-mouse-once-the-child-asks ()
   (dolist (name '(:lispvt :libvterm :ghostty))
@@ -1965,6 +1992,62 @@ emulator wrote back since the last call."
              (is (wait-until (lambda ()
                                (search "^[[<18;5;3M^[[<2;5;3m" (headless-screen-text view))))
                  "the click reaches the child as SGR reports")
+             (headless-close view)
+             (is (wait-until (lambda () (not (bt:thread-alive-p thread)))))))
+      (when (bt:thread-alive-p thread)
+        (setf (slt::headless-frontend-quit-p frontend) t)
+        (bt:join-thread thread)))))
+
+(deftest headless-mouse-reports-pixels-when-asked ()
+  ;; SGR-Pixels (mode 1016), as terminal-browser asks for: the reply to the
+  ;; mode query, then a press at a pixel and a release without one, which
+  ;; is reported at the middle of its cell (headless cells are 8x16).
+  (let* ((frontend (make-instance 'headless-frontend))
+         (thread (bt:make-thread
+                  (lambda ()
+                    (launch-terminal :frontend frontend :engine :lispvt :shell "/bin/sh"
+                                     :rows 6 :columns 40 :load-config nil))
+                  :name "slt pixel mouse test")))
+    (unwind-protect
+         (progn
+           (is (wait-until (lambda () (slt::headless-frontend-view frontend))))
+           (let ((view (slt::headless-frontend-view frontend)))
+             (is (wait-until (lambda () (search "$" (headless-screen-text view)))))
+             (headless-paste view (format nil "printf '\\033[?1003h\\033[?1006h\\033[?1016h\\033[?1016$pRE''ADY'; cat -v~%"))
+             (is (wait-until (lambda () (search "READY" (headless-screen-text view)))))
+             (headless-mouse view :press 2 4 1 1 0 37 41)
+             (headless-mouse view :release 2 4 1 1 0)
+             (headless-key view "" "Return" 0)
+             (is (wait-until (lambda ()
+                               (search "^[[?1016;1$y^[[<0;37;41M^[[<0;36;40m"
+                                       (headless-screen-text view))))
+                 "the mode is reported set and the click arrives in pixels")
+             (headless-close view)
+             (is (wait-until (lambda () (not (bt:thread-alive-p thread)))))))
+      (when (bt:thread-alive-p thread)
+        (setf (slt::headless-frontend-quit-p frontend) t)
+        (bt:join-thread thread)))))
+
+(deftest headless-super-keys-reach-kitty-keyboard-children ()
+  ;; Super combinations that are not shortcuts reach a child using the
+  ;; Kitty keyboard protocol (terminal-browser's Cmd+T, Cmd+L).
+  (let* ((frontend (make-instance 'headless-frontend))
+         (thread (bt:make-thread
+                  (lambda ()
+                    (launch-terminal :frontend frontend :engine :lispvt :shell "/bin/sh"
+                                     :rows 6 :columns 40 :load-config nil))
+                  :name "slt super key test")))
+    (unwind-protect
+         (progn
+           (is (wait-until (lambda () (slt::headless-frontend-view frontend))))
+           (let ((view (slt::headless-frontend-view frontend)))
+             (is (wait-until (lambda () (search "$" (headless-screen-text view)))))
+             (headless-paste view (format nil "printf '\\033[>1uRE''ADY'; cat -v~%"))
+             (is (wait-until (lambda () (search "READY" (headless-screen-text view)))))
+             (headless-key view "t" "t" slt::+mod4-mask+)
+             (headless-key view "" "Return" 0)
+             (is (wait-until (lambda () (search "^[[116;9u" (headless-screen-text view))))
+                 "Super+T arrives as a Kitty key report")
              (headless-close view)
              (is (wait-until (lambda () (not (bt:thread-alive-p thread)))))))
       (when (bt:thread-alive-p thread)

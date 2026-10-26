@@ -113,14 +113,14 @@ EVENT is :PRESS, :REPEAT or :RELEASE."
                    (when (headless-view-scroll-callback view)
                      (funcall (headless-view-scroll-callback view) rows)))))
 
-(defun headless-mouse (view action row column &optional (clicks 1) (button 1) (state 0))
+(defun headless-mouse (view action row column &optional (clicks 1) (button 1) (state 0) x y)
   "Deliver ACTION (:PRESS, :DRAG, :RELEASE or :MOTION) of BUTTON, with the
-modifier STATE, at a cell."
+modifier STATE, at a cell, and at the pixel X, Y within the grid if given."
   (headless-call (headless-view-frontend view)
                  (lambda ()
                    (when (headless-view-mouse-callback view)
                      (funcall (headless-view-mouse-callback view)
-                              action row column clicks button state)))))
+                              action row column clicks button state x y)))))
 
 (defun headless-paste (view text)
   (headless-call (headless-view-frontend view)

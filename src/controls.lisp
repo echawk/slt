@@ -114,16 +114,19 @@ commands that failed, with FAILED."
                                     (third arguments)))
         (:mode
          (destructuring-bind (mode value) arguments
-           (if (= mode 2026)
-               (synchronize-output emulator value)
-               (handle-graphics-control store event engine))))
+           (case mode
+             (2026 (synchronize-output emulator value))
+             (1016 (setf (terminal-emulator-mouse-pixels emulator) value))
+             (t (handle-graphics-control store event engine)))))
         (:report-mode
          (reply-to-child
           emulator
-          (if (= (first arguments) 2026)
-              (format nil "~c[?2026;~d$y" (code-char 27)
-                      (if (terminal-emulator-sync-deadline emulator) 1 2))
-              (handle-graphics-control store event engine))))
+          (case (first arguments)
+            (2026 (format nil "~c[?2026;~d$y" (code-char 27)
+                          (if (terminal-emulator-sync-deadline emulator) 1 2)))
+            (1016 (format nil "~c[?1016;~d$y" (code-char 27)
+                          (if (terminal-emulator-mouse-pixels emulator) 1 2)))
+            (t (handle-graphics-control store event engine)))))
         (:enter-alternate-screen
          (kitty-keyboard:keyboard-reset (terminal-emulator-keyboard emulator) :alternate)
          (forget-links emulator :alternate)
@@ -136,7 +139,8 @@ commands that failed, with FAILED."
         (:reset
          (kitty-keyboard:keyboard-reset (terminal-emulator-keyboard emulator))
          (synchronize-output emulator nil)
-         (setf (terminal-emulator-hyperlink emulator) nil
+         (setf (terminal-emulator-mouse-pixels emulator) nil
+               (terminal-emulator-hyperlink emulator) nil
                (terminal-stream-parser-text-events-p parser) nil
                (terminal-emulator-links emulator) '()
                (terminal-emulator-link-count emulator) 0

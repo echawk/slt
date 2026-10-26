@@ -54,8 +54,10 @@
          (height (array-dimension pixels 0))
          (width (array-dimension pixels 1))
          (background (palette-background *palette*)))
-    (format t "~&image ~dx~d, cell ~dx~d, unicode fonts ~:[no~;yes~]~%"
-            width height cw ch (clx-view-unicode-p view))
+    (format t "~&image ~dx~d, cell ~dx~d, RENDER ~{~d.~d~}~%"
+            width height cw ch (multiple-value-list
+                               (xlib:render-query-version
+                                (xlib:window-display (clx-view-window view)))))
     (check (= (aref pixels (1- height) (1- width)) background)
            "the bottom-right corner is the background")
     (check (> (loop for y below ch

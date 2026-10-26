@@ -268,7 +268,9 @@ for example, when a native library has not been built)."
 
 (defun xterm-encode-mouse (action button row column modifiers &key tracking sgr)
   "The xterm report of a mouse event under TRACKING (see ENGINE-MODE), in
-the SGR encoding when SGR, else the legacy one."
+the SGR encoding when SGR, else the legacy one.  SGR :PIXELS is SGR-Pixels
+(mode 1016): ROW and COLUMN are then pixels, reported from 0 as Ghostty
+does."
   (let ((code (case button
                 ((1 2 3) (1- button))
                 (4 64)
@@ -289,8 +291,9 @@ the SGR encoding when SGR, else the legacy one."
                       (if (member :control modifiers) 16 0))))
       (cond
         (sgr
-         (format nil "~c[<~d;~d;~d~c" (code-char 27) code (1+ column) (1+ row)
-                 (if (eq action :release) #\m #\M)))
+         (let ((origin (if (eq sgr :pixels) 0 1)))
+           (format nil "~c[<~d;~d;~d~c" (code-char 27) code (+ origin column) (+ origin row)
+                   (if (eq action :release) #\m #\M))))
         ;; Input reaches the child as UTF-8, so only coordinates that fit
         ;; in one ASCII octet can be sent in the legacy encoding.
         ((and (< (+ 33 column) 128) (< (+ 33 row) 128))

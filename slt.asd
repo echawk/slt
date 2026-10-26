@@ -61,9 +61,21 @@ servers appear when those are loaded."
   :pathname "src/"
   :components ((:file "gtk-frontend")))
 
+(asdf:defsystem #:slt/glyphs
+  :description "Glyph rasterizers for the gl and clx frontends: FreeType with
+families found through font-discovery (fontconfig), CoreText on macOS."
+  :depends-on (:slt/core
+               (:feature :darwin :slt/cocoa)
+               (:feature (:not :darwin) :font-discovery))
+  :pathname "src/glyphs/"
+  :serial t
+  :components ((:file "glyph-font")
+               (:file "freetype" :if-feature (:not :darwin))))
+
 (asdf:defsystem #:slt/clx
-  :description "X11 frontend through CLX: core fonts, no foreign libraries."
-  :depends-on (:slt/core :clx)
+  :description "X11 frontend through CLX, the Lisp X protocol library: glyphs
+from slt/glyphs drawn with the RENDER extension."
+  :depends-on (:slt/core :slt/glyphs :clx)
   :pathname "src/"
   :components ((:file "clx-frontend")))
 
@@ -114,15 +126,10 @@ servers appear when those are loaded."
 
 (asdf:defsystem #:slt/gl
   :description "GLFW + OpenGL 3.3 / OpenGL ES 3.0 frontend: X11 and Wayland on Linux and the BSDs, and macOS.  Needs the system's GLFW 3.3 or later."
-  :depends-on (:slt/core :cl-glfw3 :cl-opengl :float-features
-               ;; Glyphs: CoreText on macOS, font-discovery and FreeType elsewhere.
-               (:feature :darwin :slt/cocoa)
-               (:feature (:not :darwin) :font-discovery))
+  :depends-on (:slt/core :slt/glyphs :cl-glfw3 :cl-opengl :float-features)
   :pathname "src/gl/"
   :serial t
-  :components ((:file "package")
-               (:file "gl-renderer")
-               (:file "freetype" :if-feature (:not :darwin))
+  :components ((:file "gl-renderer")
                (:file "gl-frontend")))
 
 (asdf:defsystem #:slt/web

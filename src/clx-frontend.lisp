@@ -1,11 +1,12 @@
 (in-package #:slt)
 
-;;;; X11 frontend through CLX, the Lisp implementation of the X protocol, so
-;;;; it needs no foreign libraries.  Text is drawn with X core fonts, chosen
-;;;; by XLFD pattern and preferably ISO 10646 encoded so that glyph indices
-;;;; are code points (the Basic Multilingual Plane only).  Cell backgrounds
-;;;; are filled in runs, ASCII text is drawn in runs of one style and other
-;;;; characters one cell at a time.  Colors assume a TrueColor visual.
+;;;; X11 frontend through CLX, the Lisp implementation of the X protocol.
+;;;; Glyphs come from slt/glyphs, as in the gl frontend: the same fonts,
+;;;; rasterized into the same kind of GLYPH-ATLAS, whose slots are uploaded
+;;;; to the server as a RENDER glyph set.  The grid is packed with PACK-GRID,
+;;;; so colors, the selection, the cursor and decorations are worked out as
+;;;; for the GPU frontends; each row is then drawn in runs with the RENDER
+;;;; extension, which every current X server has.
 ;;;;
 ;;;; All X requests come from the event loop's thread except wakeups, which
 ;;;; send a ClientMessage to the window; CLX locks the display around each
@@ -29,11 +30,19 @@
 (defstruct (clx-view (:constructor %make-clx-view))
   window
   gcontext
-  ;; Core fonts: regular, bold, italic, bold italic.
-  fonts
-  ;; Whether the fonts are indexed by code point (ISO 10646).
-  unicode-p
-  ascent
+  ;; RENDER pictures: the window, and the 1x1 repeating source text and
+  ;; fills are drawn with (SOURCE-RGB is its color).
+  picture
+  source
+  (source-rgb nil)
+  font
+  atlas
+  ;; The grid packed by PACK-GRID.
+  instances
+  ;; The atlas slots uploaded to GLYPH-SET, for the atlas's GENERATION.
+  glyph-set
+  (glyphs (make-hash-table))
+  (atlas-generation -1)
   cell-width
   cell-height
   (width 0)
@@ -59,178 +68,135 @@
   (click-count 1)
   (closed-p nil))
 
-;;; Fonts
+;;; Fonts: slt/glyphs, at the scale of the display's Xft.dpi resource.
 
-(defun clx-font-pattern (family weight slant size)
-  (format nil "-*-~a-~a-~a-normal--~d-*-*-*-*-*-iso10646-1"
-          (or family "*") weight slant size))
+(defun clx-dpi-scale (display)
+  "The scale X clients agree on through the Xft.dpi resource (96 is 1)."
+  (let* ((root (xlib:screen-root (xlib:display-default-screen display)))
+         (resources (ignore-errors
+                     (sb-ext:octets-to-string
+                      (coerce (xlib:get-property root :resource_manager
+                                                 :result-type '(vector (unsigned-byte 8)))
+                              '(vector (unsigned-byte 8)))
+                      :external-format :latin-1)))
+         (line (and resources
+                    (find-if (lambda (line) (eql 0 (search "Xft.dpi:" line)))
+                             (uiop:split-string resources :separator '(#\Newline)))))
+         (dpi (and line (ignore-errors
+                         (let ((*read-eval* nil))
+                           (read-from-string (subseq line (length "Xft.dpi:"))))))))
+    (if (and (realp dpi) (plusp dpi)) (max 1 (/ dpi 96)) 1)))
 
-(defun clx-try-open-font (display name)
-  "The font NAME, or NIL when the server cannot load it: servers can list
-fonts, such as scalable ones without a renderer, that they fail to open."
-  (handler-case (let ((font (xlib:open-font display name)))
-                  (xlib:font-ascent font)
-                  font)
-    (xlib:request-error ()
-      ;; OpenFont and QueryFont each fail; collect the second error too.
-      (handler-case (xlib:display-finish-output display)
-        (xlib:request-error () nil))
-      nil)))
+;;; Drawing.  Colors are RENDER's 16-bit channels, so no visual is assumed.
 
-(defun clx-open-font (display family weight slants size)
-  "The first loadable font of FAMILY (any family when NIL), WEIGHT, one of
-SLANTS and pixel SIZE."
-  (loop for slant in slants
-        thereis (loop for name in (xlib:list-font-names
-                                   display (clx-font-pattern family weight slant size)
-                                   :max-fonts 50)
-                      thereis (clx-try-open-font display name))))
-
-(defun clx-open-fonts (display family size)
-  "Regular, bold, italic and bold italic fonts, the others falling back to
-the regular one, and whether they are ISO 10646 encoded."
-  (let* ((family-p (and family (clx-open-font display family "medium" '("r") size)))
-         (family (and family-p family))
-         (regular (or family-p
-                      (clx-open-font display nil "medium" '("r") size)
-                      (clx-open-font display nil "*" '("r") size))))
-    (if (null regular)
-        (let ((fixed (xlib:open-font display "fixed")))
-          (values (list fixed fixed fixed fixed) nil))
-        (values (cons regular
-                      (loop for (weight slants) in '(("bold" ("r"))
-                                                     ("medium" ("i" "o"))
-                                                     ("bold" ("i" "o")))
-                            collect (or (clx-open-font display family weight slants size)
-                                        regular)))
-                t))))
-
-(defun clx-translate (source start end font destination destination-start)
-  ;; Glyph indices for ISO 10646 fonts are code points; CLX's default
-  ;; translation stops at the first character above 255.
-  (declare (ignore font))
-  (loop for i from start below end
-        for j from destination-start
-        do (let ((code (char-code (char source i))))
-             (setf (aref destination j) (if (> code #xFFFF) #xFFFD code))))
-  end)
-
-;;; Drawing
+(defun clx-render-color (rgb)
+  (list (* 257 (ldb (byte 8 16) rgb)) (* 257 (ldb (byte 8 8) rgb))
+        (* 257 (ldb (byte 8 0) rgb)) #xFFFF))
 
 (defun clx-pixel (rgb)
-  "The pixel for #xRRGGBB on a 24-bit TrueColor visual."
+  "The core-protocol pixel for #xRRGGBB on a 24-bit TrueColor visual, for
+the window's own background only."
   rgb)
 
-(defun clx-cell-colors (grid index)
-  (multiple-value-bind (fg bg) (cell-rgb grid index *palette*)
-    (if (grid-selected-p grid index)
-        (values fg (palette-selection *palette*))
-        (values fg bg))))
-
-(defun clx-font-index (attrs)
-  (+ (if (logtest attrs +attr-bold+) 1 0)
-     (if (logtest attrs +attr-italic+) 2 0)))
-
 (defun clx-fill (view rgb x y width height)
-  (let ((gc (clx-view-gcontext view)))
-    (setf (xlib:gcontext-foreground gc) (clx-pixel rgb))
-    (xlib:draw-rectangle (clx-view-window view) gc x y width height t)))
+  (when (and (plusp width) (plusp height))
+    (xlib:render-fill-rectangle (clx-view-picture view) :src (clx-render-color rgb)
+                                x y width height)))
 
-(defun clx-draw-text (view text font-index rgb x y)
-  (let ((gc (clx-view-gcontext view)))
-    (setf (xlib:gcontext-foreground gc) (clx-pixel rgb)
-          (xlib:gcontext-font gc) (nth font-index (clx-view-fonts view)))
-    (if (clx-view-unicode-p view)
-        (xlib:draw-glyphs (clx-view-window view) gc x (+ y (clx-view-ascent view)) text
-                          :translate #'clx-translate :size 16)
-        (xlib:draw-glyphs (clx-view-window view) gc x (+ y (clx-view-ascent view))
-                          (substitute-if #\? (lambda (c) (> (char-code c) 255)) text)))))
+(defun clx-set-source (view rgb)
+  (unless (eql rgb (clx-view-source-rgb view))
+    (xlib:render-fill-rectangle (clx-view-source view) :src (clx-render-color rgb) 0 0 1 1)
+    (setf (clx-view-source-rgb view) rgb)))
 
-(defun clx-draw-lines (view attrs rgb x width y &optional (underline-rgb rgb))
-  "Underline and strike-through for cells from X, WIDTH pixels wide."
-  (let ((ch (clx-view-cell-height view)))
-    (loop for (rx ry rw rh) in (underline-rectangles (underline-style attrs) x width ch)
-          do (clx-fill view underline-rgb rx (+ y ry) rw rh))
-    (when (logtest attrs +attr-strike+)
-      (clx-fill view rgb x (+ y (floor ch 2)) width 1))))
+(defun clx-ensure-glyphs (view slots)
+  "Upload the atlas SLOTS the server does not have yet.  A cleared atlas
+reuses slot numbers, so its glyph set is then replaced."
+  (let* ((atlas (clx-view-atlas view))
+         (glyphs (clx-view-glyphs view))
+         (sw (glyph-atlas-slot-width atlas))
+         (sh (glyph-atlas-slot-height atlas))
+         (per-row (glyph-atlas-slots-per-row atlas))
+         (stride (glyph-atlas-width atlas))
+         (pixels (glyph-atlas-pixels atlas)))
+    (unless (= (clx-view-atlas-generation view) (glyph-atlas-generation atlas))
+      (let ((old (clx-view-glyph-set view)))
+        (setf (clx-view-glyph-set view)
+              (xlib:render-create-glyph-set (xlib::glyph-set-format old)))
+        (xlib:render-free-glyph-set old))
+      (clrhash glyphs)
+      (setf (clx-view-atlas-generation view) (glyph-atlas-generation atlas)))
+    (loop for slot across slots
+          unless (gethash slot glyphs)
+            do (let ((data (make-array (list sh sw) :element-type '(unsigned-byte 8)))
+                     (x (* sw (mod slot per-row)))
+                     (y (* sh (floor slot per-row))))
+                 (dotimes (row sh)
+                   (dotimes (column sw)
+                     (setf (aref data row column)
+                           (aref pixels (+ x column (* stride (+ y row)))))))
+                 (xlib:render-add-glyph (clx-view-glyph-set view) slot
+                                        :x-origin 0 :y-origin 0 :x-advance sw :y-advance 0
+                                        :data data)
+                 (setf (gethash slot glyphs) t)))))
 
-(defconstant +clx-style-attrs+
-  (logior +attr-bold+ +attr-italic+ +attr-underlines+ +attr-strike+ +attr-invisible+))
+(defconstant +clx-underline-flags+
+  (logior +gpu-flag-underline+ +gpu-flag-double-underline+ +gpu-flag-curly-underline+
+          +gpu-flag-dotted-underline+ +gpu-flag-dashed-underline+))
 
-(defun clx-draw-row (view grid row &key (part :all) skip-default-background)
-  "Draw ROW's backgrounds, text or both (PART :BACKGROUNDS, :TEXT or :ALL).
-SKIP-DEFAULT-BACKGROUND leaves cells with the default background alone, for
-images under the text."
-  (let* ((columns (grid-columns grid))
+(defun clx-draw-decorations (view start end word3 rgb y)
+  "Underlines, strike-through and bar or underline cursors, as the GPU
+shaders draw them."
+  (let* ((cw (clx-view-cell-width view))
+         (ch (clx-view-cell-height view))
+         (x (* start cw))
+         (width (* (- end start) cw))
+         (flags (ldb (byte 8 0) word3))
+         (thickness (decoration-thickness ch)))
+    (when (logtest flags +clx-underline-flags+)
+      (let ((style (cond ((logtest flags +gpu-flag-double-underline+) :double)
+                         ((logtest flags +gpu-flag-curly-underline+) :curly)
+                         ((logtest flags +gpu-flag-dotted-underline+) :dotted)
+                         ((logtest flags +gpu-flag-dashed-underline+) :dashed)
+                         (t :single))))
+        (loop for (rx ry rw rh) in (underline-rectangles style x width ch)
+              do (clx-fill view (ldb (byte 24 8) word3) rx (+ y ry) rw rh))))
+    (when (logtest flags +gpu-flag-strike+)
+      (clx-fill view rgb x (+ y (round (- (* ch 0.55) (/ thickness 2)))) width thickness))
+    (when (logtest flags +gpu-flag-cursor-bar+)
+      (clx-fill view (palette-cursor *palette*) x y (* 2 thickness) ch))
+    (when (logtest flags +gpu-flag-cursor-underline+)
+      (clx-fill view (palette-cursor *palette*) x (- (+ y ch) (* 2 thickness))
+                width (* 2 thickness)))))
+
+(defun clx-draw-row (view row &key (part :all) skip-default-background)
+  "Draw packed ROW's backgrounds, text and decorations, or one of them
+(PART :BACKGROUNDS or :TEXT).  SKIP-DEFAULT-BACKGROUND leaves cells with
+the default background alone, for images under the text."
+  (let* ((columns (grid-columns (clx-view-grid view)))
          (cw (clx-view-cell-width view))
          (ch (clx-view-cell-height view))
-         (y (* row ch))
-         (codes (grid-codes grid))
-         (attrs (grid-attrs grid)))
-    ;; Backgrounds, in runs of one color.
-    (let ((column 0))
-      (loop while (and (< column columns) (not (eq part :text)))
-            do (let* ((bg (nth-value 1 (clx-cell-colors grid (grid-index grid row column))))
-                      (end (1+ column)))
-                 (loop while (and (< end columns)
-                                  (= bg (nth-value 1 (clx-cell-colors
-                                                      grid (grid-index grid row end)))))
-                       do (incf end))
-                 (unless (and skip-default-background (= bg (palette-background *palette*)))
-                   (clx-fill view bg (* column cw) y (* (- end column) cw) ch))
-                 (setf column end))))
-    ;; Text: runs of ASCII cells with one foreground and style.
-    (let ((column (if (eq part :backgrounds) columns 0)))
-      (loop while (< column columns)
-            do (let* ((index (grid-index grid row column))
-                      (code (grid-glyph-code grid index))
-                      (cell-attrs (aref attrs index))
-                      (fg (clx-cell-colors grid index))
-                      (style (logand cell-attrs +clx-style-attrs+))
-                      ;; Runs neither start nor continue on the spacer
-                      ;; after a wide character, which draws nothing.
-                      (ascii-p (and (< code 128)
-                                    (not (logtest cell-attrs +attr-wide-spacer+))
-                                    (not (gethash index (grid-combining grid)))))
-                      (end (1+ column)))
-                 (when ascii-p
-                   (loop while (and (< end columns)
-                                    (let ((next (grid-index grid row end)))
-                                      (and (< (aref codes next) 128)
-                                           (not (gethash next (grid-combining grid)))
-                                           (= style (logand (aref attrs next)
-                                                            +clx-style-attrs+))
-                                           (= (aref (grid-ul grid) index)
-                                              (aref (grid-ul grid) next))
-                                           (= fg (clx-cell-colors grid next)))))
-                         do (incf end)))
-                 (unless (logtest cell-attrs +attr-wide-spacer+)
-                   (let ((text (if ascii-p
-                                   (with-output-to-string (out)
-                                     (loop for c from column below end
-                                           do (write-string
-                                               (grid-cell-string grid (grid-index grid row c))
-                                               out)))
-                                   (grid-cell-string grid index)))
-                         (width (* cw (if (logtest cell-attrs +attr-wide+) 2 (- end column)))))
-                     (unless (or (logtest style +attr-invisible+)
-                                 (zerop (length (string-trim " " text))))
-                       (clx-draw-text view text (clx-font-index style) fg (* column cw) y))
-                     (clx-draw-lines view style fg (* column cw) width y
-                                     (cell-underline-rgb grid index *palette* fg))))
-                 (setf column end))))))
+         (y (* row ch)))
+    (multiple-value-bind (backgrounds glyphs decorations)
+        (packed-row-runs (clx-view-instances view) columns row)
+      (unless (eq part :text)
+        (loop for (start end rgb default-p) in backgrounds
+              unless (and default-p skip-default-background)
+                do (clx-fill view rgb (* start cw) y (* (- end start) cw) ch)))
+      (unless (eq part :backgrounds)
+        (loop for (start rgb slots) in glyphs
+              do (clx-ensure-glyphs view slots)
+                 (clx-set-source view rgb)
+                 (xlib:render-composite-glyphs (clx-view-picture view) (clx-view-glyph-set view)
+                                               (clx-view-source view) (* start cw) y slots))
+        (loop for (start end word3 rgb) in decorations
+              do (clx-draw-decorations view start end word3 rgb y))))))
 
-(defun clx-draw-cursor (view grid)
-  "Bar and underline cursors; cell colors already show a block cursor."
-  (when (and (grid-cursor-visible-p grid)
-             (not (eq (grid-cursor-shape grid) :block)))
-    (let ((cw (clx-view-cell-width view))
-          (ch (clx-view-cell-height view))
-          (x (* (grid-cursor-column grid) (clx-view-cell-width view)))
-          (y (* (grid-cursor-row grid) (clx-view-cell-height view))))
-      (if (eq (grid-cursor-shape grid) :bar)
-          (clx-fill view (palette-cursor *palette*) x y 2 ch)
-          (clx-fill view (palette-cursor *palette*) x (- (+ y ch) 2) cw 2)))))
+(defun clx-pack (view)
+  "Pack the dirty rows of the view's grid; packing may clear the atlas and
+mark every row dirty."
+  (setf (clx-view-instances view)
+        (pack-grid (clx-view-grid view) (clx-view-atlas view) *palette*
+                   (clx-view-instances view))))
 
 (defun clx-image-records (view)
   (let ((store (clx-view-image-store view)))
@@ -251,17 +217,18 @@ backgrounds and the text."
         (image-layers (clx-image-records view))
       (let ((grid (clx-view-grid view))
             (layered (or below-backgrounds below-text)))
+        (when grid
+          (grid-mark-all-dirty grid)
+          (clx-pack view))
         (clx-draw-images view below-backgrounds)
         (when grid
           (dotimes (row (grid-rows grid))
-            (clx-draw-row view grid row :part (if layered :backgrounds :all)
-                                        :skip-default-background layered)))
+            (clx-draw-row view row :part (if layered :backgrounds :all)
+                                   :skip-default-background layered)))
         (clx-draw-images view below-text)
-        (when grid
-          (when layered
-            (dotimes (row (grid-rows grid))
-              (clx-draw-row view grid row :part :text)))
-          (clx-draw-cursor view grid)))
+        (when (and grid layered)
+          (dotimes (row (grid-rows grid))
+            (clx-draw-row view row :part :text))))
       (clx-draw-images view above))))
 
 (defun clx-draw-images (view records)
@@ -374,12 +341,14 @@ a release and a press with the same time for each repeat."
               1)
           (clx-view-last-click view) (cons now cell))))
 
-(defun clx-deliver-mouse (view action cell button state)
+(defun clx-deliver-mouse (view action cell button state x y)
+  "Pass a mouse event at CELL, pixel X, Y, to the view's callback."
   (when (clx-view-mouse-callback view)
     (funcall (clx-view-mouse-callback view)
              action (first cell) (second cell) (clx-view-click-count view)
              button (logand state (logior +shift-mask+ +control-mask+
-                                          +mod1-mask+ +mod4-mask+)))))
+                                          +mod1-mask+ +mod4-mask+))
+             x y)))
 
 (defun clx-button (view action code x y state)
   (case code
@@ -388,7 +357,7 @@ a release and a press with the same time for each repeat."
        (setf (clx-view-button view) (and (eq action :press) code))
        (when (eq action :press)
          (clx-count-click view cell))
-       (clx-deliver-mouse view action cell code state)))
+       (clx-deliver-mouse view action cell code state x y)))
     ((4 5) (when (and (eq action :press) (clx-view-scroll-callback view))
              (funcall (clx-view-scroll-callback view)
                       (if (= code 4) (- *clx-scroll-rows*) *clx-scroll-rows*))))))
@@ -524,7 +493,7 @@ a release and a press with the same time for each repeat."
           (:motion-notify
            (let ((button (clx-view-button view)))
              (clx-deliver-mouse view (if button :drag :motion)
-                                (clx-pointer-cell view x y) button state)))
+                                (clx-pointer-cell view x y) button state x y)))
           (:client-message
            (if (and (eq type :wm_protocols)
                     (eq (xlib:atom-name display (aref data 0)) :wm_delete_window))
@@ -582,10 +551,10 @@ the next timer, or NIL."
         (setf (clx-frontend-display frontend) nil)))))
 
 (defmethod frontend-available-font-families ((frontend clx-frontend))
-  '())
+  (glyph-font-families))
 
 (defmethod frontend-resolve-font-size ((frontend clx-frontend) font-size)
-  (abs (or font-size 13)))
+  (abs (or font-size 15)))
 
 (defun clx-ensure-display (frontend)
   (or (clx-frontend-display frontend)
@@ -596,12 +565,13 @@ the next timer, or NIL."
                                   cell-width cell-height title)
   (let* ((display (clx-ensure-display frontend))
          (screen (xlib:display-default-screen display))
-         (root (xlib:screen-root screen)))
-    (multiple-value-bind (fonts unicode-p)
-        (clx-open-fonts display font-family (frontend-resolve-font-size frontend font-size))
-      (let* ((font (first fonts))
-             (cw (or cell-width (max 1 (xlib:max-char-width font))))
-             (ch (or cell-height (max 1 (+ (xlib:font-ascent font) (xlib:font-descent font)))))
+         (root (xlib:screen-root screen))
+         (scale (clx-dpi-scale display))
+         (font (open-glyph-font font-family
+                                (* (frontend-resolve-font-size frontend font-size) scale))))
+    (multiple-value-bind (font-width font-height) (glyph-font-cell-size font)
+      (let* ((cw (or (and cell-width (round (* cell-width scale))) font-width))
+             (ch (or (and cell-height (round (* cell-height scale))) font-height))
              (width (* columns cw))
              (height (* rows ch))
              (window (xlib:create-window
@@ -610,13 +580,21 @@ the next timer, or NIL."
                       :event-mask (xlib:make-event-mask
                                    :exposure :structure-notify :key-press :key-release
                                    :button-press :button-release :pointer-motion)))
-             (gcontext (xlib:create-gcontext :drawable window :font font
-                                             :foreground (clx-pixel (palette-foreground *palette*))
-                                             :background (clx-pixel (palette-background *palette*))))
-             (view (%make-clx-view :window window :gcontext gcontext :fonts fonts
-                                   :unicode-p unicode-p :ascent (xlib:font-ascent font)
-                                   :cell-width cw :cell-height ch
-                                   :width width :height height)))
+             (gcontext (xlib:create-gcontext :drawable window))
+             (source-pixmap (xlib:create-pixmap :width 1 :height 1 :depth 32 :drawable window))
+             (view (%make-clx-view
+                    :window window :gcontext gcontext
+                    :picture (xlib:render-create-picture window)
+                    :source (xlib:render-create-picture
+                             source-pixmap
+                             :format (xlib:find-standard-picture-format display :argb32)
+                             :repeat :on)
+                    :glyph-set (xlib:render-create-glyph-set
+                                (xlib:find-standard-picture-format display :a8))
+                    :font font
+                    :atlas (make-glyph-atlas cw ch (glyph-font-rasterizer font))
+                    :cell-width cw :cell-height ch
+                    :width width :height height)))
         (push view (clx-frontend-views frontend))
         (xlib:set-wm-properties window :name (or title "slt") :icon-name (or title "slt")
                                        :resource-name "slt" :resource-class "Slt"
@@ -650,10 +628,10 @@ the next timer, or NIL."
       (if (or resized (clx-images-under-text-p view))
           (clx-draw-grid view)
           (with-view-palette (view)
+            (clx-pack view)
             (dotimes (row (grid-rows grid))
               (when (= 1 (sbit (grid-dirty grid) row))
-                (clx-draw-row view grid row)))
-            (clx-draw-cursor view grid)))
+                (clx-draw-row view row)))))
       (xlib:display-force-output (clx-frontend-display frontend))))
   view)
 
@@ -743,6 +721,7 @@ the next timer, or NIL."
 (defmethod frontend-request-exit ((frontend clx-frontend) (view clx-view))
   (unless (clx-view-closed-p view)
     (setf (clx-view-closed-p view) t)
+    (ignore-errors (close-glyph-font (clx-view-font view)))
     (setf (clx-frontend-views frontend) (remove view (clx-frontend-views frontend)))
     (xlib:destroy-window (clx-view-window view))
     (xlib:display-force-output (clx-frontend-display frontend))

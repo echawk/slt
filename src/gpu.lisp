@@ -223,6 +223,50 @@ cleared and every row repacked."
                (grid-mark-all-dirty grid)))
     instances))
 
+(defun packed-row-runs (instances columns row)
+  "Split ROW of INSTANCES, a grid packed by PACK-GRID, into the runs that
+draw it, for frontends that draw with rectangles and glyph runs (clx).
+Return three lists, left to right: backgrounds (START END RGB DEFAULT-P),
+glyphs in one color (START RGB SLOTS) and decorations (START END WORD3 RGB),
+WORD3 being the cells' flags and underline color and RGB their foreground."
+  (let ((base (* row columns))
+        (backgrounds '()) (glyphs '()) (decorations '()))
+    (flet ((word (column i)
+             (aref instances (+ (* +gpu-words-per-cell+ (+ base column)) i))))
+      (flet ((slot (column) (ldb (byte 31 0) (word column 2))))
+        (loop with start = 0
+              for column from 1 to columns
+              when (or (= column columns) (/= (word column 1) (word start 1)))
+                do (push (list start column (word start 1)
+                               (logtest (word start 2) +gpu-slot-default-background+))
+                         backgrounds)
+                   (setf start column))
+        (let ((column 0))
+          (loop while (< column columns)
+                do (if (zerop (slot column))
+                       (incf column)
+                       (let ((end (1+ column)))
+                         (loop while (and (< end columns) (plusp (slot end))
+                                          (= (word end 0) (word column 0)))
+                               do (incf end))
+                         (push (list column (word column 0)
+                                     (coerce (loop for c from column below end collect (slot c))
+                                             '(simple-array (unsigned-byte 32) (*))))
+                               glyphs)
+                         (setf column end)))))
+        (let ((column 0))
+          (loop while (< column columns)
+                do (if (zerop (ldb (byte 8 0) (word column 3)))
+                       (incf column)
+                       (let ((end (1+ column)))
+                         (loop while (and (< end columns)
+                                          (= (word end 3) (word column 3))
+                                          (= (word end 0) (word column 0)))
+                               do (incf end))
+                         (push (list column end (word column 3) (word column 0)) decorations)
+                         (setf column end)))))))
+    (values (nreverse backgrounds) (nreverse glyphs) (nreverse decorations))))
+
 (defun write-ppm (pathname rgb width height)
   (with-open-file (out pathname :direction :output :if-exists :supersede
                                 :element-type '(unsigned-byte 8))
