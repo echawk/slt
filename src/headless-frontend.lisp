@@ -137,11 +137,19 @@ modifier STATE, at a cell, and at the pixel X, Y within the grid if given."
                    (when (headless-view-resize-callback view)
                      (funcall (headless-view-resize-callback view))))))
 
-(defun headless-resize-cells (view rows columns)
-  "Resize to ROWS x COLUMNS cells."
-  (headless-resize-window view
-                          (* columns (headless-view-cell-width view))
-                          (* rows (headless-view-cell-height view))))
+(defun headless-resize-cells (view rows columns &key cell-width cell-height)
+  "Resize to ROWS x COLUMNS cells, of CELL-WIDTH x CELL-HEIGHT pixels when
+given (a remote client's font)."
+  (headless-call (headless-view-frontend view)
+                 (lambda ()
+                   (when cell-width
+                     (setf (headless-view-cell-width view) (max 1 cell-width)))
+                   (when cell-height
+                     (setf (headless-view-cell-height view) (max 1 cell-height)))
+                   (setf (headless-view-width view) (max 1 (* columns (headless-view-cell-width view)))
+                         (headless-view-height view) (max 1 (* rows (headless-view-cell-height view))))
+                   (when (headless-view-resize-callback view)
+                     (funcall (headless-view-resize-callback view))))))
 
 (defun headless-close (view)
   (headless-call (headless-view-frontend view)

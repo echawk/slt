@@ -32,11 +32,13 @@ const socket = new WebSocket(`${wsBase}/ws?token=${token}`);
 const lines = [];
 let hello = null;
 let tracking = null;
+let images = null;
 const text = () => lines.map((runs) => (runs || []).map((run) => run[0]).join("").trimEnd()).join("\n");
 socket.onmessage = (event) => {
   const message = JSON.parse(event.data);
   if (message.t === "hello") hello = message;
   if (message.t === "mouse") tracking = message.tracking;
+  if (message.t === "images") images = message;
   if (message.t === "frame") for (const [row, runs] of message.rows) lines[row] = runs;
 };
 await new Promise((resolve) => (socket.onopen = resolve));
@@ -55,6 +57,15 @@ check("resize is applied (50 columns)",
       await until(() => lines.some((runs) => runs && runs.map((run) => run[0]).join("").length === 50)));
 socket.send(JSON.stringify({ t: "paste", text: "echo pasted\n" }));
 check("paste reaches the shell", await until(() => /\npasted/.test(text())));
+
+// A client with 10 x 20 cells: a 2 x 1 cell image covers 20 x 20 pixels.
+socket.send(JSON.stringify({ t: "resize", rows: 8, cols: 50, cellWidth: 10.4, cellHeight: 20 }));
+socket.send(JSON.stringify({ t: "paste",
+  text: "printf '\\033_Ga=T,f=32,s=1,v=1,c=2,r=1;AAAA/w==\\033\\\\'; echo\n" }));
+check("images are laid out in the client's cells",
+      await until(() => images?.cw === 10 && images?.ch === 20
+                  && images.items.some((item) => item.w === 20 && item.h === 20)));
+socket.send(JSON.stringify({ t: "paste", text: "clear\n" }));
 
 socket.send(JSON.stringify({ t: "paste", text: "printf '\\033[?1000h\\033[?1006h'; cat -v\n" }));
 check("mouse tracking is announced", await until(() => tracking === true));

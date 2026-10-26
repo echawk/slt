@@ -117,6 +117,23 @@ try {
   let restored = await rootBackground();
   for (let i = 0; i < 60 && restored !== "rgb(0, 43, 54)"; i++) { await sleep(50); restored = await rootBackground(); }
   check("OSC 111 restores the theme's background", restored === "rgb(0, 43, 54)");
+
+  // An image placed at row 4, column 11, two cells wide, lines up with
+  // this page's cells, whatever size the font makes them (not 8 x 16).
+  await typeLine("clear; printf '\\033[4;11H\\033_Ga=T,f=32,s=1,v=1,c=2;AAAA/w==\\033\\\\'; echo");
+  const imageCells = () => evaluate(`(() => {
+    const t = document.getElementById('term').terminal;
+    const canvas = t.root.querySelector('canvas');
+    if (!canvas) return null;
+    return [parseFloat(canvas.style.left) / t._cell.w, parseFloat(canvas.style.top) / t._cell.h,
+            parseFloat(canvas.style.width) / t._cell.w, t._cell.w, t._cell.h];
+  })()`);
+  let cells = await imageCells();
+  for (let i = 0; i < 60 && !cells; i++) { await sleep(50); cells = await imageCells(); }
+  const near = (a, b) => Math.abs(a - b) < 0.01;
+  check(`an image lines up with cells of this font (${cells?.[3]}x${cells?.[4]} px)`,
+        cells && near(cells[0], 10) && near(cells[1], 3) && near(cells[2], 2)
+        && !(cells[3] === 8 && cells[4] === 16));
   cdp.close();
 } finally {
   chrome.kill();

@@ -68,16 +68,38 @@ Give the container a size.
 | `new SltTerminal(container, {url, theme, autoConnect, autoResize})` | mounts into an element or shadow root |
 | `connect(url)` / `disconnect()` / `dispose()` | connection lifecycle |
 | `setTheme(partialTheme)` | merges into the current theme and redraws; no server round trip |
-| `fit()` / `resize(rows, cols)` | size to the container, or to an explicit size |
+| `fit()` / `resize(rows, cols)` | size to the container, or to an explicit size; both send the cell size too |
 | `paste(text)` | bracketed when the program requested it |
 | `scroll(rows)` | scroll back (negative) or forward through history; the mouse wheel does this |
 | `sendKey(char, keysym, state)` | raw key input (X11 keysym names and modifier bits) |
 | `focus()`, `text()`, `rows`, `cols`, `title`, `theme` | |
+| `drawImages(sources, items)` | draws image placements; override it to draw them yourself (below) |
 | events `open`, `close`, `title` (detail: string), `bell`, `exit`, `frame` | |
 
 The `<slt-terminal>` element re-dispatches the same events, exposes the
 instance as `.terminal`, and reacts to changes of its `url` and `theme`
 attributes.
+
+### Images
+
+The terminal sends the server its cell size with every resize (and resizes
+again when only the cell size changes, after a font change), so programs
+size images for the font in use, and the server lays images out in those
+cells. The client scales the layout to its exact cell size, since the server
+works in whole pixels.
+
+To draw images yourself, subclass `SltTerminal` and override
+`drawImages(sources, items)`. It is called with every images message, and
+again when the cell size changes:
+
+- `sources`: each image once, as `{id, iw, ih, rgba}`, the RGBA pixels in
+  base64.
+- `items`: the placements in drawing order, as `{id, x, y, w, h, z, sx, sy,
+  sw, sh, iw, ih}`. Each draws the rectangle `sx, sy, sw, sh` of image `id`
+  into `x, y, w, h`, in CSS pixels from the terminal's top left, already
+  scaled to its cells. `z` below 0 is under the text.
+
+`drawImages` is part of the API; the methods starting with `_` are not.
 
 ### Theming
 
@@ -104,8 +126,15 @@ You can also set fonts with CSS custom properties on the container:
 The server and browser exchange JSON text frames over `/ws?token=...`.
 `src/web/web-frontend.lisp` documents the messages. In short, the server sends
 `hello`, `frame` (changed rows as runs of `[text, fg, bg, attrs]` plus the
-cursor), `resize`, `title`, `bell` and `exit`. The client sends `key`,
-`paste`, `scroll` and `resize`. Any client that speaks this protocol can drive slt.
+cursor), `images`, `colors`, `mouse`, `resize`, `title`, `bell` and `exit`.
+The client sends `key`, `paste`, `scroll`, `mouse` and `resize`. Any client
+that speaks this protocol can drive slt.
+
+A client should put its cell size in CSS pixels in `resize`, as `cellWidth`
+and `cellHeight`. Without them the server assumes 8 x 16 cells, so images
+drift from the text whenever the font's cells are another size. `images`
+messages give the cell size their placements were laid out with, as `cw` and
+`ch`: scale `x`, `y`, `w` and `h` by your cell size over it.
 
 ## Testing
 

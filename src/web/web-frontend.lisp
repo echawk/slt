@@ -16,7 +16,10 @@
 ;;;;       ATTRS are the grid attribute bits; a wide glyph is its own run.
 ;;;;     {"t":"title","title":S}  {"t":"bell"}  {"t":"exit"}
 ;;;;     {"t":"mouse","tracking":B}   (whether the program wants mouse events)
-;;;;     {"t":"images","items":[...]} (RGBA image placements)
+;;;;     {"t":"images","cw":W,"ch":H,"sources":[...],"items":[...]}
+;;;;       RGBA images, each once under "sources", and their placements under
+;;;;       "items", in pixels of W x H cells: the cell size the client last
+;;;;       sent, rounded, else 8 x 16.  The client scales them to its own.
 ;;;;     {"t":"colors","palette":{N:"#RRGGBB",...},"foreground":S,"background":S,
 ;;;;      "cursor":S,"selection":S}
 ;;;;       Colors the program changed (OSC 4, 10-19), each key only when it
@@ -28,7 +31,9 @@
 ;;;;     {"t":"scroll","rows":N}                     (negative scrolls back)
 ;;;;     {"t":"mouse","action":A,"row":R,"col":C,"button":B,"state":N}
 ;;;;       A is "press", "release", "drag" or "motion"; B is 1-3, or 0 for none
-;;;;     {"t":"resize","rows":R,"cols":C}
+;;;;     {"t":"resize","rows":R,"cols":C,"cellWidth":W,"cellHeight":H}
+;;;;       W and H (optional) are the client's cell size in CSS pixels; they
+;;;;       size images and the pixel size programs are told.
 ;;;;
 ;;;; Anyone who can open the socket can run commands as you, so the server
 ;;;; listens on 127.0.0.1 by default and requires a random token (?token=)
@@ -203,6 +208,7 @@ with a fifth element, the underline color, when it is not the default."
                          (when (headless-view-image-store view)
                            (web-send client
                                      (web-images-message
+                                      view
                                       (terminal-image-render-list
                                        (headless-view-image-store view)
                                        (headless-view-cell-width view)
@@ -211,6 +217,10 @@ with a fifth element, the underline color, when it is not the default."
 (defun json-integer (table key &optional (default 0))
   (let ((value (gethash key table)))
     (if (integerp value) value default)))
+
+(defun json-number (table key)
+  (let ((value (gethash key table)))
+    (and (realp value) value)))
 
 (defun json-string (table key)
   (let ((value (gethash key table)))
@@ -250,9 +260,15 @@ with a fifth element, the underline color, when it is not the default."
                                (logand (json-integer data "state") #xff)))))
           ((equal type "resize")
            (let ((rows (json-integer data "rows" 0))
-                 (columns (json-integer data "cols" 0)))
-             (when (and (< 0 rows 1000) (< 0 columns 1000))
-               (headless-resize-cells view rows columns)))))))))
+                 (columns (json-integer data "cols" 0))
+                 (cell-width (json-number data "cellWidth"))
+                 (cell-height (json-number data "cellHeight")))
+             (flet ((cell (size)
+                      (and size (<= 1 size 512) (max 1 (round size)))))
+               (when (and (< 0 rows 1000) (< 0 columns 1000))
+                 (headless-resize-cells view rows columns
+                                        :cell-width (cell cell-width)
+                                        :cell-height (cell cell-height)))))))))))
 
 (defun web-origin-allowed-p (request)
   (or (null *web-allowed-origins*)
@@ -305,12 +321,15 @@ with a fifth element, the underline color, when it is not the default."
                  (terminal-image-placement-source-y placement)))
      "iw" (terminal-image-width image) "ih" (terminal-image-height image))))
 
-(defun web-images-message (records)
-  "An images message: each image's pixels once, under \"sources\", however
-many placements and placement fragments draw it."
+(defun web-images-message (view records)
+  "An images message for VIEW: each image's pixels once, under \"sources\",
+however many placements and placement fragments draw it, and the cell size
+the placements were laid out with."
   (let ((seen '()))
     (json-object
      "t" "images"
+     "cw" (headless-view-cell-width view)
+     "ch" (headless-view-cell-height view)
      "sources" (coerce
                 (loop for (nil image) in records
                       unless (member (terminal-image-id image) seen)
@@ -327,6 +346,7 @@ many placements and placement fragments draw it."
 (defmethod frontend-render-images :after ((frontend web-frontend) (view headless-view) store)
   (web-broadcast frontend
                  (web-images-message
+                  view
                   (terminal-image-render-list store (headless-view-cell-width view)
                                               (headless-view-cell-height view)))))
 

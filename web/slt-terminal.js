@@ -184,6 +184,7 @@ export class SltTerminal extends EventTarget {
     this._lineHeight = lineHeight;
     this._measure();
     this._redrawAll();
+    this._showImages();
     this.fit();
   }
 
@@ -208,7 +209,10 @@ export class SltTerminal extends EventTarget {
     style.setProperty("--slt-selection", this._theme.selection);
   }
 
-  /** Recompute rows/columns from the container size and tell the server. */
+  /**
+   * Recompute rows/columns from the container size and tell the server,
+   * also when only the cell size changed (a new font or zoom).
+   */
   fit() {
     const width = this.root.clientWidth;
     const height = this.root.clientHeight;
@@ -216,13 +220,22 @@ export class SltTerminal extends EventTarget {
     const cols = Math.max(1, Math.floor(width / this._cell.w));
     const rows = Math.max(1, Math.floor(height / this._cell.h));
     const pending = this._requestedSize;
-    if (pending ? pending[0] === rows && pending[1] === cols
-                : rows === this.rows && cols === this.cols) return;
+    const sameCell = this._sentCell?.w === this._cell.w && this._sentCell?.h === this._cell.h;
+    if (sameCell && (pending ? pending[0] === rows && pending[1] === cols
+                             : rows === this.rows && cols === this.cols)) return;
     this.resize(rows, cols);
   }
 
+  /**
+   * Ask for ROWS x COLS cells.  The cell size goes along, so that images
+   * are laid out, and programs told the pixel size, for this font.
+   */
   resize(rows, cols) {
-    if (this._send({ t: "resize", rows, cols })) this._requestedSize = [rows, cols];
+    const cell = { ...this._cell };
+    if (this._send({ t: "resize", rows, cols, cellWidth: cell.w, cellHeight: cell.h })) {
+      this._requestedSize = [rows, cols];
+      this._sentCell = cell;
+    }
   }
 
   /** Scroll ROWS lines (negative is back through history). */
@@ -412,7 +425,8 @@ export class SltTerminal extends EventTarget {
         break;
       }
       case "images":
-        this._drawImages(message.sources || [], message.items || []);
+        this._images = message;
+        this._showImages();
         break;
       case "colors":
         this._colors = message;
@@ -540,7 +554,30 @@ export class SltTerminal extends EventTarget {
     for (let row = 0; row < this.rows; row++) this._drawRow(row);
   }
 
-  _drawImages(sources, items) {
+  /** The last images message, its placements scaled to this terminal's cells. */
+  _showImages() {
+    const message = this._images;
+    if (!message) return;
+    // The server lays placements out in its cells (cw x ch), the size we
+    // sent rounded to whole pixels; scale them to ours exactly.
+    const sx = this._cell.w / (message.cw || 8);
+    const sy = this._cell.h / (message.ch || 16);
+    const items = (message.items || []).map((item) => ({
+      ...item,
+      x: item.x * sx, y: item.y * sy, w: item.w * sx, h: item.h * sy,
+    }));
+    this.drawImages(message.sources || [], items);
+  }
+
+  /**
+   * Draw image placements; subclasses may override it to draw images
+   * themselves.  SOURCES are the images, each once: {id, iw, ih, rgba}
+   * with RGBA pixels in base64.  ITEMS are the placements, in drawing
+   * order: {id, x, y, w, h, z, sx, sy, sw, sh, iw, ih}, drawing the source
+   * rectangle SX, SY, SW, SH of image ID into X, Y, W, H, in CSS pixels
+   * from the terminal's top left; Z below 0 is under the text.
+   */
+  drawImages(sources, items) {
     this.imagesUnder.replaceChildren();
     this.imagesOver.replaceChildren();
     // Each image's pixels arrive once per message, shared by its placements.
@@ -558,8 +595,8 @@ export class SltTerminal extends EventTarget {
       const source = canvases.get(item.id);
       if (!source) continue;
       const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, item.w);
-      canvas.height = Math.max(1, item.h);
+      canvas.width = Math.max(1, Math.round(item.w));
+      canvas.height = Math.max(1, Math.round(item.h));
       canvas.style.left = item.x + "px";
       canvas.style.top = item.y + "px";
       canvas.style.width = item.w + "px";

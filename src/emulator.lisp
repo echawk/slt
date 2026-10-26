@@ -87,6 +87,8 @@
   ;; Whether the child asked for mouse reports in pixels (SGR-Pixels, mode
   ;; 1016).  Engines do not implement it, so it is tracked here.
   (mouse-pixels nil)
+  ;; The (WIDTH . HEIGHT) in pixels last given to the PTY.
+  (pty-pixels nil)
   ;; The font size now, and the one the window opened with.
   (font-size 15)
   (initial-font-size 15))
@@ -542,14 +544,23 @@ the engine lock is held only for the copy."
     (multiple-value-bind (cell-width cell-height) (emulator-cell-pixels emulator)
       (multiple-value-bind (columns rows)
           (fit-grid-to-size width height cell-width cell-height)
-        (unless (and (= rows (terminal-emulator-rows emulator))
-                     (= columns (terminal-emulator-columns emulator)))
-          (resize-emulator emulator rows columns)
-          (resize-process-pty (terminal-emulator-process emulator)
-                              rows
-                              columns
-                              :pixel-width (* columns cell-width)
-                              :pixel-height (* rows cell-height)))))))
+        (let* ((pixels (cons (* columns cell-width) (* rows cell-height)))
+               (same-pixels-p (equal pixels (terminal-emulator-pty-pixels emulator))))
+          (cond ((not (and (= rows (terminal-emulator-rows emulator))
+                           (= columns (terminal-emulator-columns emulator))))
+                 (resize-emulator emulator rows columns))
+                ;; Only the cells changed size: lay the images out again.
+                ((not same-pixels-p)
+                 (render-emulator emulator :force t)))
+          ;; Programs size images by the pixels, so a new cell size alone
+          ;; is news to them too.
+          (unless same-pixels-p
+            (setf (terminal-emulator-pty-pixels emulator) pixels)
+            (resize-process-pty (terminal-emulator-process emulator)
+                                rows
+                                columns
+                                :pixel-width (car pixels)
+                                :pixel-height (cdr pixels))))))))
 
 (defvar *resize-delay-ms* 16
   "How long a resize waits for the window size to settle.")
