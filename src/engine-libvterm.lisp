@@ -148,7 +148,9 @@
                 (sbit (grid-dirty grid) cursor-row) 1))
         (setf (grid-cursor-row grid) cursor-row
               (grid-cursor-column grid) cursor-column
-              (grid-cursor-visible-p grid) visiblep)))
+              (grid-cursor-visible-p grid) visiblep
+              (grid-cursor-blink grid)
+              (and (libvterm:vterm-property vt :cursor-blink) t))))
     grid))
 
 (defmethod engine-mode ((engine libvterm-engine) mode)

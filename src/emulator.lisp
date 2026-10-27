@@ -5,6 +5,13 @@
 (defvar *frame-interval-ms* 8
   "Minimum time between renders; output arriving faster is coalesced.")
 
+(defvar *cursor-blink* :program
+  "Whether the cursor blinks: T always, NIL never, or :PROGRAM when the
+program asks for it (DECSCUSR 1, 3 or 5, or mode 12).")
+
+(defvar *cursor-blink-interval-ms* 600
+  "How long a blinking cursor is shown, and then hidden.")
+
 (defvar *load-user-config* t
   "When true, LAUNCH-TERMINAL loads USER-CONFIG-PATHNAME if it exists.")
 
@@ -87,6 +94,10 @@
   ;; Whether the child asked for mouse reports in pixels (SGR-Pixels, mode
   ;; 1016).  Engines do not implement it, so it is tracked here.
   (mouse-pixels nil)
+  ;; Whether a blinking cursor is in its shown half, and the pending timer
+  ;; that flips it.
+  (cursor-blink-on t)
+  (cursor-blink-timer nil)
   ;; The (WIDTH . HEIGHT) in pixels last given to the PTY.
   (pty-pixels nil)
   ;; Whether the child asked to hear of resizes (mode 2048) and of dark or
@@ -411,6 +422,46 @@ tell; elsewhere now, or after *FRAME-INTERVAL-MS* since the previous frame."
                (consider (- amount))))
     best-delta))
 
+(defun cursor-blinks-p (emulator grid)
+  "True when GRID's cursor, as the engine left it, should blink now: it is
+shown, the window has the focus and *CURSOR-BLINK* allows it."
+  (and (grid-cursor-visible-p grid)
+       (terminal-emulator-focused-p emulator)
+       (case *cursor-blink*
+         ((nil) nil)
+         ((t) t)
+         (t (eq (grid-cursor-blink grid) t)))))
+
+(defun apply-cursor-blink (emulator grid)
+  "Hide the cursor in the hidden half of a blink, and keep the timer that
+flips the halves running while it blinks.  UI thread only."
+  (if (cursor-blinks-p emulator grid)
+      (progn
+        (unless (terminal-emulator-cursor-blink-timer emulator)
+          (setf (terminal-emulator-cursor-blink-timer emulator)
+                (frontend-schedule (terminal-emulator-frontend emulator)
+                                   (terminal-emulator-view emulator)
+                                   *cursor-blink-interval-ms*
+                                   (lambda ()
+                                     (setf (terminal-emulator-cursor-blink-timer emulator) nil)
+                                     (unless (terminal-emulator-closed-p emulator)
+                                       (setf (terminal-emulator-cursor-blink-on emulator)
+                                             (not (terminal-emulator-cursor-blink-on emulator)))
+                                       (render-emulator emulator))))))
+        (unless (terminal-emulator-cursor-blink-on emulator)
+          (setf (grid-cursor-visible-p grid) nil
+                (sbit (grid-dirty grid) (grid-cursor-row grid)) 1)))
+      (setf (terminal-emulator-cursor-blink-on emulator) t)))
+
+(defun restart-cursor-blink (emulator)
+  "Show the cursor for a whole blink from now, as after typing."
+  (unless (shiftf (terminal-emulator-cursor-blink-on emulator) t)
+    (request-render emulator))
+  (let ((timer (shiftf (terminal-emulator-cursor-blink-timer emulator) nil)))
+    (when timer
+      (frontend-cancel-scheduled (terminal-emulator-frontend emulator)
+                                 (terminal-emulator-view emulator) timer))))
+
 (defun render-emulator (emulator &key force)
   "Copy the engine's changes into the grid and draw them.  UI thread only;
 the engine lock is held only for the copy."
@@ -467,6 +518,7 @@ the engine lock is held only for the copy."
     ;; them; a selection whose text changed no longer means anything.
     (when (grid-selection-intersects-dirty-p grid)
       (clear-selection emulator))
+    (apply-cursor-blink emulator grid)
     (with-engine (engine emulator)
       (apply-link-hover emulator engine grid)
       (setf display (smooth-display-grid emulator engine grid)))
@@ -673,6 +725,7 @@ unless the child asked the Kitty keyboard protocol for them."
                               ((member :super modifiers) nil)
                               (t (engine-encode-key engine key modifiers)))))))
          (when input
+           (restart-cursor-blink emulator)
            ;; Typing returns the view to the live screen and ends a selection.
            (scroll-viewport emulator :bottom)
            (clear-selection emulator)
@@ -1038,6 +1091,9 @@ out.")
 (defun handle-focus (emulator focused)
   "Tell the child about focus changes when it asked (mode 1004)."
   (setf (terminal-emulator-focused-p emulator) (and focused t))
+  ;; The cursor blinks only in the focused window.
+  (restart-cursor-blink emulator)
+  (request-render emulator)
   (when (with-engine (engine emulator) (engine-mode engine :focus-events))
     (write-input emulator (format nil "~c[~c" (code-char 27) (if focused #\I #\O)))))
 

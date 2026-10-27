@@ -276,10 +276,15 @@ Edit commands unless the program tracks the mouse. On the other frontends
 
 Command-click (Super-click) opens the link under the pointer
 (`*url-schemes*`). Files dropped on the window (cocoa, gl, gtk and clx) are
-pasted as shell-quoted names. The bell beeps (`*audible-bell*`) and bounces the Dock icon while
-slt is in the background (`*bell-hook*` holds `ring-bell`). Programs that
-ask for focus events (mode 1004) get them. `*window-padding*` sets the
-space around the grid in points.
+pasted as shell-quoted names. The bell beeps (`*audible-bell*`) and bounces
+the Dock icon while slt is in the background (`*bell-hook*` holds
+`ring-bell`). Programs that ask for focus events (mode 1004) get them.
+`*window-padding*` sets the space around the grid in points.
+
+The cursor blinks when the program asks for it (DECSCUSR 1, 3 or 5, or
+mode 12), only in the focused window, and stays shown while you type. Set
+`*cursor-blink*` to `t` to always blink or `nil` never to, and
+`*cursor-blink-interval-ms*` (600) for the pace.
 
 Children see `COLORTERM=truecolor`, `TERM_PROGRAM=slt` and, when the
 environment has no locale, `LANG=en_US.UTF-8`; add your own with

@@ -131,6 +131,9 @@
   (cursor-column 0 :type grid-dimension)
   (cursor-visible-p t :type boolean)
   (cursor-shape :block :type (member :block :underline :bar))
+  ;; Whether the program wants the cursor to blink: T, NIL, or :DEFAULT
+  ;; when it has not said (see *CURSOR-BLINK*).
+  (cursor-blink nil :type (member t nil :default))
   ;; Selected cells as (FIRST . LAST) cell indices in reading order,
   ;; inclusive, or NIL.  Set with GRID-SET-SELECTION.
   (selection nil :type (or null (cons grid-index grid-index))))

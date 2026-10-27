@@ -102,7 +102,8 @@ static uint16_t style_attrs(const GhosttyStyle *style) {
  * clusters are appended to EXTRA as [cell-index, count, cp...] records;
  * *EXTRA_LEN receives the number of uint32s used (records that would not
  * fit in EXTRA_CAPACITY are dropped).  CURSOR receives row, column,
- * visible, and visual style (0 bar, 1 block, 2 underline, 3 hollow block).
+ * visible, visual style (0 bar, 1 block, 2 underline, 3 hollow block) and
+ * whether it blinks.
  * Returns the number of rows written, or -1 on error. */
 int slt_ghostty_copy(slt_ghostty *s, GhosttyTerminal terminal, int rows, int columns,
                      int force, uint32_t *codes, uint32_t *fg, uint32_t *bg,
@@ -194,6 +195,7 @@ int slt_ghostty_copy(slt_ghostty *s, GhosttyTerminal terminal, int rows, int col
     cursor[1] = c.viewport_x;
     cursor[2] = c.visible && c.viewport_has_value;
     cursor[3] = (int32_t)c.visual_style;
+    cursor[4] = c.blinking;
   }
   ghostty_render_state_clean(s->state);
   return written;

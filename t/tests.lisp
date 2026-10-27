@@ -2097,6 +2097,42 @@ emulator wrote back since the last call."
         (setf (slt::headless-frontend-quit-p frontend) t)
         (bt:join-thread thread)))))
 
+(deftest headless-cursor-blinks-when-asked ()
+  ;; DECSCUSR 1 asks for a blinking block: the rendered cursor turns off and
+  ;; on again; with *CURSOR-BLINK* NIL it stays on.
+  (let* ((interval slt::*cursor-blink-interval-ms*)
+         (frontend (make-instance 'headless-frontend))
+         (thread (bt:make-thread
+                  (lambda ()
+                    (launch-terminal :frontend frontend :engine :lispvt :shell "/bin/sh"
+                                     :rows 6 :columns 40 :load-config nil))
+                  :name "slt blink test")))
+    (setf slt::*cursor-blink-interval-ms* 60)
+    (unwind-protect
+         (progn
+           (is (wait-until (lambda () (slt::headless-frontend-view frontend))))
+           (let* ((view (slt::headless-frontend-view frontend))
+                  (visible (lambda () (let ((grid (slt::headless-view-grid view)))
+                                        (and grid (grid-cursor-visible-p grid))))))
+             (is (wait-until (lambda () (search "$" (headless-screen-text view)))))
+             (headless-paste view (format nil "printf '\\033[1 qRE''ADY'; cat~%"))
+             (is (wait-until (lambda () (search "READY" (headless-screen-text view)))))
+             (is (wait-until (lambda () (not (funcall visible))) :timeout 2)
+                 "the cursor is hidden in half of the blink")
+             (is (wait-until visible :timeout 2) "and shown again")
+             (setf slt::*cursor-blink* nil)
+             (headless-key view "x" "x" 0)
+             (sleep 0.4)
+             (is (loop repeat 10 always (progn (sleep 0.03) (funcall visible)))
+                 "with *CURSOR-BLINK* NIL it stays shown")
+             (headless-close view)
+             (is (wait-until (lambda () (not (bt:thread-alive-p thread)))))))
+      (setf slt::*cursor-blink-interval-ms* interval
+            slt::*cursor-blink* :program)
+      (when (bt:thread-alive-p thread)
+        (setf (slt::headless-frontend-quit-p frontend) t)
+        (bt:join-thread thread)))))
+
 (deftest headless-scrollback-with-ghostty ()
   (when (slt::engine-available-p :ghostty)
     (let* ((frontend (make-instance 'headless-frontend))

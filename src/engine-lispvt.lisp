@@ -107,7 +107,8 @@
     (setf (grid-cursor-row grid) cursor-row
           (grid-cursor-column grid) cursor-column
           (grid-cursor-visible-p grid) visiblep
-          (grid-cursor-shape grid) shape)
+          (grid-cursor-shape grid) shape
+          (grid-cursor-blink grid) (lispvt:terminal-cursor-blink terminal))
     grid))
 
 (register-engine :lispvt

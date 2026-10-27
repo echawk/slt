@@ -239,7 +239,7 @@
           (attrs (grid-attrs grid))
           (ul (grid-ul grid)))
       (fill row-dirty 0)
-      (cffi:with-foreign-objects ((extra-length :int) (cursor :int32 4))
+      (cffi:with-foreign-objects ((extra-length :int) (cursor :int32 5))
         (sb-sys:with-pinned-objects (codes fg bg attrs ul row-dirty extra)
           (when (minusp (%slt-ghostty-copy
                          (ghostty-engine-helper engine)
@@ -285,7 +285,8 @@
           (setf (grid-cursor-row grid) cursor-row
                 (grid-cursor-column grid) cursor-column
                 (grid-cursor-visible-p grid) visiblep
-                (grid-cursor-shape grid) shape))))
+                (grid-cursor-shape grid) shape
+                (grid-cursor-blink grid) (/= 0 (cffi:mem-aref cursor :int32 4))))))
     grid))
 
 (defmethod engine-update-grid ((engine ghostty-engine) grid &key force)
