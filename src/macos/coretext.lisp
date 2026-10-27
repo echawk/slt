@@ -1,12 +1,17 @@
 (in-package #:slt)
 
 ;;;; Glyph rasterization with CoreText.  Each grapheme is laid out as a
-;;;; CTLine, so CoreText supplies fallback fonts (CJK, symbols, emoji
-;;;; outlines) and positions combining marks; the line is drawn into an
-;;;; alpha-only bitmap whose coverage is copied into the glyph atlas.
+;;;; CTLine, so CoreText supplies fallback fonts (CJK, symbols, emoji),
+;;;; positions combining marks and shapes emoji sequences; the line is drawn
+;;;; into an alpha-only bitmap whose coverage is copied into the glyph
+;;;; atlas.  A line set in a color font (Apple Color Emoji) is drawn in color
+;;;; instead, scaled to fit its cells, and handed to the atlas as RGBA.
 
 (defconstant +cf-string-encoding-utf8+ #x08000100)
 (defconstant +cg-image-alpha-only+ 7)
+;; kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big: R, G, B, A octets.
+(defconstant +cg-rgba-premultiplied+ (logior 1 (ash 4 12)))
+(defconstant +ct-font-color-glyphs-trait+ (ash 1 13))
 (defconstant +ct-font-bold-trait+ 2)
 (defconstant +ct-font-italic-trait+ 1)
 
@@ -46,6 +51,23 @@
   (string :pointer))
 
 (cffi:defcfun ("CTLineDraw" %ct-line-draw) :void (line :pointer) (context :pointer))
+(cffi:defcfun ("CTLineGetGlyphRuns" %ct-line-glyph-runs) :pointer (line :pointer))
+(cffi:defcfun ("CTLineGetTypographicBounds" %ct-line-typographic-bounds) :double
+  (line :pointer) (ascent :pointer) (descent :pointer) (leading :pointer))
+(cffi:defcfun ("CTRunGetAttributes" %ct-run-attributes) :pointer (run :pointer))
+(cffi:defcfun ("CTFontGetSymbolicTraits" %ct-font-symbolic-traits) :uint32 (font :pointer))
+(cffi:defcfun ("CFArrayGetCount" %cf-array-count) :long (array :pointer))
+(cffi:defcfun ("CFArrayGetValueAtIndex" %cf-array-value) :pointer (array :pointer) (index :long))
+(cffi:defcfun ("CFDictionaryGetValue" %cf-dictionary-value) :pointer
+  (dictionary :pointer) (key :pointer))
+(cffi:defcfun ("CGColorSpaceCreateDeviceRGB" %cg-color-space-create-device-rgb) :pointer)
+(cffi:defcfun ("CGColorSpaceRelease" %cg-color-space-release) :void (space :pointer))
+(cffi:defcfun ("CGContextSaveGState" %cg-context-save-gstate) :void (context :pointer))
+(cffi:defcfun ("CGContextRestoreGState" %cg-context-restore-gstate) :void (context :pointer))
+(cffi:defcfun ("CGContextTranslateCTM" %cg-context-translate) :void
+  (context :pointer) (x :double) (y :double))
+(cffi:defcfun ("CGContextScaleCTM" %cg-context-scale) :void
+  (context :pointer) (x :double) (y :double))
 
 (cffi:defcfun ("CGBitmapContextCreate" %cg-bitmap-context-create) :pointer
   (data :pointer) (width :size) (height :size) (bits-per-component :size)
@@ -72,7 +94,10 @@
   (baseline 0 :type fixnum)
   ;; Scratch bitmap two cells wide, reused for every glyph.
   (bitmap (cffi:null-pointer))
-  (context (cffi:null-pointer)))
+  (context (cffi:null-pointer))
+  ;; The same for color glyphs, RGBA, made when the first one is drawn.
+  (color-bitmap (cffi:null-pointer))
+  (color-context (cffi:null-pointer)))
 
 (defun ct-font-variant (font traits)
   (let ((variant (%ct-font-create-copy-with-traits font 0d0 (cffi:null-pointer) traits traits)))
@@ -121,12 +146,16 @@
                   (member handle released :test #'cffi:pointer-eq))
         (push handle released)
         (cf-release handle))))
-  (unless (cffi:null-pointer-p (coretext-font-context font))
-    (cg-context-release (coretext-font-context font)))
-  (unless (cffi:null-pointer-p (coretext-font-bitmap font))
-    (cffi:foreign-free (coretext-font-bitmap font)))
+  (dolist (context (list (coretext-font-context font) (coretext-font-color-context font)))
+    (unless (cffi:null-pointer-p context)
+      (cg-context-release context)))
+  (dolist (bitmap (list (coretext-font-bitmap font) (coretext-font-color-bitmap font)))
+    (unless (cffi:null-pointer-p bitmap)
+      (cffi:foreign-free bitmap)))
   (setf (coretext-font-context font) (cffi:null-pointer)
-        (coretext-font-bitmap font) (cffi:null-pointer)))
+        (coretext-font-bitmap font) (cffi:null-pointer)
+        (coretext-font-color-context font) (cffi:null-pointer)
+        (coretext-font-color-bitmap font) (cffi:null-pointer)))
 
 (defun coretext-font-for-style (font style)
   (let ((bold (member :bold style))
@@ -136,10 +165,10 @@
           (italic (coretext-font-italic font))
           (t (coretext-font-regular font)))))
 
-(defun coretext-draw-line (font ct-font string)
-  (let* ((context (coretext-font-context font))
-         (text (cf-string string))
-         (key (foreign-global "kCTFontAttributeName")))
+(defun call-with-ct-line (ct-font string function)
+  "Call FUNCTION with a CTLine of STRING set in CT-FONT, released after."
+  (let ((text (cf-string string))
+        (key (foreign-global "kCTFontAttributeName")))
     (cffi:with-foreign-objects ((keys :pointer) (values :pointer))
       (setf (cffi:mem-ref keys :pointer) key
             (cffi:mem-ref values :pointer) ct-font)
@@ -149,13 +178,67 @@
                           (cffi:foreign-symbol-pointer "kCFTypeDictionaryValueCallBacks")))
              (attributed (%cf-attributed-string-create (cffi:null-pointer) text attributes))
              (line (%ct-line-create attributed)))
-        (%cg-context-set-text-position context 0d0
-                                       (coerce (coretext-font-baseline font) 'double-float))
+        (unwind-protect (funcall function line)
+          (cf-release line)
+          (cf-release attributed)
+          (cf-release attributes)
+          (cf-release text))))))
+
+(defun ct-line-color-p (line)
+  "True when CoreText set some of LINE in a color font, as emoji are."
+  (let ((runs (%ct-line-glyph-runs line))
+        (key (foreign-global "kCTFontAttributeName")))
+    (loop for i below (%cf-array-count runs)
+          for font = (%cf-dictionary-value (%ct-run-attributes (%cf-array-value runs i)) key)
+            thereis (and (not (cffi:null-pointer-p font))
+                         (logtest (%ct-font-symbolic-traits font)
+                                  +ct-font-color-glyphs-trait+)))))
+
+(defun coretext-color-context (font)
+  (when (cffi:null-pointer-p (coretext-font-color-context font))
+    (let* ((width (* 2 (coretext-font-cell-width font)))
+           (height (coretext-font-cell-height font))
+           (bitmap (cffi:foreign-alloc :uint8 :count (* 4 width height) :initial-element 0))
+           (space (%cg-color-space-create-device-rgb)))
+      (setf (coretext-font-color-bitmap font) bitmap
+            (coretext-font-color-context font)
+            (%cg-bitmap-context-create bitmap width height 8 (* 4 width) space
+                                       +cg-rgba-premultiplied+))
+      (%cg-color-space-release space)))
+  (coretext-font-color-context font))
+
+(defun coretext-draw-color-line (font line width height)
+  "Draw LINE in color, scaled to fit WIDTH x HEIGHT pixels and centered;
+return the box's premultiplied RGBA pixels."
+  (let* ((context (coretext-color-context font))
+         (bitmap (coretext-font-color-bitmap font))
+         (bitmap-width (* 2 (coretext-font-cell-width font)))
+         (bitmap-height (coretext-font-cell-height font))
+         (rgba (make-array (* 4 width height) :element-type '(unsigned-byte 8)
+                                              :initial-element 0)))
+    (%cg-context-clear-rect context 0d0 0d0
+                            (coerce bitmap-width 'double-float)
+                            (coerce bitmap-height 'double-float))
+    (cffi:with-foreign-objects ((ascent :double) (descent :double) (leading :double))
+      (let* ((line-width (max 1d0 (%ct-line-typographic-bounds line ascent descent leading)))
+             (line-height (max 1d0 (+ (cffi:mem-ref ascent :double)
+                                      (cffi:mem-ref descent :double))))
+             (scale (min 1d0 (/ width line-width) (/ height line-height))))
+        (%cg-context-save-gstate context)
+        ;; CoreGraphics counts y up from the bottom.
+        (%cg-context-translate context
+                               (/ (- width (* line-width scale)) 2)
+                               (+ (/ (- height (* line-height scale)) 2)
+                                  (* (cffi:mem-ref descent :double) scale)))
+        (%cg-context-scale context scale scale)
+        (%cg-context-set-text-position context 0d0 0d0)
         (%ct-line-draw line context)
-        (cf-release line)
-        (cf-release attributed)
-        (cf-release attributes)
-        (cf-release text)))))
+        (%cg-context-restore-gstate context)))
+    ;; Bitmap rows are stored top to bottom, like the atlas.
+    (dotimes (row (min height bitmap-height) rgba)
+      (dotimes (byte (* 4 (min width bitmap-width)))
+        (setf (aref rgba (+ byte (* 4 width row)))
+              (cffi:mem-aref bitmap :uint8 (+ byte (* 4 bitmap-width row))))))))
 
 (defun coretext-rasterizer (font)
   "A GLYPH-ATLAS rasterizer drawing with FONT."
@@ -165,14 +248,24 @@
            (bitmap (coretext-font-bitmap font))
            (bitmap-width (* 2 (coretext-font-cell-width font)))
            (bitmap-height (coretext-font-cell-height font)))
-      (%cg-context-clear-rect context 0d0 0d0
-                              (coerce bitmap-width 'double-float)
-                              (coerce bitmap-height 'double-float))
-      (coretext-draw-line font (coretext-font-for-style font style) string)
-      ;; Bitmap rows are stored top to bottom, like the atlas.
-      (dotimes (row (min height bitmap-height))
-        (let ((source (* row bitmap-width))
-              (target (+ x (* stride (+ y row)))))
-          (dotimes (column (min width bitmap-width))
-            (setf (aref pixels (+ target column))
-                  (cffi:mem-aref bitmap :uint8 (+ source column)))))))))
+      (call-with-ct-line
+       (coretext-font-for-style font style) string
+       (lambda (line)
+         (if (ct-line-color-p line)
+             (coretext-draw-color-line font line width height)
+             (progn
+               (%cg-context-clear-rect context 0d0 0d0
+                                       (coerce bitmap-width 'double-float)
+                                       (coerce bitmap-height 'double-float))
+               (%cg-context-set-text-position context 0d0
+                                              (coerce (coretext-font-baseline font)
+                                                      'double-float))
+               (%ct-line-draw line context)
+               ;; Bitmap rows are stored top to bottom, like the atlas.
+               (dotimes (row (min height bitmap-height))
+                 (let ((source (* row bitmap-width))
+                       (target (+ x (* stride (+ y row)))))
+                   (dotimes (column (min width bitmap-width))
+                     (setf (aref pixels (+ target column))
+                           (cffi:mem-aref bitmap :uint8 (+ source column))))))
+               nil)))))))

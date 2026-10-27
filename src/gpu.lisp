@@ -5,6 +5,8 @@
 ;;;; Glyphs are rasterized once into an alpha-only atlas of cell-sized
 ;;;; slots.  A wide glyph takes two adjacent slots so that its spacer cell
 ;;;; simply draws the right half; every cell is then one fixed-size quad.
+;;;; Color glyphs (emoji) go into the same slots of a second, RGBA atlas,
+;;;; and their slot numbers carry +GLYPH-COLOR+.
 ;;;;
 ;;;; The grid is packed into an instance array of four 32-bit words per
 ;;;; cell -- foreground RGB, background RGB, atlas slot, and decoration
@@ -27,6 +29,8 @@
 ;; Set on the atlas slot of cells with the default background, which the
 ;; background layer leaves transparent for images under the text.
 (defconstant +gpu-slot-default-background+ (ash 1 31))
+;; Set on the slots of color glyphs, which come from the color atlas.
+(defconstant +glyph-color+ (ash 1 30))
 
 (defstruct (glyph-atlas (:constructor %make-glyph-atlas))
   (slot-width 1 :type (integer 1 4096))
@@ -36,6 +40,11 @@
   (slots-per-row 1 :type (integer 1 16384))
   (slot-rows 1 :type (integer 1 16384))
   (pixels (make-array 1 :element-type '(unsigned-byte 8)) :type u8-vector)
+  ;; Premultiplied RGBA pixels of the color glyphs, four bytes per pixel of
+  ;; PIXELS, made when the first one is rasterized; and their dirty rows.
+  (color-pixels nil :type (or null u8-vector))
+  (color-dirty-start nil :type (or null fixnum))
+  (color-dirty-end 0 :type fixnum)
   ;; Slot 0 is the blank glyph.
   (next-slot 1 :type fixnum)
   (table (make-hash-table) :type hash-table)
@@ -45,6 +54,8 @@
   (dirty-end 0 :type fixnum)
   ;; (FUNCTION STRING STYLE PIXELS STRIDE X Y WIDTH HEIGHT): draw STRING's
   ;; coverage into PIXELS within the box; STYLE is a list of :bold :italic.
+  ;; For a color glyph it may instead return the box's premultiplied RGBA
+  ;; pixels, WIDTH x HEIGHT x 4 octets, top row first.
   (rasterizer nil :type (or null function))
   ;; Incremented whenever the atlas is cleared, invalidating packed slots.
   (generation 0 :type fixnum))
@@ -64,6 +75,10 @@
 
 (defun glyph-atlas-clear (atlas)
   (fill (glyph-atlas-pixels atlas) 0)
+  (when (glyph-atlas-color-pixels atlas)
+    (fill (glyph-atlas-color-pixels atlas) 0)
+    (setf (glyph-atlas-color-dirty-start atlas) 0
+          (glyph-atlas-color-dirty-end atlas) (glyph-atlas-height atlas)))
   (clrhash (glyph-atlas-table atlas))
   (clrhash (glyph-atlas-cluster-table atlas))
   (setf (glyph-atlas-next-slot atlas) 1
@@ -80,8 +95,20 @@
     (setf (glyph-atlas-height atlas) height
           (glyph-atlas-slot-rows atlas) (max 1 (floor height (glyph-atlas-slot-height atlas)))
           (glyph-atlas-pixels atlas) (make-array (* (glyph-atlas-width atlas) height)
-                                                 :element-type '(unsigned-byte 8)))
+                                                 :element-type '(unsigned-byte 8))
+          (glyph-atlas-color-pixels atlas)
+          (and (glyph-atlas-color-pixels atlas)
+               (make-array (* 4 (glyph-atlas-width atlas) height)
+                           :element-type '(unsigned-byte 8))))
     (glyph-atlas-clear atlas)))
+
+(defun glyph-atlas-take-color-dirty (atlas)
+  "Return the dirty row range [START, END) of the color atlas and reset
+it, or NIL."
+  (let ((start (glyph-atlas-color-dirty-start atlas)))
+    (when start
+      (setf (glyph-atlas-color-dirty-start atlas) nil)
+      (values start (glyph-atlas-color-dirty-end atlas)))))
 
 (defun glyph-atlas-take-dirty (atlas)
   "Return the dirty pixel row range [START, END) and reset it, or NIL."
@@ -101,15 +128,33 @@
       slot)))
 
 (defun rasterize-into-slot (atlas slot string style slot-count)
+  "Draw STRING into SLOT (and the slots after it, SLOT-COUNT in all); return
+true when it is a color glyph."
   (let* ((per-row (glyph-atlas-slots-per-row atlas))
          (x (* (mod slot per-row) (glyph-atlas-slot-width atlas)))
          (y (* (floor slot per-row) (glyph-atlas-slot-height atlas)))
-         (height (glyph-atlas-slot-height atlas)))
-    (funcall (glyph-atlas-rasterizer atlas)
-             string style (glyph-atlas-pixels atlas) (glyph-atlas-width atlas)
-             x y (* slot-count (glyph-atlas-slot-width atlas)) height)
+         (width (* slot-count (glyph-atlas-slot-width atlas)))
+         (height (glyph-atlas-slot-height atlas))
+         (rgba (funcall (glyph-atlas-rasterizer atlas)
+                        string style (glyph-atlas-pixels atlas) (glyph-atlas-width atlas)
+                        x y width height)))
     (setf (glyph-atlas-dirty-start atlas) (min y (or (glyph-atlas-dirty-start atlas) y))
-          (glyph-atlas-dirty-end atlas) (max (+ y height) (glyph-atlas-dirty-end atlas)))))
+          (glyph-atlas-dirty-end atlas) (max (+ y height) (glyph-atlas-dirty-end atlas)))
+    (when (typep rgba 'u8-vector)
+      (let ((stride (* 4 (glyph-atlas-width atlas)))
+            (color (or (glyph-atlas-color-pixels atlas)
+                       (setf (glyph-atlas-color-pixels atlas)
+                             (make-array (* 4 (glyph-atlas-width atlas) (glyph-atlas-height atlas))
+                                         :element-type '(unsigned-byte 8)
+                                         :initial-element 0)))))
+        (dotimes (row height)
+          (replace color rgba :start1 (+ (* 4 x) (* stride (+ y row)))
+                              :start2 (* 4 width row) :end2 (* 4 width (1+ row))))
+        (setf (glyph-atlas-color-dirty-start atlas)
+              (min y (or (glyph-atlas-color-dirty-start atlas) y))
+              (glyph-atlas-color-dirty-end atlas)
+              (max (+ y height) (glyph-atlas-color-dirty-end atlas))))
+      t)))
 
 (declaim (inline glyph-key))
 (defun glyph-key (code bold italic wide)
@@ -131,13 +176,16 @@ it on first use.  Return NIL when the atlas is full."
         (let* ((count (if wide 2 1))
                (slot (allocate-glyph-slots atlas count)))
           (when slot
-            (rasterize-into-slot atlas slot
-                                 (if combining
-                                     (concatenate 'string (string (code-char code)) combining)
-                                     (string (code-char code)))
-                                 (append (and bold '(:bold)) (and italic '(:italic)))
-                                 count)
-            (setf (gethash key table) slot))))))
+            (setf (gethash key table)
+                  (if (rasterize-into-slot atlas slot
+                                           (if combining
+                                               (concatenate 'string (string (code-char code))
+                                                            combining)
+                                               (string (code-char code)))
+                                           (append (and bold '(:bold)) (and italic '(:italic)))
+                                           count)
+                      (logior slot +glyph-color+)
+                      slot)))))))
 
 (defun make-cell-instances (grid)
   (make-array (* +gpu-words-per-cell+ (grid-rows grid) (grid-columns grid))

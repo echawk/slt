@@ -37,6 +37,7 @@ struct Fragment {
   float3 bg [[flat]];
   uint flags [[flat]];
   uint slot [[flat]];
+  uint color_glyph [[flat]];
   float bg_alpha [[flat]];
   float2 atlas_px;
   float2 local_px;
@@ -60,9 +61,11 @@ vertex Fragment cell_vertex(uint vid [[vertex_id]],
                         1.0 - px.y / u.viewport.y * 2.0, 0.0, 1.0);
   out.fg = unpack_rgb(cell.x);
   out.bg = unpack_rgb(cell.y);
-  // The top bit marks the default background, transparent in layer 0.
-  uint slot = cell.z & 0x7FFFFFFFu;
+  // The top bit marks the default background, transparent in layer 0;
+  // the next one a color glyph, from the color atlas.
+  uint slot = cell.z & 0x3FFFFFFFu;
   out.slot = slot;
+  out.color_glyph = (cell.z >> 30) & 1u;
   out.bg_alpha = (cell.z >> 31) != 0u ? 0.0 : 1.0;
   out.flags = cell.w;
   float2 slot_origin = float2(slot % u.atlas_columns, slot / u.atlas_columns) * u.cell_size;
@@ -76,12 +79,19 @@ vertex Fragment cell_vertex(uint vid [[vertex_id]],
 // transparent), then 1, the text and decorations alone.
 fragment float4 cell_fragment(Fragment in [[stage_in]],
                               texture2d<float> atlas [[texture(0)]],
+                              texture2d<float> color_atlas [[texture(1)]],
                               constant Uniforms &u [[buffer(0)]],
                               constant uint &layer [[buffer(1)]]) {
   if (in.position.y < u.clip.x || in.position.y >= u.clip.y) discard_fragment();
   if (layer == 0u) return float4(in.bg, in.bg_alpha);
   constexpr sampler nearest(coord::pixel, filter::nearest, address::clamp_to_edge);
-  float ink = in.slot == 0u ? 0.0 : atlas.sample(nearest, in.atlas_px).r;
+  // A color glyph is premultiplied RGBA; other glyphs are coverage.
+  float4 glyph = float4(0.0);
+  float ink = 0.0;
+  if (in.slot != 0u) {
+    if (in.color_glyph != 0u) glyph = color_atlas.sample(nearest, in.atlas_px);
+    else ink = atlas.sample(nearest, in.atlas_px).r;
+  }
   float h = u.cell_size.y;
   float t = max(1.0, floor(h / 18.0));
   float y = in.local_px.y;
@@ -105,10 +115,14 @@ fragment float4 cell_fragment(Fragment in [[stage_in]],
                  || ((in.flags & 16u) && y >= h - 2.0 * t) ? 1.0 : 0.0;
   float3 underline = unpack_rgb(in.flags >> 8);
   if (layer == 1u) {
-    float3 color = cursor > 0.0 ? u.cursor_color.rgb : (line > ink ? underline : in.fg);
-    return float4(color, max(max(ink, line), cursor));
+    if (cursor > 0.0) return float4(u.cursor_color.rgb, 1.0);
+    float alpha = max(glyph.a, ink);
+    float3 text = glyph.a > 0.0 ? mix(glyph.rgb / glyph.a, in.fg, ink) : in.fg;
+    if (line > alpha) return float4(underline, line);
+    return float4(text, alpha);
   }
-  float3 color = mix(mix(in.bg, in.fg, ink), underline, line);
+  float3 color = glyph.rgb + in.bg * (1.0 - glyph.a);
+  color = mix(mix(color, in.fg, ink), underline, line);
   return float4(cursor > 0.0 ? u.cursor_color.rgb : color, 1.0);
 }
 
@@ -144,6 +158,9 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
   (atlas-texture nil)
   (image-textures (make-hash-table) :type hash-table)
   (atlas-texture-generation -1)
+  ;; The color glyphs' RGBA atlas, once there are any.
+  (color-texture nil)
+  (color-texture-generation -1)
   (buffers (make-array +metal-frames-in-flight+ :initial-element nil))
   (buffer-sizes (make-array +metal-frames-in-flight+ :initial-element 0))
   (frame 0 :type fixnum)
@@ -220,6 +237,7 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
              (msg object "release" :void))))
     (map nil #'release (metal-renderer-buffers renderer))
     (release (metal-renderer-atlas-texture renderer))
+    (release (metal-renderer-color-texture renderer))
     (maphash (lambda (id entry) (declare (ignore id)) (release (cdr entry)))
              (metal-renderer-image-textures renderer))
     (release (metal-renderer-pipeline renderer))
@@ -340,6 +358,43 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
                    :unsigned-long width
                    :void))))))))
 
+(defun metal-upload-color-atlas (renderer atlas)
+  "Upload the color glyphs' changed rows, once the atlas has any."
+  (let ((pixels (glyph-atlas-color-pixels atlas))
+        (width (glyph-atlas-width atlas))
+        (height (glyph-atlas-height atlas)))
+    (when pixels
+      (unless (and (metal-renderer-color-texture renderer)
+                   (= (metal-renderer-color-texture-generation renderer)
+                      (glyph-atlas-generation atlas)))
+        (when (metal-renderer-color-texture renderer)
+          (msg (metal-renderer-color-texture renderer) "release" :void))
+        (let ((descriptor (msg "MTLTextureDescriptor"
+                               "texture2DDescriptorWithPixelFormat:width:height:mipmapped:"
+                               :unsigned-long +mtl-pixel-format-rgba8-unorm+
+                               :unsigned-long width :unsigned-long height :bool nil)))
+          (setf (metal-renderer-color-texture renderer)
+                (msg (metal-renderer-device renderer) "newTextureWithDescriptor:"
+                     :pointer descriptor)
+                (metal-renderer-color-texture-generation renderer)
+                (glyph-atlas-generation atlas)
+                (glyph-atlas-color-dirty-start atlas) 0
+                (glyph-atlas-color-dirty-end atlas) height)))
+      (multiple-value-bind (start end) (glyph-atlas-take-color-dirty atlas)
+        (when start
+          (cffi:with-foreign-object (region :unsigned-long 6)
+            (loop for value in (list 0 start 0 width (- end start) 1)
+                  for i from 0
+                  do (setf (cffi:mem-aref region :unsigned-long i) value))
+            (sb-sys:with-pinned-objects (pixels)
+              (msg (metal-renderer-color-texture renderer)
+                   "replaceRegion:mipmapLevel:withBytes:bytesPerRow:"
+                   :pointer region
+                   :unsigned-long 0
+                   :pointer (sb-sys:sap+ (sb-sys:vector-sap pixels) (* 4 start width))
+                   :unsigned-long (* 4 width)
+                   :void))))))))
+
 (defun metal-instance-buffer (renderer bytes)
   (let* ((index (mod (metal-renderer-frame renderer) +metal-frames-in-flight+))
          (buffers (metal-renderer-buffers renderer))
@@ -393,6 +448,7 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
          (uniforms (metal-write-uniforms renderer cell-width cell-height
                                          width height columns atlas palette)))
     (metal-upload-atlas renderer atlas)
+    (metal-upload-color-atlas renderer atlas)
     (metal-prune-image-textures renderer image-records)
     (sb-sys:with-pinned-objects (instances)
       (%memcpy (msg buffer "contents") (sb-sys:vector-sap instances) bytes))
@@ -423,6 +479,11 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
                           :pointer layer-bytes :unsigned-long 4 :unsigned-long 1 :void)
                      (msg encoder "setFragmentTexture:atIndex:"
                           :pointer (metal-renderer-atlas-texture renderer) :unsigned-long 0 :void)
+                     ;; Without color glyphs the shader never reads it.
+                     (msg encoder "setFragmentTexture:atIndex:"
+                          :pointer (or (metal-renderer-color-texture renderer)
+                                       (metal-renderer-atlas-texture renderer))
+                          :unsigned-long 1 :void)
                      (msg encoder "drawPrimitives:vertexStart:vertexCount:instanceCount:"
                           :unsigned-long +mtl-primitive-type-triangle+
                           :unsigned-long 0 :unsigned-long 6 :unsigned-long cell-count :void))))

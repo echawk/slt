@@ -13,7 +13,7 @@
 (defparameter *script*
   (let ((path (merge-pathnames "shell.sh" *output*)))
     (with-open-file (out path :direction :output :if-exists :supersede)
-      (format out "#!/bin/sh~%printf '\\033[1mbold\\033[0m plain \\033[3mitalic\\033[0m \\033[4munderline\\033[0m\\n'~%printf '\\033[41m  red  \\033[0m \\033[32mgreen\\033[0m \\344\\270\\255\\346\\226\\207 e\\314\\201 \\342\\224\\200\\342\\224\\200\\n'~%exec sleep 30~%"))
+      (format out "#!/bin/sh~%printf '\\033[1mbold\\033[0m plain \\033[3mitalic\\033[0m \\033[4munderline\\033[0m\\n'~%printf '\\033[41m  red  \\033[0m \\033[32mgreen\\033[0m \\344\\270\\255\\346\\226\\207 e\\314\\201 \\342\\224\\200\\342\\224\\200\\n'~%printf '\\360\\237\\230\\200\\n'~%exec sleep 30~%"))
     (uiop:run-program (list "chmod" "+x" (uiop:native-namestring path)))
     (uiop:native-namestring path)))
 
@@ -55,7 +55,15 @@
                         (= (pixel rgb width (+ (* 21 cw) (floor cw 2)) y)
                            (palette-foreground *palette*)))
                       (loop for y from ch below (* 2 ch) collect y))
-             "box drawing characters reach the cell centre"))))
+             "box drawing characters reach the cell centre")
+      ;; Row 3 is an emoji, drawn in its own colors: the face is yellow.
+      (check (loop for y from (* 2 ch) below (* 3 ch)
+                   thereis (loop for x below (* 2 cw)
+                                 for p = (pixel rgb width x y)
+                                 thereis (and (> (ldb (byte 8 16) p) 180)
+                                              (> (ldb (byte 8 8) p) 120)
+                                              (< (ldb (byte 8 0) p) 90))))
+             "a color emoji is drawn in color"))))
 
 (defun palette-ansi-rgb (palette index)
   (aref (palette-colors palette) index))

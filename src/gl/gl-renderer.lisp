@@ -3,7 +3,8 @@
 ;;;; OpenGL renderer: the Metal renderer's design in OpenGL 3.3 core (or
 ;;;; OpenGL ES 3.0).  The grid is one instanced draw, six vertices per cell
 ;;;; and no vertex buffer; each instance is a cell's four packed words from
-;;;; PACK-GRID, and glyphs come from an R8 atlas texture.
+;;;; PACK-GRID, and glyphs come from an R8 atlas texture, color ones (emoji)
+;;;; from an RGBA one.
 ;;;;
 ;;;; GL calls go through cl-opengl.  Its entry points are resolved with
 ;;;; glfwGetProcAddress (see GL-FRONTEND), which works for EGL (used on X11
@@ -19,6 +20,7 @@ flat out vec3 fg;
 flat out vec3 bg;
 flat out uint flags;
 flat out uint slot;
+flat out uint color_glyph;
 flat out float bg_alpha;
 out vec2 atlas_px;
 out vec2 local_px;
@@ -36,8 +38,10 @@ void main() {
   gl_Position = vec4(px.x / viewport.x * 2.0 - 1.0, 1.0 - px.y / viewport.y * 2.0, 0.0, 1.0);
   fg = unpack_rgb(cell.x);
   bg = unpack_rgb(cell.y);
-  // The top bit marks the default background, transparent in layer 0.
-  slot = cell.z & 0x7FFFFFFFu;
+  // The top bit marks the default background, transparent in layer 0;
+  // the next one a color glyph, from the color atlas.
+  slot = cell.z & 0x3FFFFFFFu;
+  color_glyph = (cell.z >> 30) & 1u;
   bg_alpha = (cell.z >> 31) != 0u ? 0.0 : 1.0;
   flags = cell.w;
   atlas_px = (vec2(float(slot % atlas_columns), float(slot / atlas_columns)) + corner) * cell_size;
@@ -49,6 +53,7 @@ void main() {
 uniform vec2 cell_size;
 uniform vec4 cursor_color;
 uniform sampler2D atlas;
+uniform sampler2D color_atlas;
 // 2 draws whole cells.  Under images with negative z the cells are drawn
 // in two layers instead: 0, the backgrounds (the default one transparent),
 // then 1, the text and decorations alone.
@@ -57,6 +62,7 @@ flat in vec3 fg;
 flat in vec3 bg;
 flat in uint flags;
 flat in uint slot;
+flat in uint color_glyph;
 flat in float bg_alpha;
 in vec2 atlas_px;
 in vec2 local_px;
@@ -64,7 +70,13 @@ out vec4 color_out;
 
 void main() {
   if (layer == 0u) { color_out = vec4(bg, bg_alpha); return; }
-  float ink = slot == 0u ? 0.0 : texelFetch(atlas, ivec2(atlas_px), 0).r;
+  // A color glyph is premultiplied RGBA; other glyphs are coverage.
+  vec4 glyph = vec4(0.0);
+  float ink = 0.0;
+  if (slot != 0u) {
+    if (color_glyph != 0u) glyph = texelFetch(color_atlas, ivec2(atlas_px), 0);
+    else ink = texelFetch(atlas, ivec2(atlas_px), 0).r;
+  }
   float h = cell_size.y;
   float t = max(1.0, floor(h / 18.0));
   float y = local_px.y;
@@ -89,11 +101,15 @@ void main() {
   vec3 underline = vec3(float((flags >> 24) & 255u), float((flags >> 16) & 255u),
                         float((flags >> 8) & 255u)) / 255.0;
   if (layer == 1u) {
-    vec3 color = cursor > 0.0 ? cursor_color.rgb : (line > ink ? underline : fg);
-    color_out = vec4(color, max(max(ink, line), cursor));
+    float alpha = max(glyph.a, ink);
+    vec3 text = glyph.a > 0.0 ? mix(glyph.rgb / glyph.a, fg, ink) : fg;
+    if (cursor > 0.0) color_out = vec4(cursor_color.rgb, 1.0);
+    else if (line > alpha) color_out = vec4(underline, line);
+    else color_out = vec4(text, alpha);
     return;
   }
-  vec3 color = mix(mix(bg, fg, ink), underline, line);
+  vec3 color = glyph.rgb + bg * (1.0 - glyph.a);
+  color = mix(mix(color, fg, ink), underline, line);
   color_out = vec4(cursor > 0.0 ? cursor_color.rgb : color, 1.0);
 }
 ")
@@ -160,6 +176,10 @@ precision highp int;
   (atlas-texture 0 :type (unsigned-byte 32))
   (atlas-generation -1 :type fixnum)
   (atlas-height 0 :type fixnum)
+  ;; The color glyphs' RGBA atlas.
+  (color-texture 0 :type (unsigned-byte 32))
+  (color-generation -1 :type fixnum)
+  (color-height 0 :type fixnum)
   (image-textures (make-hash-table) :type hash-table)
   (uniforms (make-hash-table :test #'equal) :type hash-table))
 
@@ -170,14 +190,15 @@ precision highp int;
                    :image-program (gl-link-program api *gl-image-vertex-shader-source*
                                                    *gl-image-fragment-shader-source*))))
     (dolist (name '("cell_size" "viewport" "columns" "atlas_columns" "cursor_color" "atlas"
-                    "layer"))
+                    "color_atlas" "layer"))
       (setf (gethash name (gl-renderer-uniforms renderer))
             (gl:get-uniform-location (gl-renderer-program renderer) name)))
     (setf (gl-renderer-vertex-array renderer) (gl:gen-vertex-array)
           (gl-renderer-buffer renderer) (gl:gen-buffer)
           (gl-renderer-image-vertex-array renderer) (gl:gen-vertex-array)
           (gl-renderer-image-buffer renderer) (gl:gen-buffer)
-          (gl-renderer-atlas-texture renderer) (gl:gen-texture))
+          (gl-renderer-atlas-texture renderer) (gl:gen-texture)
+          (gl-renderer-color-texture renderer) (gl:gen-texture))
     (gl:bind-vertex-array (gl-renderer-vertex-array renderer))
     (gl:bind-buffer :array-buffer (gl-renderer-buffer renderer))
     (gl:enable-vertex-attrib-array 0)
@@ -187,16 +208,22 @@ precision highp int;
     (gl:bind-buffer :array-buffer (gl-renderer-image-buffer renderer))
     (gl:enable-vertex-attrib-array 0)
     (gl:vertex-attrib-pointer 0 4 :float nil 16 (cffi:null-pointer))
-    (gl:bind-texture :texture-2d (gl-renderer-atlas-texture renderer))
-    (gl:tex-parameter :texture-2d :texture-min-filter :nearest)
-    (gl:tex-parameter :texture-2d :texture-mag-filter :nearest)
-    (gl:tex-parameter :texture-2d :texture-wrap-s :clamp-to-edge)
-    (gl:tex-parameter :texture-2d :texture-wrap-t :clamp-to-edge)
+    (dolist (texture (list (gl-renderer-atlas-texture renderer)
+                           (gl-renderer-color-texture renderer)))
+      (gl:bind-texture :texture-2d texture)
+      (gl:tex-parameter :texture-2d :texture-min-filter :nearest)
+      (gl:tex-parameter :texture-2d :texture-mag-filter :nearest)
+      (gl:tex-parameter :texture-2d :texture-wrap-s :clamp-to-edge)
+      (gl:tex-parameter :texture-2d :texture-wrap-t :clamp-to-edge))
+    ;; Without color glyphs the shader never reads it; give it one pixel.
+    (gl:tex-image-2d :texture-2d 0 :rgba8 1 1 0 :rgba :unsigned-byte
+                     (make-array 4 :element-type '(unsigned-byte 8) :initial-element 0))
     renderer))
 
 (defun free-gl-renderer (renderer)
   (when (plusp (gl-renderer-program renderer))
-    (gl:delete-textures (list (gl-renderer-atlas-texture renderer)))
+    (gl:delete-textures (list (gl-renderer-atlas-texture renderer)
+                              (gl-renderer-color-texture renderer)))
     (maphash (lambda (id entry) (declare (ignore id))
                (gl:delete-textures (list (cdr entry))))
              (gl-renderer-image-textures renderer))
@@ -230,6 +257,31 @@ precision highp int;
           (%gl:tex-sub-image-2d :texture-2d 0 0 start width (- end start)
                                 :red :unsigned-byte
                                 (sb-sys:sap+ (sb-sys:vector-sap pixels) (* start width))))))))
+
+(defun gl-upload-color-atlas (renderer atlas)
+  "Upload the color glyphs' changed rows, once the atlas has any."
+  (let ((width (glyph-atlas-width atlas))
+        (height (glyph-atlas-height atlas))
+        (pixels (glyph-atlas-color-pixels atlas)))
+    (when pixels
+      (gl:active-texture :texture1)
+      (gl:bind-texture :texture-2d (gl-renderer-color-texture renderer))
+      (gl:pixel-store :unpack-alignment 1)
+      (unless (and (= (gl-renderer-color-generation renderer) (glyph-atlas-generation atlas))
+                   (= (gl-renderer-color-height renderer) height))
+        (sb-sys:with-pinned-objects (pixels)
+          (gl:tex-image-2d :texture-2d 0 :rgba8 width height 0
+                           :rgba :unsigned-byte (sb-sys:vector-sap pixels)))
+        (glyph-atlas-take-color-dirty atlas)
+        (setf (gl-renderer-color-generation renderer) (glyph-atlas-generation atlas)
+              (gl-renderer-color-height renderer) height))
+      (multiple-value-bind (start end) (glyph-atlas-take-color-dirty atlas)
+        (when start
+          (sb-sys:with-pinned-objects (pixels)
+            (%gl:tex-sub-image-2d :texture-2d 0 0 start width (- end start)
+                                  :rgba :unsigned-byte
+                                  (sb-sys:sap+ (sb-sys:vector-sap pixels) (* 4 start width))))))
+      (gl:active-texture :texture0))))
 
 (defun gl-upload-instances (renderer instances)
   (declare (type u32-vector instances))
@@ -319,6 +371,7 @@ precision highp int;
       (gl-prune-image-textures renderer image-records)
       (when (plusp cell-count)
         (gl-upload-atlas renderer atlas)
+        (gl-upload-color-atlas renderer atlas)
         (gl-upload-instances renderer instances))
       (multiple-value-bind (below-backgrounds below-text above) (image-layers image-records)
         (flet ((cells (layer)
@@ -332,7 +385,13 @@ precision highp int;
                    (%gl:uniform-1ui (uniform "layer") layer)
                    (gl:uniformf (uniform "cursor_color")
                                 (channel cursor 16) (channel cursor 8) (channel cursor 0) 1.0)
+                   ;; Images drawn in between bind their own textures.
+                   (gl:active-texture :texture1)
+                   (gl:bind-texture :texture-2d (gl-renderer-color-texture renderer))
+                   (gl:active-texture :texture0)
+                   (gl:bind-texture :texture-2d (gl-renderer-atlas-texture renderer))
                    (gl:uniformi (uniform "atlas") 0)
+                   (gl:uniformi (uniform "color_atlas") 1)
                    (gl:bind-vertex-array (gl-renderer-vertex-array renderer))
                    (if (= layer 2)
                        (gl:disable :blend)
