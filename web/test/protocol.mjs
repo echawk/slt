@@ -33,6 +33,7 @@ const lines = [];
 let hello = null;
 let tracking = null;
 let images = null;
+const withPixels = new Set(); // images whose pixels some message carried
 let cursor = null;
 const cursorSeen = { shown: false, hidden: false };
 const opened = [];
@@ -42,7 +43,10 @@ socket.onmessage = (event) => {
   const message = JSON.parse(event.data);
   if (message.t === "hello") hello = message;
   if (message.t === "mouse") tracking = message.tracking;
-  if (message.t === "images") images = message;
+  if (message.t === "images") {
+    images = message;
+    for (const source of message.sources) if (source.rgba) withPixels.add(source.id);
+  }
   if (message.t === "open") opened.push(message.url);
   if (message.t === "progress") progress.push([message.state, message.value]);
   if (message.t === "frame") {
@@ -75,6 +79,14 @@ socket.send(JSON.stringify({ t: "paste",
 check("images are laid out in the client's cells",
       await until(() => images?.cw === 10 && images?.ch === 20
                   && images.items.some((item) => item.w === 20 && item.h === 20)));
+check("the image's pixels come with it", withPixels.has(images?.sources?.[0]?.id));
+// Typing redraws the grid and resends the images, but not their pixels.
+const first = images;
+socket.send(JSON.stringify({ t: "key", char: "x", keysym: "x", state: 0 }));
+socket.send(JSON.stringify({ t: "key", char: "", keysym: "BackSpace", state: 0 }));
+check("pixels the client has are not sent again",
+      await until(() => images !== first && images.sources.length === 1
+                  && images.sources[0].rgba === undefined));
 socket.send(JSON.stringify({ t: "paste", text: "clear\n" }));
 
 socket.send(JSON.stringify({ t: "paste", text: "printf '\\033[?1000h\\033[?1006h'; cat -v\n" }));

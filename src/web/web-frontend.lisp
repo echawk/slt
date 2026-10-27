@@ -23,6 +23,8 @@
 ;;;;       RGBA images, each once under "sources", and their placements under
 ;;;;       "items", in pixels of W x H cells: the cell size the client last
 ;;;;       sent, rounded, else 8 x 16.  The client scales them to its own.
+;;;;       A source without "rgba" has the pixels it had in the previous
+;;;;       images message, which the client keeps.
 ;;;;     {"t":"colors","palette":{N:"#RRGGBB",...},"foreground":S,"background":S,
 ;;;;      "cursor":S,"selection":S}
 ;;;;       Colors the program changed (OSC 4, 10-19), each key only when it
@@ -86,7 +88,11 @@ self-contained.  Set *WEB-ASSETS-FROM-DISK* to edit the files live.")
    (resource :initform nil :accessor web-frontend-resource)
    (dispatcher :initform nil :accessor web-frontend-dispatcher)
    ;; The palette whose colors the clients were last sent.
-   (sent-palette :initform nil :accessor web-frontend-sent-palette)))
+   (sent-palette :initform nil :accessor web-frontend-sent-palette)
+   ;; Client to a table of the pixels its last images message held, by
+   ;; image id.
+   (sent-images :initform (make-hash-table :test #'eq :synchronized t)
+                :reader web-frontend-sent-images)))
 
 (defclass web-acceptor (hunchensocket:websocket-acceptor)
   ((frontend :initarg :frontend :reader web-acceptor-frontend)))
@@ -220,7 +226,16 @@ with a fifth element, the underline color, when it is not the default."
                                       (terminal-image-render-list
                                        (headless-view-image-store view)
                                        (headless-view-cell-width view)
-                                       (headless-view-cell-height view)))))))))))
+                                       (headless-view-cell-height view))
+                                      :sent (web-client-sent-images frontend client))))))))))
+
+(defmethod hunchensocket:client-disconnected ((resource web-resource) client)
+  (remhash client (web-frontend-sent-images (web-resource-frontend resource))))
+
+(defun web-client-sent-images (frontend client)
+  (let ((table (web-frontend-sent-images frontend)))
+    (or (gethash client table)
+        (setf (gethash client table) (make-hash-table)))))
 
 (defun json-integer (table key &optional (default 0))
   (let ((value (gethash key table)))
@@ -333,34 +348,58 @@ with a fifth element, the underline color, when it is not the default."
                  (terminal-image-placement-source-y placement)))
      "iw" (terminal-image-width image) "ih" (terminal-image-height image))))
 
-(defun web-images-message (view records)
+(defun web-images-message (view records &key sent (encoded (make-hash-table)))
   "An images message for VIEW: each image's pixels once, under \"sources\",
 however many placements and placement fragments draw it, and the cell size
-the placements were laid out with."
-  (let ((seen '()))
-    (json-object
-     "t" "images"
-     "cw" (headless-view-cell-width view)
-     "ch" (headless-view-cell-height view)
-     "sources" (coerce
-                (loop for (nil image) in records
-                      unless (member (terminal-image-id image) seen)
-                        do (push (terminal-image-id image) seen)
-                        and collect (json-object
-                                     "id" (terminal-image-id image)
-                                     "iw" (terminal-image-width image)
-                                     "ih" (terminal-image-height image)
-                                     "rgba" (cl-base64:usb8-array-to-base64-string
-                                             (terminal-image-rgba image))))
-                'vector)
-     "items" (coerce (mapcar #'web-image-record records) 'vector))))
+the placements were laid out with.  SENT, a table of the pixels a client
+was last sent by image id, leaves out pixels the client has, and is updated
+to this message's.  ENCODED caches base64 by image id across messages."
+  (let ((seen '())
+        (images '()))
+    (flet ((base64 (image)
+             (let ((id (terminal-image-id image)))
+               (or (gethash id encoded)
+                   (setf (gethash id encoded)
+                         (cl-base64:usb8-array-to-base64-string
+                          (terminal-image-rgba image)))))))
+      (prog1
+          (json-object
+           "t" "images"
+           "cw" (headless-view-cell-width view)
+           "ch" (headless-view-cell-height view)
+           "sources" (coerce
+                      (loop for (nil image) in records
+                            for id = (terminal-image-id image)
+                            unless (member id seen)
+                              do (push id seen)
+                                 (push image images)
+                              and collect (apply #'json-object
+                                                 "id" id
+                                                 "iw" (terminal-image-width image)
+                                                 "ih" (terminal-image-height image)
+                                                 (unless (and sent
+                                                              (eq (gethash id sent)
+                                                                  (terminal-image-rgba image)))
+                                                   (list "rgba" (base64 image)))))
+                      'vector)
+           "items" (coerce (mapcar #'web-image-record records) 'vector))
+        (when sent
+          (clrhash sent)
+          (dolist (image images)
+            (setf (gethash (terminal-image-id image) sent) (terminal-image-rgba image))))))))
 
 (defmethod frontend-render-images :after ((frontend web-frontend) (view headless-view) store)
-  (web-broadcast frontend
-                 (web-images-message
-                  view
-                  (terminal-image-render-list store (headless-view-cell-width view)
-                                              (headless-view-cell-height view)))))
+  (let ((resource (web-frontend-resource frontend)))
+    (when resource
+      (let ((records (terminal-image-render-list store (headless-view-cell-width view)
+                                                 (headless-view-cell-height view)))
+            (encoded (make-hash-table)))
+        ;; Each client is sent only pixels it does not have.
+        (dolist (client (hunchensocket:clients resource))
+          (web-send client (web-images-message
+                            view records
+                            :sent (web-client-sent-images frontend client)
+                            :encoded encoded)))))))
 
 (defmethod frontend-open-url ((frontend web-frontend) view url)
   (declare (ignore view))

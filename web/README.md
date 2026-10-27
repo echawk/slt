@@ -96,7 +96,8 @@ To draw images yourself, subclass `SltTerminal` and override
 again when the cell size changes:
 
 - `sources`: each image once, as `{id, iw, ih, rgba}`, the RGBA pixels in
-  base64.
+  base64. The same image keeps the same object from one call to the next,
+  so it can be decoded once.
 - `items`: the placements in drawing order, as `{id, x, y, w, h, z, sx, sy,
   sw, sh, iw, ih}`. Each draws the rectangle `sx, sy, sw, sh` of image `id`
   into `x, y, w, h`, in CSS pixels from the terminal's top left, already
@@ -144,7 +145,9 @@ A client should put its cell size in CSS pixels in `resize`, as `cellWidth`
 and `cellHeight`. Without them the server assumes 8 x 16 cells, so images
 drift from the text whenever the font's cells are another size. `images`
 messages give the cell size their placements were laid out with, as `cw` and
-`ch`: scale `x`, `y`, `w` and `h` by your cell size over it.
+`ch`: scale `x`, `y`, `w` and `h` by your cell size over it. A source in an
+`images` message comes without `rgba` when its pixels are those of the same
+image in the previous `images` message: keep each message's sources.
 
 ## Testing
 

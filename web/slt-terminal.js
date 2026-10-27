@@ -126,6 +126,11 @@ export class SltTerminal extends EventTarget {
     this.cursor = [0, 0, true, "block"];
     this.lines = []; // runs per row, as received
     this.socket = null;
+    // The last images message's sources by id: the server sends an image's
+    // pixels only when they are new.
+    this._imageSources = new Map();
+    // Each source's pixels drawn into a canvas, decoded once.
+    this._sourceCanvases = new WeakMap();
     // The theme set here, the colors the program changed (OSC 4, 10-19),
     // and the two combined, which is what is drawn.
     this._userTheme = { ...DEFAULT_THEME };
@@ -457,10 +462,18 @@ export class SltTerminal extends EventTarget {
         this._emit("frame");
         break;
       }
-      case "images":
-        this._images = message;
+      case "images": {
+        // A source without pixels has those of the previous message.
+        const sources = new Map();
+        for (const source of message.sources || []) {
+          const known = source.rgba === undefined ? this._imageSources.get(source.id) : source;
+          if (known) sources.set(source.id, known);
+        }
+        this._imageSources = sources;
+        this._images = { ...message, sources: [...sources.values()] };
         this._showImages();
         break;
+      }
       case "colors":
         this._colors = message;
         this._applyColors();
@@ -628,15 +641,20 @@ export class SltTerminal extends EventTarget {
   drawImages(sources, items) {
     this.imagesUnder.replaceChildren();
     this.imagesOver.replaceChildren();
-    // Each image's pixels arrive once per message, shared by its placements.
+    // Each image's pixels arrive once, shared by its placements, and are
+    // decoded the first time they are drawn.
     const canvases = new Map();
     for (const image of sources) {
-      const bytes = Uint8ClampedArray.from(atob(image.rgba), (c) => c.charCodeAt(0));
-      if (bytes.length !== image.iw * image.ih * 4) continue;
-      const source = document.createElement("canvas");
-      source.width = image.iw;
-      source.height = image.ih;
-      source.getContext("2d").putImageData(new ImageData(bytes, image.iw, image.ih), 0, 0);
+      let source = this._sourceCanvases.get(image);
+      if (!source) {
+        const bytes = Uint8ClampedArray.from(atob(image.rgba), (c) => c.charCodeAt(0));
+        if (bytes.length !== image.iw * image.ih * 4) continue;
+        source = document.createElement("canvas");
+        source.width = image.iw;
+        source.height = image.ih;
+        source.getContext("2d").putImageData(new ImageData(bytes, image.iw, image.ih), 0, 0);
+        this._sourceCanvases.set(image, source);
+      }
       canvases.set(image.id, source);
     }
     for (const item of items) {
