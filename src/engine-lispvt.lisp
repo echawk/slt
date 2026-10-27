@@ -51,6 +51,9 @@
               ((lispvt:terminal-mode terminal :mouse-x10) :x10))
         (lispvt:terminal-mode terminal mode))))
 
+(defmethod engine-report-setting ((engine lispvt-engine) request)
+  (lispvt:terminal-report-setting (lispvt-engine-terminal engine) request))
+
 (defmethod engine-scroll ((engine lispvt-engine) how)
   (lispvt:terminal-scroll-viewport (lispvt-engine-terminal engine) how)
   t)

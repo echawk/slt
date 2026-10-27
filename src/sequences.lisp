@@ -30,11 +30,16 @@ the engine.")
 (defun stream-string-policy (kind event first-octet)
   "Collect the control strings slt may act on; pass the rest on at once."
   (case kind
-    (:dcs (if (and *sixel-images*
-                   (= first-octet (char-code #\q))
-                   (zerop (ecma48:event-private event))
-                   (zerop (ecma48:event-intermediates event)))
-              :collect :pass))
+    (:dcs (cond ((or (/= first-octet (char-code #\q))
+                     (plusp (ecma48:event-private event)))
+                 :pass)
+                ((zerop (ecma48:event-intermediates event))
+                 (if *sixel-images* :collect :pass))
+                ;; XTGETTCAP (DCS + q) and DECRQSS (DCS $ q): short queries.
+                ((member (ecma48:event-intermediates event)
+                         (list (char-code #\+) (char-code #\$)))
+                 (values :collect 4096))
+                (t :pass)))
     (:apc (if (and *kitty-graphics-images* (= first-octet (char-code #\G)))
               :collect :pass))
     ;; OSC strings are small but for OSC 52; bound them well below images.
@@ -59,7 +64,7 @@ the engine.")
                (events '()))
            (dolist (mode (ecma48:event-parameters event))
              (case mode
-               ((80 1016 8452 2026) (push (list :mode mode value) events))
+               ((80 1016 2031 2048 8452 2026) (push (list :mode mode value) events))
                ((1047 1049) (when value (push (list :enter-alternate-screen) events)))))
            (if events (values :pass-then (nreverse events)) :pass)))
         ((and (plain-p) (char= final #\J)
@@ -71,7 +76,7 @@ the engine.")
          (values :pass-then (list (list (if (char= final #\K) :erase-line :erase-characters)
                                         first))))
         ((and (private-p #\?) (= intermediate (char-code #\$)) (char= final #\p)
-              (member first '(80 1016 8452 2026)))
+              (member first '(80 1016 2031 2048 8452 2026)))
          (values :consume (list (list :report-mode first))))
         ((and (private-p #\?) (zerop intermediate) (char= final #\S) *sixel-images*
               (member first '(1 2)))
@@ -89,7 +94,16 @@ the engine.")
                                                 (ecma48:event-parameter event index)))))))
         ((and (private-p #\>) (zerop intermediate) (char= final #\q) (zerop first))
          (values :consume (list (list :version))))
+        ;; XTWINOPS size reports, answered here whatever the engine.
+        ((and (plain-p) (char= final #\t) (member first '(14 16 18 19)))
+         (values :consume (list (list :window-report first))))
+        ;; The color scheme (dark or light) query of mode 2031.
+        ((and (private-p #\?) (zerop intermediate) (char= final #\n) (= first 996))
+         (values :consume (list (list :color-scheme-query))))
         (t :pass)))))
+
+(defun octets-ascii (octets)
+  (map 'string (lambda (octet) (if (< octet 128) (code-char octet) #\?)) octets))
 
 (defun classify-stream-event (parser event)
   "What to do with a scanner EVENT: :PASS it to the engine, :CONSUME it,
@@ -118,9 +132,13 @@ act on."
                                         (if (eq (ecma48:event-terminator event) :bel)
                                             :bel :st))))
            :pass)))
-    (:dcs (if (eq (ecma48:event-terminator event) :interrupted)
-              (values :consume '())   ; an unfinished image
-              (values :consume (list (list :sixel (ecma48:event-raw event))))))
+    (:dcs (cond ((eq (ecma48:event-terminator event) :interrupted)
+                 (values :consume '()))   ; an unfinished image or query
+                ((= (ecma48:event-intermediates event) (char-code #\+))
+                 (values :consume (list (list :xtgettcap (octets-ascii (ecma48:event-data event))))))
+                ((= (ecma48:event-intermediates event) (char-code #\$))
+                 (values :consume (list (list :decrqss (octets-ascii (ecma48:event-data event))))))
+                (t (values :consume (list (list :sixel (ecma48:event-raw event)))))))
     (:apc (if (eq (ecma48:event-terminator event) :interrupted)
               (values :consume '())
               (values :consume (list (list :kitty (ecma48:event-data event))))))

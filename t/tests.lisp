@@ -996,7 +996,7 @@ replies sent to the child."
           (is (equal out out2))
           (is (equal events events2))))
       ;; Two Kitty commands (one malformed, for the handler to refuse) and
-      ;; one SIXEL image; DECRQSS is passed on.
+      ;; one SIXEL image; DECRQSS is answered by slt.
       (is-equal 3 (count-if (lambda (e) (member (first e) '(:sixel :kitty))) events)))))
 
 (deftest visible-cell-rectangles-cover-each-visible-cell-once ()
@@ -2048,6 +2048,49 @@ emulator wrote back since the last call."
              (headless-key view "" "Return" 0)
              (is (wait-until (lambda () (search "^[[116;9u" (headless-screen-text view))))
                  "Super+T arrives as a Kitty key report")
+             (headless-close view)
+             (is (wait-until (lambda () (not (bt:thread-alive-p thread)))))))
+      (when (bt:thread-alive-p thread)
+        (setf (slt::headless-frontend-quit-p frontend) t)
+        (bt:join-thread thread)))))
+
+(deftest headless-answers-size-capability-and-setting-queries ()
+  ;; XTWINOPS 14/16/18 t, XTGETTCAP (TN, Co and an unknown name), DECRQSS
+  ;; for SGR and the margins, the color scheme query (mode 2031), and
+  ;; in-band resize (mode 2048), reported once enabled.  Headless cells
+  ;; are 8 x 16 and the default theme is dark.
+  (let* ((frontend (make-instance 'headless-frontend))
+         (thread (bt:make-thread
+                  (lambda ()
+                    (launch-terminal :frontend frontend :engine :lispvt :shell "/bin/sh"
+                                     :rows 6 :columns 40 :load-config nil))
+                  :name "slt query test")))
+    (unwind-protect
+         (progn
+           (is (wait-until (lambda () (slt::headless-frontend-view frontend))))
+           (let ((view (slt::headless-frontend-view frontend)))
+             (is (wait-until (lambda () (search "$" (headless-screen-text view)))))
+             (headless-paste
+              view
+              (format nil "printf '~{~a~}RE''ADY'; cat -v~%"
+                      '("\\033[14t\\033[16t\\033[18t"
+                        "\\033P+q544e;436f;78797a\\033\\\\"
+                        "\\033[1;38;2;1;2;3m\\033P$qm\\033\\\\\\033[0m"
+                        "\\033P$qr\\033\\\\"
+                        "\\033[?996n\\033[?2048h\\033[?2048$p")))
+             (is (wait-until (lambda () (search "READY" (headless-screen-text view)))))
+             (headless-key view "" "Return" 0)
+             (let ((expected (concatenate
+                              'string
+                              "^[[4;96;320t^[[6;16;8t^[[8;6;40t"
+                              "^[P1+r544e=736C74^[\\^[P1+r436f=323536^[\\^[P0+r78797a^[\\"
+                              "^[P1$r0;1;38;2;1;2;3m^[\\^[P1$r1;6r^[\\"
+                              "^[[?997;1n^[[48;6;40;96;320t^[[?2048;1$y")))
+               (is (wait-until (lambda ()
+                                 (search expected
+                                         (remove #\Newline (headless-screen-text view)))))
+                   (format nil "the replies arrive in order: ~a"
+                           (remove #\Newline (headless-screen-text view)))))
              (headless-close view)
              (is (wait-until (lambda () (not (bt:thread-alive-p thread)))))))
       (when (bt:thread-alive-p thread)

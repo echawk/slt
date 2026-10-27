@@ -955,6 +955,16 @@ button's menu."
       (audible
        (cffi:foreign-funcall "NSBeep" :void)))))
 
+(defmethod frontend-set-progress ((frontend cocoa-frontend) (view cocoa-view) state value)
+  ;; The Dock icon's badge: the percentage, ! for an error, ... while busy.
+  (let ((label (case state
+                 (1 (format nil "~d%" (max 0 (min 100 (or value 0)))))
+                 (2 "!")
+                 ((3 4) "…")
+                 (t nil))))
+    (msg (msg (msg "NSApplication" "sharedApplication") "dockTile")
+         "setBadgeLabel:" :pointer (if label (ns-string label) (cffi:null-pointer)) :void)))
+
 (defmethod frontend-set-font-size ((frontend cocoa-frontend) (view cocoa-view) size)
   (let* ((old (cocoa-view-font view))
          (font (make-coretext-font (cocoa-view-font-family view)

@@ -94,6 +94,15 @@ COLUMN are the zero-based cell; MODIFIERS as for ENGINE-ENCODE-KEY.")
                         :tracking (engine-mode engine :mouse-tracking)
                         :sgr (engine-mode engine :mouse-sgr))))
 
+(defgeneric engine-report-setting (engine request)
+  (:documentation "The value of the setting DECRQSS REQUEST names (\"m\"
+for SGR, \"r\" for the scroll margins, \" q\" for the cursor style), as
+it goes before REQUEST in the answer; NIL for one the engine does not
+know; or :PASS to hand the request to the engine to answer itself.")
+  (:method ((engine engine) request)
+    (declare (ignore request))
+    :pass))
+
 (defgeneric engine-scroll (engine how)
   (:documentation "Scroll the viewport through scrollback: HOW is :TOP,
 :BOTTOM or a number of rows (negative scrolls back).  Return true when the

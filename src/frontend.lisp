@@ -259,6 +259,14 @@ attention when the window is in the background.")
     (declare (ignore frontend view audible))
     nil))
 
+(defgeneric frontend-set-progress (frontend view state value)
+  (:documentation "Show the progress a program reported (OSC 9 ; 4): STATE
+0 hides it, 1 is VALUE percent, 2 an error, 3 indeterminate and 4 paused.
+Frontends without a place for it ignore it.")
+  (:method (frontend view state value)
+    (declare (ignore frontend view state value))
+    nil))
+
 (defgeneric frontend-focus (frontend view))
 (defgeneric frontend-request-exit (frontend view))
 

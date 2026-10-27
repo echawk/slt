@@ -117,16 +117,37 @@ commands that failed, with FAILED."
            (case mode
              (2026 (synchronize-output emulator value))
              (1016 (setf (terminal-emulator-mouse-pixels emulator) value))
+             (2031 (setf (terminal-emulator-color-scheme-updates emulator) value))
+             (2048 (setf (terminal-emulator-in-band-resize emulator) value)
+              ;; Enabling it reports the size at once.
+              (when value
+                (reply-to-child emulator (in-band-resize-report emulator))))
              (t (handle-graphics-control store event engine)))))
         (:report-mode
          (reply-to-child
           emulator
-          (case (first arguments)
-            (2026 (format nil "~c[?2026;~d$y" (code-char 27)
-                          (if (terminal-emulator-sync-deadline emulator) 1 2)))
-            (1016 (format nil "~c[?1016;~d$y" (code-char 27)
-                          (if (terminal-emulator-mouse-pixels emulator) 1 2)))
-            (t (handle-graphics-control store event engine)))))
+          (flet ((report (mode set)
+                   (format nil "~c[?~d;~d$y" (code-char 27) mode (if set 1 2))))
+            (case (first arguments)
+              (2026 (report 2026 (terminal-emulator-sync-deadline emulator)))
+              (1016 (report 1016 (terminal-emulator-mouse-pixels emulator)))
+              (2031 (report 2031 (terminal-emulator-color-scheme-updates emulator)))
+              (2048 (report 2048 (terminal-emulator-in-band-resize emulator)))
+              (t (handle-graphics-control store event engine))))))
+        (:window-report
+         (reply-to-child emulator (window-report emulator (first arguments))))
+        (:color-scheme-query
+         (reply-to-child emulator (color-scheme-report emulator)))
+        (:xtgettcap
+         (reply-to-child emulator (xtgettcap-reply (first arguments))))
+        (:decrqss
+         (let* ((request (first arguments))
+                (value (engine-report-setting engine request)))
+           (if (eq value :pass)
+               ;; The engine may answer it itself.
+               (engine-feed-string engine (format nil "~cP$q~a~c\\" (code-char 27) request
+                                                  (code-char 27)))
+               (reply-to-child emulator (decrqss-reply request value)))))
         (:enter-alternate-screen
          (kitty-keyboard:keyboard-reset (terminal-emulator-keyboard emulator) :alternate)
          (forget-links emulator :alternate)
@@ -140,6 +161,8 @@ commands that failed, with FAILED."
          (kitty-keyboard:keyboard-reset (terminal-emulator-keyboard emulator))
          (synchronize-output emulator nil)
          (setf (terminal-emulator-mouse-pixels emulator) nil
+               (terminal-emulator-color-scheme-updates emulator) nil
+               (terminal-emulator-in-band-resize emulator) nil
                (terminal-emulator-hyperlink emulator) nil
                (terminal-stream-parser-text-events-p parser) nil
                (terminal-emulator-links emulator) '()
@@ -149,6 +172,111 @@ commands that failed, with FAILED."
          (handle-graphics-control store event engine))
         (t
          (reply-to-child emulator (handle-graphics-control store event engine)))))))
+
+;;; Queries about the window, the colors and the terminal's capabilities
+
+(defun window-report (emulator what)
+  "The XTWINOPS report WHAT asks for: 14 the text area and 16 a cell in
+pixels, 18 and 19 the text area in cells."
+  (let* ((engine (terminal-emulator-engine emulator))
+         (store (terminal-emulator-image-store emulator))
+         (rows (engine-rows engine))
+         (columns (engine-columns engine))
+         (cw (terminal-image-store-cell-width store))
+         (ch (terminal-image-store-cell-height store))
+         (esc (code-char 27)))
+    (case what
+      (14 (format nil "~c[4;~d;~dt" esc (* rows ch) (* columns cw)))
+      (16 (format nil "~c[6;~d;~dt" esc ch cw))
+      (18 (format nil "~c[8;~d;~dt" esc rows columns))
+      (19 (format nil "~c[9;~d;~dt" esc rows columns)))))
+
+(defun in-band-resize-report (emulator)
+  "The size report of in-band resize notifications (mode 2048): rows and
+columns, then the text area in pixels."
+  (let* ((engine (terminal-emulator-engine emulator))
+         (store (terminal-emulator-image-store emulator))
+         (rows (engine-rows engine))
+         (columns (engine-columns engine)))
+    (format nil "~c[48;~d;~d;~d;~dt" (code-char 27) rows columns
+            (* rows (terminal-image-store-cell-height store))
+            (* columns (terminal-image-store-cell-width store)))))
+
+(defun dark-color-p (rgb)
+  "True when RGB is dark: its relative luminance is under one half."
+  (< (+ (* 0.2126 (ldb (byte 8 16) rgb))
+        (* 0.7152 (ldb (byte 8 8) rgb))
+        (* 0.0722 (ldb (byte 8 0) rgb)))
+     128))
+
+(defun color-scheme (emulator)
+  "EMULATOR's color scheme, :DARK or :LIGHT, by its background."
+  (if (dark-color-p (palette-background (emulator-palette emulator))) :dark :light))
+
+(defun color-scheme-report (emulator)
+  "The answer to CSI ? 996 n (mode 2031): CSI ? 997 ; 1 n when dark, 2 when
+light."
+  (format nil "~c[?997;~dn" (code-char 27) (if (eq (color-scheme emulator) :dark) 1 2)))
+
+(defun note-color-scheme (emulator)
+  "Tell a child that asked (mode 2031) when the scheme changed."
+  (let ((scheme (color-scheme emulator)))
+    (unless (eq scheme (shiftf (terminal-emulator-last-color-scheme emulator) scheme))
+      (when (terminal-emulator-color-scheme-updates emulator)
+        (reply-to-child emulator (color-scheme-report emulator))))))
+
+(defparameter *terminal-capabilities*
+  (let ((esc (string (code-char 27))))
+    (flet ((cap (control) (concatenate 'string esc control)))
+      `(("TN" . "slt")
+        ("Co" . "256")
+        ("colors" . "256")
+        ("RGB" . "8/8/8")
+        ("Tc" . t)
+        ("Su" . t)
+        ("Smulx" . ,(cap "[4:%p1%dm"))
+        ("Setulc" . ,(cap "[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%d%;m"))
+        ("setrgbf" . ,(cap "[38:2::%p1%d:%p2%d:%p3%dm"))
+        ("setrgbb" . ,(cap "[48:2::%p1%d:%p2%d:%p3%dm"))
+        ("Ms" . ,(concatenate 'string esc "]52;%p1%s;%p2%s" (string (code-char 7))))
+        ("Ss" . ,(cap "[%p1%d q"))
+        ("Se" . ,(cap "[2 q"))
+        ("Sync" . ,(cap "[?2026%?%p1%{1}%-%tl%eh%;"))
+        ("BE" . ,(cap "[?2004h"))
+        ("BD" . ,(cap "[?2004l"))
+        ("PS" . ,(cap "[200~"))
+        ("PE" . ,(cap "[201~")))))
+  "What XTGETTCAP answers: terminfo names and values (T for booleans).")
+
+(defun hex-string (string)
+  (format nil "~{~2,'0X~}" (map 'list #'char-code string)))
+
+(defun unhex-string (hex)
+  (ignore-errors
+   (coerce (loop for i from 0 below (1- (length hex)) by 2
+                 collect (code-char (parse-integer hex :start i :end (+ i 2) :radix 16)))
+           'string)))
+
+(defun xtgettcap-reply (request)
+  "Answers to XTGETTCAP: DCS 1 + r NAME=VALUE ST for each hex-encoded name
+of REQUEST that slt knows (NAME alone for booleans), DCS 0 + r NAME ST for
+the others."
+  (let ((esc (code-char 27)))
+    (with-output-to-string (out)
+      (dolist (hex (uiop:split-string request :separator ";"))
+        (let* ((name (unhex-string hex))
+               (value (and name (cdr (assoc name *terminal-capabilities* :test #'string=)))))
+          (cond ((null value) (format out "~cP0+r~a~c\\" esc hex esc))
+                ((eq value t) (format out "~cP1+r~a~c\\" esc hex esc))
+                (t (format out "~cP1+r~a=~a~c\\" esc hex (hex-string value) esc))))))))
+
+(defun decrqss-reply (request value)
+  "DCS 1 $ r VALUE REQUEST ST for a setting the engine reported, else
+DCS 0 $ r ST."
+  (let ((esc (code-char 27)))
+    (if value
+        (format nil "~cP1$r~a~a~c\\" esc value request esc)
+        (format nil "~cP0$r~c\\" esc esc))))
 
 ;;; Synchronized output (mode 2026)
 
@@ -197,8 +325,18 @@ commands that failed, with FAILED."
              (:command-start (note-command-output emulator :start))
              (:command-end (note-command-output emulator :end status)))))
     ((9 777) (let ((notification (terminal-osc:parse-notification number text)))
-               (when (and notification (getf notification :body))
-                 (notify emulator (getf notification :title) (getf notification :body)))))
+               (cond ((getf notification :progress)
+                      (let ((state (getf notification :progress))
+                            (value (getf notification :value)))
+                        (invoke-on-ui emulator
+                                      (lambda ()
+                                        (frontend-set-progress
+                                         (terminal-emulator-frontend emulator)
+                                         (terminal-emulator-view emulator)
+                                         state value)))))
+                     ((getf notification :body)
+                      (notify emulator (getf notification :title)
+                              (getf notification :body))))))
     (99 (let ((result (terminal-osc:notification-assembler-feed
                        (terminal-emulator-notifications emulator) text)))
           (case (first result)
@@ -229,6 +367,7 @@ commands that failed, with FAILED."
   "Draw EMULATOR with PALETTE (NIL for the default) from now on."
   (setf (terminal-emulator-palette emulator) palette)
   (set-image-store-palette (terminal-emulator-image-store emulator) palette)
+  (note-color-scheme emulator)
   (invoke-on-ui emulator
                 (lambda ()
                   (setf (view-palette (terminal-emulator-view emulator)) palette)

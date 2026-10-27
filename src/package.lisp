@@ -90,6 +90,7 @@
    #:engine-encode-mouse
    #:engine-close
    #:engine-scroll
+   #:engine-report-setting
    #:engine-emit-output
    #:engine-emit-title
    #:engine-emit-bell
@@ -129,6 +130,7 @@
    #:*smooth-scrolling*
    #:frontend-set-font-size
    #:frontend-bell
+   #:frontend-set-progress
    #:*window-padding*
    #:*commands*
    #:command-key-handler

@@ -8,7 +8,7 @@
    #:terminal-output-function #:terminal-title-function #:terminal-bell-function
    #:terminal-scroll-function
    #:terminal-cursor-row #:terminal-cursor-column #:terminal-cursor-visible-p
-   #:terminal-cursor-shape #:terminal-mode #:terminal-alternate-screen-p
+   #:terminal-cursor-shape #:terminal-cursor-blink #:terminal-report-setting #:terminal-mode #:terminal-alternate-screen-p
    ;; Reading the screen
    #:terminal-line #:terminal-dirty #:terminal-row-dirty-p #:terminal-clear-dirty
    #:terminal-row-text #:terminal-text

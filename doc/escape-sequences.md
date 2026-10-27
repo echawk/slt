@@ -74,7 +74,8 @@ See the README's *Terminal graphics* section for behavior.
 | 104, 110, 111, 112, 117, 119 | reset colors | |
 | 7 | working directory (`file://host/path`) | remembered for local hosts; new windows (Command+N) open there |
 | 8 | hyperlinks | underlined under the pointer; Command-click (Super-click) opens them, while their text is still on screen; only `*hyperlink-schemes*` (http, https, mailto) |
-| 9, 777, 99 | desktop notifications (iTerm2, rxvt, kitty) | osascript on macOS, notify-send elsewhere; rate-limited; kitty's support query is answered; OSC 9;4 progress is ignored |
+| 9, 777, 99 | desktop notifications (iTerm2, rxvt, kitty) | osascript on macOS, notify-send elsewhere; rate-limited; kitty's support query is answered |
+| 9;4 | progress (ConEmu) | `frontend-set-progress`: the Dock icon's badge on macOS (a percentage, `!` for an error, `…` while busy) |
 | 52 | clipboard | writing by default; reading only when `*clipboard-access*` is `:read-write` |
 | 133 | shell-integration marks | prompts (A), output starts (C) and ends with exit status (D) are remembered; Super+Up/Down (Control+Shift+Up/Down) jumps between prompts, with Shift (Meta) between those of failed commands; Super+Shift+O (Control+Shift+O) copies the last command's output, read from the scrollback |
 
@@ -97,7 +98,14 @@ The [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/
 | sequence | |
 |---|---|
 | `CSI ? 2026 h/l` | synchronized output: renders wait until `l`, at most `*synchronized-output-timeout-ms*` (150) |
-| `CSI ? 2026 $ p` | DECRQM for it |
+| `CSI ? 1016 h/l` | SGR-Pixels: mouse reports in pixels from the grid's top left, from 0 (as Ghostty) |
+| `CSI ? 2031 h/l` | color scheme notifications: `CSI ? 997 ; 1 n` (dark) or `2` (light) when the background's lightness crosses over |
+| `CSI ? 2048 h/l` | in-band resize: `CSI 48 ; rows ; columns ; height ; width t` (pixels) on every resize and when enabled |
+| `CSI ? 1016/2026/2031/2048 $ p` | DECRQM for them |
+| `CSI ? 996 n` | the color scheme: `CSI ? 997 ; 1 n` dark, `2` light |
+| `CSI 14 t`, `16 t`, `18 t`, `19 t` | XTWINOPS: the text area (`4;h;w`) and a cell (`6;h;w`) in pixels, the text area in cells (`8;rows;columns`, `9;...`) |
+| `DCS + q Pt ST` | XTGETTCAP: `TN` (slt), `Co`/`colors` (256), `RGB`, `Tc`, `Su`, `Smulx`, `Setulc`, `setrgbf`, `setrgbb`, `Ms`, `Ss`, `Se`, `Sync`, `BE`, `BD`, `PS`, `PE` |
+| `DCS $ q Pt ST` | DECRQSS: `m` (SGR), `r` (margins) and `SP q` (cursor style) from lispvt; other engines answer it themselves |
 | `CSI > q` | XTVERSION: `DCS > \| slt VERSION ST` |
 
 ## Settings

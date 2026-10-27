@@ -36,6 +36,9 @@
   ;; Underline color (SGR 58), 0 for the foreground's.
   (ul 0 :type (unsigned-byte 32))
   (cursor-shape :block :type (member :block :underline :bar))
+  ;; Whether the cursor blinks: T, NIL, or :DEFAULT where the program has
+  ;; not said (DECSCUSR 0 or never), leaving it to the terminal's setting.
+  (cursor-blink :default :type (member t nil :default))
   ;; Modes with behavior of their own; the rest live in MODES.
   (autowrap t :type boolean)
   (origin nil :type boolean)
@@ -775,6 +778,7 @@ Return the color or NIL, and the number of parameters consumed."
 
 (defun set-dec-mode (term mode on)
   (case mode
+    (12 (setf (terminal-cursor-blink term) on))
     (6 (setf (terminal-origin term) on)
      (cursor-to term 0 0))
     (7 (setf (terminal-autowrap term) on))
@@ -797,6 +801,48 @@ Return the color or NIL, and the number of parameters consumed."
     (25 (terminal-cursor-shown term))
     ((47 1047 1049) (terminal-alternate-p term))
     (t (values (gethash mode (terminal-modes term))))))
+
+(defun sgr-color-parameters (color base)
+  "SGR parameters selecting COLOR (see PALETTE-COLOR) as the foreground
+(BASE 30), background (40) or underline color (50), or NIL for the
+default."
+  (let ((tag (ldb (byte 8 24) color))
+        (value (ldb (byte 24 0) color)))
+    (case tag
+      (1 (cond ((and (< value 8) (/= base 50)) (list (+ base value)))
+               ((and (< value 16) (/= base 50)) (list (+ base 60 (- value 8))))
+               (t (list (+ base 8) 5 value))))
+      (2 (list (+ base 8) 2 (ldb (byte 8 16) value) (ldb (byte 8 8) value)
+               (ldb (byte 8 0) value))))))
+
+(defun terminal-report-setting (term request)
+  "The value of the setting DECRQSS REQUEST names, as it goes before
+REQUEST in the answer: \"m\" the SGR attributes, \"r\" the scroll
+margins, \" q\" the cursor style.  NIL for others."
+  (cond
+    ((string= request "m")
+     (let ((attrs (terminal-attrs term)))
+       (format nil "~{~a~^;~}"
+               (append
+                '(0)
+                (loop for (mask code) in `((,+attr-bold+ 1) (,+attr-faint+ 2) (,+attr-italic+ 3)
+                                           (,+attr-blink+ 5) (,+attr-inverse+ 7)
+                                           (,+attr-invisible+ 8) (,+attr-strike+ 9))
+                      when (logtest attrs mask) collect code)
+                (cond ((logtest attrs +attr-double-underline+) '("4:2"))
+                      ((logtest attrs +attr-curly-underline+) '("4:3"))
+                      ((logtest attrs +attr-dotted-underline+) '("4:4"))
+                      ((logtest attrs +attr-dashed-underline+) '("4:5"))
+                      ((logtest attrs +attr-underline+) '(4)))
+                (sgr-color-parameters (terminal-fg term) 30)
+                (sgr-color-parameters (terminal-bg term) 40)
+                (sgr-color-parameters (terminal-ul term) 50)))))
+    ((string= request "r")
+     (format nil "~d;~d" (1+ (terminal-scroll-top term)) (1+ (terminal-scroll-bottom term))))
+    ((string= request " q")
+     (format nil "~d"
+             (+ (ecase (terminal-cursor-shape term) (:block 1) (:underline 3) (:bar 5))
+                (if (eq (terminal-cursor-blink term) t) 0 1))))))
 
 (defun soft-reset (term)
   "DECSTR."
@@ -840,11 +886,16 @@ Return the color or NIL, and the number of parameters consumed."
       (intermediate
        (case intermediate
          (#\Space (when (char= final #\q)
-                    (setf (terminal-cursor-shape term)
-                          (case (param term 0 0)
-                            ((3 4) :underline)
-                            ((5 6) :bar)
-                            (t :block)))))
+                    (let ((style (param term 0 0)))
+                      (setf (terminal-cursor-shape term)
+                            (case style
+                              ((3 4) :underline)
+                              ((5 6) :bar)
+                              (t :block))
+                            (terminal-cursor-blink term)
+                            (cond ((zerop style) :default)
+                                  ((oddp style) t)
+                                  (t nil))))))
          (#\! (when (char= final #\p) (soft-reset term)))))
       ((char= private #\?)
        (case final

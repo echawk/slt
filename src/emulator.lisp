@@ -89,6 +89,11 @@
   (mouse-pixels nil)
   ;; The (WIDTH . HEIGHT) in pixels last given to the PTY.
   (pty-pixels nil)
+  ;; Whether the child asked to hear of resizes (mode 2048) and of dark or
+  ;; light color scheme changes (mode 2031), and the scheme last seen.
+  (in-band-resize nil)
+  (color-scheme-updates nil)
+  (last-color-scheme nil)
   ;; The font size now, and the one the window opened with.
   (font-size 15)
   (initial-font-size 15))
@@ -229,6 +234,7 @@ in *CONFIG-ERROR* to be shown in the terminal."
   (load-user-config)
   (when *config-error*
     (report-message emulator "~a" *config-error*))
+  (note-color-scheme emulator)
   (refresh-emulator emulator))
 
 (defun open-external (thing)
@@ -560,7 +566,11 @@ the engine lock is held only for the copy."
                                 rows
                                 columns
                                 :pixel-width (car pixels)
-                                :pixel-height (cdr pixels))))))))
+                                :pixel-height (cdr pixels))
+            (when (terminal-emulator-in-band-resize emulator)
+              (send-to-process emulator
+                               (format nil "~c[48;~d;~d;~d;~dt" (code-char 27) rows columns
+                                       (cdr pixels) (car pixels))))))))))
 
 (defvar *resize-delay-ms* 16
   "How long a resize waits for the window size to settle.")
