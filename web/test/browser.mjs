@@ -134,6 +134,68 @@ try {
   check(`an image lines up with cells of this font (${cells?.[3]}x${cells?.[4]} px)`,
         cells && near(cells[0], 10) && near(cells[1], 3) && near(cells[2], 2)
         && !(cells[3] === 8 && cells[4] === 16));
+
+  // Emoji, combining marks, link hover and Command-click, in the browser.
+  await typeLine("clear; printf '\\360\\237\\221\\250\\342\\200\\215\\360\\237\\221\\251\\342\\200\\215\\360\\237\\221\\247x\\ne\\314\\201'");
+  const layout = () => evaluate(`(() => { try {
+    const t = document.getElementById('term').terminal;
+    const rows = [...t.screen.children];
+    const row = rows.find((r) => r.textContent.includes('\u{1F468}'));
+    if (!row) return null;
+    const left = row.getBoundingClientRect().left;
+    const spans = [...row.children];
+    const family = spans.find((s) => s.textContent.includes('\u{1F468}'));
+    const x = spans.find((s) => s.textContent.startsWith('x'));
+    const cursorRow = rows[t.cursor[0]];
+    const cursorLeft = cursorRow.getBoundingClientRect().left;
+    const cursorSpan = [...cursorRow.children].find((s) => s.style.backgroundColor);
+    return [family.getBoundingClientRect().width / t._cell.w,
+            x ? (x.getBoundingClientRect().left - left) / t._cell.w : -1,
+            cursorSpan ? (cursorSpan.getBoundingClientRect().left - cursorLeft) / t._cell.w : -1,
+            t.cursor[1], cursorRow.textContent];
+  } catch (e) { return String(e); } })()`);
+  let emoji = await layout();
+  for (let i = 0; i < 60 && !(Array.isArray(emoji) && emoji[4].includes('sh-3.2$')); i++) {
+    await sleep(50); emoji = await layout();
+  }
+  await screenshot("web-emoji.png");
+  if (!Array.isArray(emoji)) console.log("layout:", emoji);
+  check(`an emoji ZWJ sequence takes two cells (${emoji?.[0]}) and text goes on after it (${emoji?.[1]})`,
+        Array.isArray(emoji) && near(emoji[0], 2) && near(emoji[1], 2));
+  // The row after it starts with e and a combining acute: one cell.
+  check(`the cursor is drawn at its column after a combining mark (${emoji?.[2]} for ${emoji?.[3]})`,
+        Array.isArray(emoji) && near(emoji[2], emoji[3]));
+
+  await evaluate("window.__opened = []; window.open = (url) => { window.__opened.push(url); return null; }");
+  await typeLine("clear; echo see https://example.com/x ok");
+  const urlPoint = () => evaluate(`(() => {
+    const t = document.getElementById('term').terminal;
+    const row = [...t.screen.children].findIndex((r) => r.textContent.startsWith('see https'));
+    if (row < 0) return null;
+    const rect = t.screen.getBoundingClientRect();
+    return [rect.left + 10.5 * t._cell.w, rect.top + (row + 0.5) * t._cell.h, row];
+  })()`);
+  let point = await urlPoint();
+  for (let i = 0; i < 60 && !point; i++) { await sleep(50); point = await urlPoint(); }
+  await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point[0], y: point[1] });
+  const underlined = () => evaluate(`(() => {
+    const t = document.getElementById('term').terminal;
+    const span = [...t.screen.children[${point[2]}].children]
+      .find((s) => s.textContent.includes('https://example.com/x'));
+    return !!span && getComputedStyle(span).textDecorationLine.includes('underline');
+  })()`);
+  let hover = await underlined();
+  for (let i = 0; i < 60 && !hover; i++) { await sleep(50); hover = await underlined(); }
+  check("moving the mouse over a URL underlines it", hover);
+  for (const type of ["mousePressed", "mouseReleased"]) {
+    await send("Input.dispatchMouseEvent",
+               { type, x: point[0], y: point[1], button: "left", clickCount: 1, modifiers: 4 });
+  }
+  let opened = await evaluate("JSON.stringify(window.__opened)");
+  for (let i = 0; i < 60 && !opened.includes("example.com"); i++) {
+    await sleep(50); opened = await evaluate("JSON.stringify(window.__opened)");
+  }
+  check("Command-click opens the URL in the browser", opened.includes("https://example.com/x"));
   cdp.close();
 } finally {
   chrome.kill();

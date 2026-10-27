@@ -15,6 +15,9 @@
 ;;;;       FG/BG are grid colors: 0 default, #x01000000+N palette, #x02000000+RGB.
 ;;;;       ATTRS are the grid attribute bits; a wide glyph is its own run.
 ;;;;     {"t":"title","title":S}  {"t":"bell"}  {"t":"exit"}
+;;;;     {"t":"open","url":S}         (a link the user Command-clicked)
+;;;;     {"t":"progress","state":N,"value":N}  (OSC 9;4: 0 none, 1 VALUE
+;;;;       percent, 2 error, 3 indeterminate, 4 paused)
 ;;;;     {"t":"mouse","tracking":B}   (whether the program wants mouse events)
 ;;;;     {"t":"images","cw":W,"ch":H,"sources":[...],"items":[...]}
 ;;;;       RGBA images, each once under "sources", and their placements under
@@ -29,8 +32,13 @@
 ;;;;         (X11 keysyms/modifier bits; event "press", "repeat" or "release")
 ;;;;     {"t":"paste","text":S}
 ;;;;     {"t":"scroll","rows":N}                     (negative scrolls back)
-;;;;     {"t":"mouse","action":A,"row":R,"col":C,"button":B,"state":N}
-;;;;       A is "press", "release", "drag" or "motion"; B is 1-3, or 0 for none
+;;;;     {"t":"mouse","action":A,"row":R,"col":C,"button":B,"state":N,"x":X,"y":Y}
+;;;;       A is "press", "release", "drag" or "motion"; B is 1-3, or 0 for
+;;;;       none.  X and Y (optional) are the pointer's pixel, in the cells the
+;;;;       server lays out (see resize), for programs that ask for pixels.
+;;;;       Motion is sent also while the program does not track the mouse:
+;;;;       it underlines the link under the pointer.  A press with Super
+;;;;       (Command) on a link opens it, through an "open" message.
 ;;;;     {"t":"resize","rows":R,"cols":C,"cellWidth":W,"cellHeight":H}
 ;;;;       W and H (optional) are the client's cell size in CSS pixels; they
 ;;;;       size images and the pixel size programs are told.
@@ -253,11 +261,15 @@ with a fifth element, the underline color, when it is not the default."
                                      :test #'string=)))
                  (row (json-integer data "row" -1))
                  (column (json-integer data "col" -1))
-                 (button (json-integer data "button")))
+                 (button (json-integer data "button"))
+                 (x (json-number data "x"))
+                 (y (json-number data "y")))
              (when (and action (< -1 row 1000) (< -1 column 1000) (<= 0 button 3))
                (headless-mouse view action row column 1
                                (if (zerop button) nil button)
-                               (logand (json-integer data "state") #xff)))))
+                               (logand (json-integer data "state") #xff)
+                               (and x (< -1 x 100000) x)
+                               (and y (< -1 y 100000) y)))))
           ((equal type "resize")
            (let ((rows (json-integer data "rows" 0))
                  (columns (json-integer data "cols" 0))
@@ -349,6 +361,15 @@ the placements were laid out with."
                   view
                   (terminal-image-render-list store (headless-view-cell-width view)
                                               (headless-view-cell-height view)))))
+
+(defmethod frontend-open-url ((frontend web-frontend) view url)
+  (declare (ignore view))
+  ;; The user is at the browser, not at this machine.
+  (web-broadcast frontend (json-object "t" "open" "url" url)))
+
+(defmethod frontend-set-progress ((frontend web-frontend) view state value)
+  (declare (ignore view))
+  (web-broadcast frontend (json-object "t" "progress" "state" state "value" (or value 0))))
 
 (defmethod frontend-set-title :after ((frontend web-frontend) view title)
   (declare (ignore view))

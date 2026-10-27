@@ -76,6 +76,17 @@ function xtermPalette(base) {
   return colors;
 }
 
+// Cells of a run: one per grapheme cluster, so that combining marks and
+// emoji sequences sharing a cell count once.
+const GRAPHEMES = typeof Intl !== "undefined" && Intl.Segmenter
+  ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+function cellTexts(text) {
+  return GRAPHEMES ? Array.from(GRAPHEMES.segment(text), (part) => part.segment) : [...text];
+}
+
+// Links a Command-click may open in the browser.
+const OPENABLE = /^(https?|mailto|ftp):/i;
+
 function rgbHex(value) {
   return "#" + (value & 0xffffff).toString(16).padStart(6, "0");
 }
@@ -124,6 +135,7 @@ export class SltTerminal extends EventTarget {
     this._palette = this._userPalette.slice();
     this._cell = { w: 8, h: 16 };
     this.mouseTracking = false;
+    this.progress = null; // OSC 9;4: {state, value}
     this._build();
     this.setTheme(options.theme ?? {});
     if (this.url && options.autoConnect !== false) this.connect(this.url);
@@ -325,19 +337,40 @@ export class SltTerminal extends EventTarget {
       this.scroll(whole);
     }, { passive: false });
     // While the program tracks the mouse, send it the mouse; Shift keeps
-    // the browser's own selection.
+    // the browser's own selection.  Otherwise send where the pointer is,
+    // which underlines the link under it, and Command-clicks (Control-
+    // clicks elsewhere), which open links.
     let mouseButton = 0;
+    let lastCell = null;
     const mouse = (action, e, button) => {
-      if (!this.mouseTracking || e.shiftKey) return false;
       const rect = this.screen.getBoundingClientRect();
-      const row = Math.max(0, Math.floor((e.clientY - rect.top) / this._cell.h));
-      const col = Math.max(0, Math.floor((e.clientX - rect.left) / this._cell.w));
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      const row = Math.max(0, Math.floor(py / this._cell.h));
+      const col = Math.max(0, Math.floor(px / this._cell.w));
+      // Pixels in the server's cells: the size sent, rounded (8 x 16 before).
+      const serverW = this._sentCell ? Math.max(1, Math.round(this._sentCell.w)) : 8;
+      const serverH = this._sentCell ? Math.max(1, Math.round(this._sentCell.h)) : 16;
+      const x = Math.max(0, Math.round(px * serverW / this._cell.w));
+      const y = Math.max(0, Math.round(py * serverH / this._cell.h));
       let state = 0;
       if (e.ctrlKey) state |= MOD_CONTROL;
       if (e.altKey) state |= MOD_META;
       if (e.metaKey) state |= MOD_SUPER;
-      this._send({ t: "mouse", action, row, col, button, state });
-      return true;
+      if (this.mouseTracking && !e.shiftKey) {
+        this._send({ t: "mouse", action, row, col, button, state, x, y });
+        return true;
+      }
+      if (action === "press" && button === 1 && (e.metaKey || e.ctrlKey)) {
+        this._send({ t: "mouse", action, row, col, button, state: MOD_SUPER, x, y });
+        return true;
+      }
+      const cell = row + "," + col;
+      if ((action === "motion" || action === "drag") && cell !== lastCell) {
+        lastCell = cell;
+        this._send({ t: "mouse", action: "motion", row, col, button: 0, state: 0, x, y });
+      }
+      return false;
     };
     // DOM buttons are 0 left, 1 middle, 2 right; slt's are 1-3.
     root.addEventListener("mousedown", (e) => {
@@ -443,6 +476,20 @@ export class SltTerminal extends EventTarget {
       case "bell":
         this._emit("bell");
         break;
+      case "open": {
+        // A link the user Command-clicked: opened here, unless a listener
+        // of the cancelable "link" event handles it.
+        const url = String(message.url || "");
+        const event = new CustomEvent("link", { detail: url, cancelable: true });
+        if (this.dispatchEvent(event) && OPENABLE.test(url)) {
+          window.open(url, "_blank", "noopener");
+        }
+        break;
+      }
+      case "progress":
+        this.progress = { state: message.state, value: message.value };
+        this._emit("progress", this.progress);
+        break;
       case "exit":
         this._emit("exit");
         break;
@@ -526,12 +573,13 @@ export class SltTerminal extends EventTarget {
       fragment.append(span);
     };
     for (const [text, fg, bg, attrs, ul] of runs) {
-      const width = attrs & ATTR.wide ? 2 : [...text].length;
+      const cells = attrs & ATTR.wide ? null : cellTexts(text);
+      const width = cells ? cells.length : 2;
       if (cursorColumn >= column && cursorColumn < column + width) {
         if (attrs & ATTR.wide) {
           addSpan(text, fg, bg, attrs, true, ul);
         } else {
-          const chars = [...text];
+          const chars = cells;
           const offset = cursorColumn - column;
           if (offset > 0) addSpan(chars.slice(0, offset).join(""), fg, bg, attrs, false, ul);
           addSpan(chars[offset], fg, bg, attrs, true, ul);

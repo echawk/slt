@@ -74,7 +74,10 @@ Give the container a size.
 | `sendKey(char, keysym, state)` | raw key input (X11 keysym names and modifier bits) |
 | `focus()`, `text()`, `rows`, `cols`, `title`, `theme` | |
 | `drawImages(sources, items)` | draws image placements; override it to draw them yourself (below) |
+| `progress` | the last progress a program reported (OSC 9;4), `{state, value}`, or null |
 | events `open`, `close`, `title` (detail: string), `bell`, `exit`, `frame` | |
+| event `progress` (detail: `{state, value}`) | state 0 none, 1 `value` percent, 2 error, 3 indeterminate, 4 paused |
+| event `link` (detail: URL), cancelable | a link the user Command-clicked (Control-clicked elsewhere); unless cancelled, `http`, `https`, `mailto` and `ftp` links open in a new tab |
 
 The `<slt-terminal>` element re-dispatches the same events, exposes the
 instance as `.terminal`, and reacts to changes of its `url` and `theme`
@@ -129,6 +132,13 @@ The server and browser exchange JSON text frames over `/ws?token=...`.
 cursor), `images`, `colors`, `mouse`, `resize`, `title`, `bell` and `exit`.
 The client sends `key`, `paste`, `scroll`, `mouse` and `resize`. Any client
 that speaks this protocol can drive slt.
+
+The client reports where the pointer is (`mouse` motion) also while the
+program does not track the mouse, so that the link under it is underlined,
+and a press with Super (Command) on a link makes the server answer `open`
+with its URL, for the browser to open. `mouse` messages may carry the
+pointer's pixel, `x` and `y` in the server's cells, for programs that ask
+for pixels (mode 1016). `progress` passes on OSC 9;4.
 
 A client should put its cell size in CSS pixels in `resize`, as `cellWidth`
 and `cellHeight`. Without them the server assumes 8 x 16 cells, so images

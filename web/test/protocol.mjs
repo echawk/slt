@@ -33,12 +33,22 @@ const lines = [];
 let hello = null;
 let tracking = null;
 let images = null;
+let cursor = null;
+const cursorSeen = { shown: false, hidden: false };
+const opened = [];
+const progress = [];
 const text = () => lines.map((runs) => (runs || []).map((run) => run[0]).join("").trimEnd()).join("\n");
 socket.onmessage = (event) => {
   const message = JSON.parse(event.data);
   if (message.t === "hello") hello = message;
   if (message.t === "mouse") tracking = message.tracking;
   if (message.t === "images") images = message;
+  if (message.t === "open") opened.push(message.url);
+  if (message.t === "progress") progress.push([message.state, message.value]);
+  if (message.t === "frame") {
+    cursor = message.cursor;
+    cursorSeen[cursor[2] ? "shown" : "hidden"] = true;
+  }
   if (message.t === "frame") for (const [row, runs] of message.rows) lines[row] = runs;
 };
 await new Promise((resolve) => (socket.onopen = resolve));
@@ -74,6 +84,64 @@ socket.send(JSON.stringify({ t: "mouse", action: "release", row: 2, col: 4, butt
 socket.send(JSON.stringify({ t: "key", char: "", keysym: "Return", state: 0 }));
 check("mouse reports reach the program",
       await until(() => text().includes("^[[<0;5;3M^[[<0;5;3m")));
+const paste = (text) => socket.send(JSON.stringify({ t: "paste", text }));
+const key = (char, keysym, state = 0) => socket.send(JSON.stringify({ t: "key", char, keysym, state }));
+const rowOf = (needle) => text().split("\n").findIndex((line) => line.includes(needle));
+key("c", "c", 4);
+paste("printf '\\033[?1000l\\033[?1006l'; clear\n");
+check("mouse tracking is off again", await until(() => tracking === false));
+
+// Emoji sequences are one wide cell (grapheme clusters).
+paste("printf '\\360\\237\\221\\250\\342\\200\\215\\360\\237\\221\\251\\342\\200\\215\\360\\237\\221\\247x\\n'\n");
+const family = "\u{1F468}‍\u{1F469}‍\u{1F467}";
+check("an emoji ZWJ sequence arrives as one wide cell",
+      await until(() => lines.flat().some((run) => run && run[0] === family && (run[3] & 0x100))));
+
+// The pointer underlines the URL under it; Command-click opens it here.
+paste("echo see https://example.com/x ok\n");
+const urlLine = () => text().split("\n").findIndex((line) => line.startsWith("see https"));
+check("a URL is printed", await until(() => urlLine() >= 0));
+const urlRow = urlLine();
+socket.send(JSON.stringify({ t: "mouse", action: "motion", row: urlRow, col: 10, button: 0, state: 0 }));
+check("the URL under the pointer is underlined",
+      await until(() => (lines[urlRow] || []).some(
+        (run) => run[0].includes("https://example.com/x") && (run[3] & 0x8))));
+socket.send(JSON.stringify({ t: "mouse", action: "press", row: urlRow, col: 10, button: 1, state: 0x40 }));
+check("Command-click opens the URL in the browser",
+      await until(() => opened.includes("https://example.com/x")));
+
+// OSC 9;4 progress reaches the browser.
+paste("printf '\\033]9;4;1;42\\007'\n");
+check("progress reaches the browser", await until(() => progress.some(([s, v]) => s === 1 && v === 42)));
+
+// Programs asking for pixels (mode 1016) get them, in the server's cells;
+// the cell size report gives this client's cells (10 x 20, sent above).
+paste("clear; printf '\\033[16t\\033[?1000h\\033[?1006h\\033[?1016hRE''ADY'; cat -v\n");
+check("pixel mouse mode is set", await until(() => text().includes("READY")));
+socket.send(JSON.stringify({ t: "mouse", action: "press", row: 2, col: 4, button: 1, state: 0, x: 45, y: 50 }));
+socket.send(JSON.stringify({ t: "mouse", action: "release", row: 2, col: 4, button: 1, state: 0, x: 45, y: 50 }));
+key("", "Return");
+check("the cell size report and pixel mouse reports reach the program",
+      await until(() => text().includes("^[[6;20;10t") && text().includes("^[[<0;45;50M^[[<0;45;50m")));
+key("c", "c", 4);
+paste("printf '\\033[?1000l\\033[?1006l\\033[?1016l'; clear\n");
+
+// Narrowing the terminal rewraps its text (lispvt reflows, as ghostty).
+paste("clear; printf 'ab%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; echo\n");
+const thirty = "ab".repeat(15);
+check("a 30-cell line is printed", await until(() => text().includes(thirty)));
+socket.send(JSON.stringify({ t: "resize", rows: 8, cols: 20, cellWidth: 10, cellHeight: 20 }));
+check("narrowing to 20 columns rewraps it",
+      await until(() => text().includes("ab".repeat(10) + "\n" + "ab".repeat(5))));
+socket.send(JSON.stringify({ t: "resize", rows: 8, cols: 50, cellWidth: 10, cellHeight: 20 }));
+check("widening joins it again", await until(() => text().includes(thirty)));
+
+// A blinking cursor (DECSCUSR 1) blinks for the browser too.
+paste("printf '\\033[1 q'\n");
+cursorSeen.shown = cursorSeen.hidden = false;
+check("the cursor blinks", await until(() => cursorSeen.shown && cursorSeen.hidden, 4000));
+paste("printf '\\033[2 q'\n");
+
 // Leave the shell as we found it for the browser checks.
 socket.send(JSON.stringify({ t: "key", char: "c", keysym: "c", state: 4 }));
 socket.send(JSON.stringify({ t: "paste", text: "printf '\\033[?1000l\\033[?1006l'; clear\n" }));

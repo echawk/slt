@@ -131,6 +131,7 @@
    #:frontend-set-font-size
    #:frontend-bell
    #:frontend-set-progress
+   #:frontend-open-url
    #:*window-padding*
    #:*commands*
    #:command-key-handler

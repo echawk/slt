@@ -259,6 +259,14 @@ attention when the window is in the background.")
     (declare (ignore frontend view audible))
     nil))
 
+(defgeneric frontend-open-url (frontend view url)
+  (:documentation "Open URL, which the user clicked in VIEW.  The default
+hands it to the system (OPEN-EXTERNAL); remote frontends open it where the
+user is.")
+  (:method (frontend view url)
+    (declare (ignore frontend view))
+    (open-external url)))
+
 (defgeneric frontend-set-progress (frontend view state value)
   (:documentation "Show the progress a program reported (OSC 9 ; 4): STATE
 0 hides it, 1 is VALUE percent, 2 an error, 3 indeterminate and 4 paused.

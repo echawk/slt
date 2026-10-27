@@ -1136,7 +1136,8 @@ URL does."
                          uri))
                   (url-at (terminal-emulator-grid emulator) row column))))
     (when url
-      (open-external url)
+      (frontend-open-url (terminal-emulator-frontend emulator)
+                         (terminal-emulator-view emulator) url)
       t)))
 
 ;;; Focus and the bell
