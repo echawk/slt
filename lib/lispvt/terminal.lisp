@@ -1237,19 +1237,228 @@ margins, \" q\" the cursor style.  NIL for others."
                   (make-line columns)))))
     (setf (screen-lines screen) new)))
 
+;;; Reflow.  When the width changes, the main screen's text is rewrapped:
+;;; rows that autowrap joined (LINE-WRAPPED) are logical lines again, laid
+;;; out at the new width, scrollback included.  Full-screen programs on the
+;;; alternate screen redraw themselves, so it is only resized.
+
+(defun wrap-segments (segments columns cursor)
+  "Lay out a logical line, SEGMENTS of (LINE START END) cells in order, in
+lines COLUMNS wide, all but the last marked wrapped; runs of cells are
+copied whole.  A wide character that would straddle the edge starts the next
+line.  CURSOR is an offset into the logical line, or NIL.  Return the lines
+and, for CURSOR, (LINE-INDEX COLUMN WIDTH) of its cell, or of the place after
+the text it is past."
+  (let* ((lines (list (make-line columns)))
+         (column 0)
+         (offset 0)
+         (place nil))
+    (flet ((new-line ()
+             (setf (line-wrapped (first lines)) t)
+             (push (make-line columns) lines)
+             (setf column 0)))
+      (loop for (source start end) in segments
+            do (let ((i start))
+                 (loop while (< i end)
+                       do (let ((wide (logtest (aref (line-attrs source) i) +attr-wide+)))
+                            (when (or (>= column columns)
+                                      (and wide (> (+ column 2) columns) (> columns 1)))
+                              (new-line))
+                            (let* ((line (first lines))
+                                   (n (min (- columns column) (- end i))))
+                              ;; Keep a wide character with its right half.
+                              (when (and (> n 1)
+                                         (logtest (aref (line-attrs source) (+ i n -1))
+                                                  +attr-wide+))
+                                (decf n))
+                              (when (and cursor (<= offset cursor) (< cursor (+ offset n)))
+                                (setf place (list (1- (length lines)) (+ column (- cursor offset))
+                                                  (if (logtest (aref (line-attrs source)
+                                                                     (+ i (- cursor offset)))
+                                                               +attr-wide+)
+                                                      2 1))))
+                              (replace (line-codes line) (line-codes source)
+                                       :start1 column :start2 i :end2 (+ i n))
+                              (replace (line-fg line) (line-fg source)
+                                       :start1 column :start2 i :end2 (+ i n))
+                              (replace (line-bg line) (line-bg source)
+                                       :start1 column :start2 i :end2 (+ i n))
+                              (replace (line-attrs line) (line-attrs source)
+                                       :start1 column :start2 i :end2 (+ i n))
+                              (when (line-ul source)
+                                (replace (ensure-line-ul line) (line-ul source)
+                                         :start1 column :start2 i :end2 (+ i n)))
+                              (loop for (at . string) in (line-combining source)
+                                    when (and (<= i at) (< at (+ i n)))
+                                      do (push (cons (+ column (- at i)) string)
+                                               (line-combining line)))
+                              ;; A wide character on a one-column screen is
+                              ;; cut to its left half.
+                              (when (and (= columns 1) wide)
+                                (setf (aref (line-attrs line) column)
+                                      (logandc2 (aref (line-attrs line) column) +attr-wide+))
+                                (when (and (< (1+ i) end)
+                                           (logtest (aref (line-attrs source) (1+ i))
+                                                    +attr-wide-spacer+))
+                                  (incf n)))
+                              (incf column (min n (- columns column)))
+                              (note-extent line column)
+                              (incf offset n)
+                              (incf i n)))))))
+    (when (and cursor (null place))
+      ;; Past the text: as far after it, on its last line.
+      (setf place (list (1- (length lines))
+                        (min (1- columns) (+ column (- cursor offset)))
+                        1)))
+    (values (coerce (nreverse lines) 'simple-vector) place)))
+
+(defun reflow-screen (screen rows columns cursor)
+  "Rewrap SCREEN's lines and scrollback at COLUMNS and keep ROWS of them on
+screen.  CURSOR, (ROW COLUMN PENDING-WRAP) or NIL, is placed on the same
+cell of text; return its new (ROW COLUMN PENDING-WRAP) and how many rows the
+text at the cursor moved up on the screen."
+  (let* ((old-lines (screen-lines screen))
+         (history-count (screen-history-count screen))
+         (physical (concatenate 'simple-vector
+                                (loop for i below history-count
+                                      collect (history-line screen i))
+                                old-lines))
+         (cursor-index (and cursor (+ history-count (first cursor))))
+         ;; Logical lines: lists of segments (LINE START END) to rewrap, or a
+         ;; line that fits as it is (most of them), kept to save copying.
+         (logicals '())
+         (segments '())
+         (logical-length 0)
+         (cursor-logical nil)
+         (cursor-offset 0)
+         (cursor-pending (third cursor)))
+    (loop for index below (length physical)
+          for line = (svref physical index)
+          for next = (and (< (1+ index) (length physical)) (svref physical (1+ index)))
+          do (if (and (null segments) (not (line-wrapped line))
+                      (<= (line-extent line) columns)
+                      (not (eql index cursor-index)))
+                 (push line logicals)
+                 (let ((count (if (line-wrapped line)
+                                  (let ((length (line-length line)))
+                                    ;; The blank left at the edge by a wide
+                                    ;; character that did not fit.
+                                    (if (and next (zerop (aref (line-codes line) (1- length)))
+                                             (not (logtest (aref (line-attrs line) (1- length))
+                                                           +attr-wide-spacer+))
+                                             (logtest (aref (line-attrs next) 0) +attr-wide+))
+                                        (1- length)
+                                        length))
+                                  (line-extent line))))
+                   (when (eql index cursor-index)
+                     (setf cursor-logical (length logicals)
+                           cursor-offset (+ logical-length (second cursor))))
+                   (push (list line 0 count) segments)
+                   (incf logical-length count)
+                   (unless (line-wrapped line)
+                     ;; A cursor just after its line's text is pending after
+                     ;; the last character, so that a line ending at the new
+                     ;; edge does not leave the cursor alone on a row of its own.
+                     (when (and (eql cursor-logical (length logicals)) (not cursor-pending)
+                                (plusp logical-length) (= cursor-offset logical-length))
+                       (setf cursor-offset (1- logical-length)
+                             cursor-pending t)
+                       (let ((last (first segments)))
+                         (when (and (> (third last) 1)
+                                    (logtest (aref (line-attrs (first last)) (1- (third last)))
+                                             +attr-wide-spacer+))
+                           (decf cursor-offset))))
+                     (push (nreverse segments) logicals)
+                     (setf segments '()
+                           logical-length 0)))))
+    (when segments
+      (push (nreverse segments) logicals))
+    (setf logicals (nreverse logicals))
+    ;; Lay them out again, finding the cursor and the last line of text.
+    (let ((new '())
+          (count 0)
+          (new-cursor nil)
+          (last-text -1))
+      (loop for logical in logicals
+            for index from 0
+            do (multiple-value-bind (lines place)
+                   (if (line-p logical)
+                       (values (vector logical) nil)
+                       (wrap-segments logical columns
+                                      (and (eql index cursor-logical) cursor-offset)))
+                 (when place
+                   (destructuring-bind (line column width) place
+                     (setf new-cursor
+                           (if cursor-pending
+                               ;; Pending wrap: the cursor is after its cell.
+                               (if (>= (+ column width) columns)
+                                   (list (+ count line) (1- columns) t)
+                                   (list (+ count line) (+ column width) nil))
+                               (list (+ count line) column nil)))))
+                 (loop for line across lines
+                       do (push line new)
+                          (when (or (plusp (line-extent line)) (line-wrapped line))
+                            (setf last-text count))
+                          (incf count))))
+      (let* ((new (coerce (nreverse new) 'simple-vector))
+             (end (max (1+ last-text) (if new-cursor (1+ (first new-cursor)) 0)))
+             (start (max 0 (- end rows)))
+             (lines (make-array rows)))
+        ;; Scrollback keeps lines at the width they have; the screen's are
+        ;; exactly COLUMNS wide.
+        (dotimes (row rows)
+          (setf (svref lines row)
+                (if (< (+ start row) (length new))
+                    (resize-line (svref new (+ start row)) columns)
+                    (make-line columns))))
+        (clear-history screen)
+        (dotimes (i start)
+          (history-push screen (svref new i)))
+        (setf (screen-lines screen) lines)
+        (values (and new-cursor
+                     (list (- (first new-cursor) start) (second new-cursor) (third new-cursor)))
+                (if (and cursor new-cursor)
+                    (- (first cursor) (- (first new-cursor) start))
+                    0))))))
+
 (defun terminal-resize (term rows columns)
-  "Resize to ROWS x COLUMNS.  Text is not reflowed: lines are truncated or
-extended, and when the screen gets shorter, lines above the cursor move to
-scrollback so that the cursor stays on screen."
+  "Resize to ROWS x COLUMNS.  When the width changes, the main screen's text
+is rewrapped (see REFLOW-SCREEN); otherwise, and on the alternate screen,
+lines are truncated or extended, and when the screen gets shorter, lines
+above the cursor move to scrollback so that the cursor stays on screen."
   (let ((rows (max 1 rows))
         (columns (max 1 columns)))
     (unless (and (= rows (terminal-rows term)) (= columns (terminal-columns term)))
-      (let ((shift (max 0 (- (terminal-cursor-row term) (1- rows))))
-            (old-tabs (terminal-tabs term)))
-        ;; Both screens shift.
-        (note-scroll term 0 (1- (terminal-rows term)) shift :primary)
+      (let* ((shift (max 0 (- (terminal-cursor-row term) (1- rows))))
+             (old-tabs (terminal-tabs term))
+             (reflow (/= columns (terminal-columns term)))
+             (primary (terminal-primary term))
+             (alternate-p (terminal-alternate-p term))
+             ;; The main screen's cursor: the cursor, or while the alternate
+             ;; screen is shown, the one saved on entering it.
+             (saved (screen-saved-cursor primary))
+             (primary-cursor (cond ((not alternate-p)
+                                    (list (terminal-cursor-row term)
+                                          (terminal-cursor-column term)
+                                          (terminal-pending-wrap term)))
+                                   (saved
+                                    (list (min (svref saved 0) (1- (terminal-rows term)))
+                                          (min (svref saved 1) (1- (terminal-columns term)))
+                                          (svref saved 2)))))
+             (new-primary-cursor nil))
+        (if reflow
+            (multiple-value-bind (cursor moved)
+                (reflow-screen primary rows columns primary-cursor)
+              (setf new-primary-cursor cursor)
+              (note-scroll term 0 (1- (terminal-rows term)) moved :primary)
+              (when (and alternate-p saved cursor)
+                (setf (svref saved 0) (first cursor)
+                      (svref saved 1) (second cursor)
+                      (svref saved 2) (third cursor))))
+            (progn
+              (note-scroll term 0 (1- (terminal-rows term)) shift :primary)
+              (resize-screen primary rows columns shift t)))
         (note-scroll term 0 (1- (terminal-rows term)) shift :alternate)
-        (resize-screen (terminal-primary term) rows columns shift t)
         (resize-screen (terminal-alternate term) rows columns shift nil)
         (setf (terminal-rows term) rows
               (terminal-columns term) columns
@@ -1259,9 +1468,17 @@ scrollback so that the cursor stays on screen."
                                      (replace tabs old-tabs)
                                      tabs)
               (terminal-dirty term) (make-array rows :element-type 'bit :initial-element 1)
-              (terminal-viewport-offset term) (min (terminal-viewport-offset term)
-                                                   (terminal-history-count term)))
-        (set-cursor term (- (terminal-cursor-row term) shift) (terminal-cursor-column term)))))
+              (terminal-viewport-offset term) (if reflow
+                                                  0
+                                                  (min (terminal-viewport-offset term)
+                                                       (terminal-history-count term)))
+              (terminal-cluster-row term) -1)
+        (if (and reflow (not alternate-p) new-primary-cursor)
+            (progn
+              (set-cursor term (first new-primary-cursor) (second new-primary-cursor))
+              (setf (terminal-pending-wrap term) (third new-primary-cursor)))
+            (set-cursor term (- (terminal-cursor-row term) shift)
+                        (terminal-cursor-column term))))))
   term)
 
 ;;; Queries

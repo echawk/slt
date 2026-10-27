@@ -305,9 +305,10 @@
   (:screen "ab" "cdX" "" "" "" "")
   (:cursor 1 3))
 
-(define-vt-case resize-narrower-truncates-rows
-    (:rows 3 :columns 10 :known-failures (:ghostty)
-     :description "xterm behavior; Ghostty reflows wrapped text instead.")
-    ("abcdefgh" (:resize 3 4) #\Return #\Linefeed "x")
+(define-vt-case resize-narrower-reflows-text
+    (:rows 3 :columns 10 :known-failures (:libvterm)
+     :description "As Ghostty and lispvt do; libvterm (as xterm) truncates.")
+    ("abcdefg" (:resize 3 4) #\Return #\Linefeed "x")
   (:row 0 "abcd")
-  (:row 1 "x"))
+  (:row 1 "efg")
+  (:row 2 "x"))

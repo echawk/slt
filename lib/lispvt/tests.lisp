@@ -202,6 +202,100 @@ joined to it, and whether it takes two cells."
     (let ((term (term 2 4 "abc" heart)))
       (check (equal (list (list heart nil)) (last (cluster-cells term)))))))
 
+(defun rows-text (term)
+  (loop for row below (terminal-rows term) collect (terminal-row-text term row)))
+
+(defun history-text (term)
+  (loop for i below (terminal-history-count term)
+        collect (string-right-trim " " (lispvt::line-text
+                                         (lispvt::history-line (lispvt::terminal-primary term) i)))))
+
+(defun crlf () (format nil "~c~c" #\Return #\Linefeed))
+
+(defun test-reflow ()
+  ;; A wrapped line rewraps narrower and joins back wider; the cursor stays
+  ;; on the same character.
+  (let ((term (term 4 10 "abcdefghijklmno" (crlf) "xy")))
+    (check (equal '("abcdefghij" "klmno" "xy" "") (rows-text term)))
+    (terminal-resize term 5 5)
+    (check (equal '("abcde" "fghij" "klmno" "xy" "") (rows-text term)))
+    (check (equal '(3 2) (list (terminal-cursor-row term) (terminal-cursor-column term))))
+    (terminal-resize term 5 20)
+    (check (equal '("abcdefghijklmno" "xy" "" "" "") (rows-text term)))
+    (check (equal '(1 2) (list (terminal-cursor-row term) (terminal-cursor-column term))))
+    (terminal-feed-string term "z")
+    (check (equal "xyz" (terminal-row-text term 1))))
+  ;; A wide character never straddles the edge.
+  (let ((term (term 3 6 "abcd中e")))
+    (terminal-resize term 3 5)
+    (check (equal '("abcd" "中e" "") (rows-text term)))
+    (terminal-resize term 3 6)
+    (check (equal '("abcd中" "e" "") (rows-text term))))
+  ;; Narrowing pushes rows into scrollback; widening brings them back.
+  (let ((term (term 3 8 "one" (crlf) "two" (crlf) "abcdefgh")))
+    (terminal-resize term 3 4)
+    (check (equal '("one") (history-text term)))
+    (check (equal '("two" "abcd" "efgh") (rows-text term)))
+    (terminal-resize term 3 8)
+    (check (equal '("one" "two" "abcdefgh") (rows-text term)))
+    (check (zerop (terminal-history-count term))))
+  ;; A pending wrap at the edge stays pending where the line ends.
+  (let ((term (term 3 4 "abcd")))
+    (check (equal '(0 3) (list (terminal-cursor-row term) (terminal-cursor-column term))))
+    (terminal-resize term 3 6)
+    (check (equal '(0 4) (list (terminal-cursor-row term) (terminal-cursor-column term))))
+    (terminal-feed-string term "e")
+    (check (equal "abcde" (terminal-row-text term 0))))
+  ;; The alternate screen is not reflowed; the main screen is, under it, and
+  ;; the cursor saved on entering the alternate screen follows its text.
+  (let ((term (term 3 6 "abcdefgh" (esc "[?1049h") (esc "[H") "ALTERNATE")))
+    (terminal-resize term 3 4)
+    (check (equal '("ALTE" "ATE" "") (rows-text term)))
+    (terminal-feed-string term (esc "[?1049l"))
+    (check (equal '("abcd" "efgh" "") (rows-text term)))
+    ;; Right after the h, which now ends a row: pending at its end.
+    (check (equal '(1 3) (list (terminal-cursor-row term) (terminal-cursor-column term))))
+    (terminal-feed-string term "i")
+    (check (equal '("abcd" "efgh" "i") (rows-text term)))))
+
+(defun logical-text (term)
+  "Scrollback and screen as the lines programs wrote: wrapped rows joined,
+trailing blanks and blank lines at the end dropped."
+  (let* ((screen (lispvt::terminal-primary term))
+         (lines (append (loop for i below (lispvt::screen-history-count screen)
+                              collect (lispvt::history-line screen i))
+                        (coerce (lispvt::screen-lines screen) 'list)))
+         (result '())
+         (current ""))
+    (dolist (line lines)
+      (setf current (concatenate 'string current
+                                 (if (lispvt::line-wrapped line)
+                                     (lispvt::line-text line)
+                                     (string-right-trim " " (lispvt::line-text line)))))
+      (unless (lispvt::line-wrapped line)
+        (push (string-right-trim " " current) result)
+        (setf current "")))
+    (nreverse (member-if (lambda (text) (plusp (length text))) result))))
+
+(defun test-reflow-round-trips ()
+  ;; Narrowing and widening back keeps the text and the cursor's place.
+  (let ((*random-state* (sb-ext:seed-random-state 11))
+        (words (vector "lorem" "ipsum" "中文" "dolor" "sit" "amet" "x")))
+    (dotimes (trial 40)
+      (let ((term (make-terminal :rows 6 :columns 20 :scrollback 1000)))
+        (dotimes (i (random 30))
+          (dotimes (j (random 12))
+            (terminal-feed-string term (aref words (random (length words))))
+            (terminal-feed-string term " "))
+          (terminal-feed-string term (crlf)))
+        (terminal-feed-string term "end")
+        (let ((before (logical-text term)))
+          (terminal-resize term 6 (+ 3 (random 16)))
+          (terminal-resize term 6 20)
+          (check (equal before (logical-text term)))
+          (terminal-feed-string term "!")
+          (check (search "end!" (terminal-row-text term (terminal-cursor-row term)))))))))
+
 (defun run-tests ()
   (let ((*failures* '()))
     (test-line-extents)
@@ -216,6 +310,8 @@ joined to it, and whether it takes two cells."
     (test-colon-sgr)
     (test-mode-report)
     (test-grapheme-clusters)
+    (test-reflow)
+    (test-reflow-round-trips)
     (format t "~&lispvt: ~:[all tests passed~;~:*~d failure~:p~]~%"
             (and *failures* (length *failures*)))
     (null *failures*)))
