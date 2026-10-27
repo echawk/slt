@@ -168,6 +168,44 @@ shaders draw them."
       (clx-fill view (palette-cursor *palette*) x (- (+ y ch) (* 2 thickness))
                 width (* 2 thickness)))))
 
+(defun clx-draw-color-glyphs (view row start slots)
+  "Draw color glyphs (emoji) from the color atlas, over each cell's
+background, into ROW from column START."
+  (let* ((atlas (clx-view-atlas view))
+         (color (glyph-atlas-color-pixels atlas))
+         (cw (clx-view-cell-width view))
+         (ch (clx-view-cell-height view))
+         (per-row (glyph-atlas-slots-per-row atlas))
+         (stride (* 4 (glyph-atlas-width atlas)))
+         (instances (clx-view-instances view))
+         (columns (grid-columns (clx-view-grid view))))
+    (when color
+      (loop for i from 0
+            for slot across slots
+            for column = (+ start i)
+            for index = (logandc2 slot +glyph-color+)
+            for x0 = (* cw (mod index per-row))
+            for y0 = (* ch (floor index per-row))
+            for bg = (aref instances (+ 1 (* +gpu-words-per-cell+ (+ (* row columns) column))))
+            for pixels = (make-array (list ch cw) :element-type '(unsigned-byte 32))
+            do (dotimes (y ch)
+                 (dotimes (x cw)
+                   (let* ((at (+ (* 4 (+ x0 x)) (* stride (+ y0 y))))
+                          (inverse (- 255 (aref color (+ at 3)))))
+                     ;; Premultiplied: the glyph plus what it lets through.
+                     (flet ((channel (offset shift)
+                              (min 255 (+ (aref color (+ at offset))
+                                          (floor (* (ldb (byte 8 shift) bg) inverse) 255)))))
+                       (setf (aref pixels y x)
+                             (logior (ash (channel 0 16) 16) (ash (channel 1 8) 8)
+                                     (channel 2 0)))))))
+               (xlib:put-image (clx-view-window view) (clx-view-gcontext view)
+                               (xlib:create-image :width cw :height ch :depth 24
+                                                  :bits-per-pixel 32 :data pixels
+                                                  :red-mask #xff0000 :green-mask #x00ff00
+                                                  :blue-mask #x0000ff)
+                               :x (* column cw) :y (* row ch) :width cw :height ch)))))
+
 (defun clx-draw-row (view row &key (part :all) skip-default-background)
   "Draw packed ROW's backgrounds, text and decorations, or one of them
 (PART :BACKGROUNDS or :TEXT).  SKIP-DEFAULT-BACKGROUND leaves cells with
@@ -184,10 +222,15 @@ the default background alone, for images under the text."
                 do (clx-fill view rgb (* start cw) y (* (- end start) cw) ch)))
       (unless (eq part :backgrounds)
         (loop for (start rgb slots) in glyphs
-              do (clx-ensure-glyphs view slots)
-                 (clx-set-source view rgb)
-                 (xlib:render-composite-glyphs (clx-view-picture view) (clx-view-glyph-set view)
-                                               (clx-view-source view) (* start cw) y slots))
+              do (if (logtest (aref slots 0) +glyph-color+)
+                     (clx-draw-color-glyphs view row start slots)
+                     (progn
+                       (clx-ensure-glyphs view slots)
+                       (clx-set-source view rgb)
+                       (xlib:render-composite-glyphs (clx-view-picture view)
+                                                     (clx-view-glyph-set view)
+                                                     (clx-view-source view)
+                                                     (* start cw) y slots))))
         (loop for (start end word3 rgb) in decorations
               do (clx-draw-decorations view start end word3 rgb y))))))
 

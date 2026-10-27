@@ -276,7 +276,8 @@ cleared and every row repacked."
 draw it, for frontends that draw with rectangles and glyph runs (clx).
 Return three lists, left to right: backgrounds (START END RGB DEFAULT-P),
 glyphs in one color (START RGB SLOTS) and decorations (START END WORD3 RGB),
-WORD3 being the cells' flags and underline color and RGB their foreground."
+WORD3 being the cells' flags and underline color and RGB their foreground.
+Color glyphs (slots with +GLYPH-COLOR+) are in runs of their own."
   (let ((base (* row columns))
         (backgrounds '()) (glyphs '()) (decorations '()))
     (flet ((word (column i)
@@ -295,7 +296,9 @@ WORD3 being the cells' flags and underline color and RGB their foreground."
                        (incf column)
                        (let ((end (1+ column)))
                          (loop while (and (< end columns) (plusp (slot end))
-                                          (= (word end 0) (word column 0)))
+                                          (= (word end 0) (word column 0))
+                                          (eq (logtest (slot end) +glyph-color+)
+                                              (logtest (slot column) +glyph-color+)))
                                do (incf end))
                          (push (list column (word column 0)
                                      (coerce (loop for c from column below end collect (slot c))

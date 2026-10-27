@@ -1831,6 +1831,33 @@ emulator wrote back since the last call."
         (is-equal (list (list 0 1 (logior slt::+gpu-flag-underline+ (ash red 8)) red))
                   decorations)))))
 
+(deftest color-glyphs-get-color-slots-and-runs-of-their-own ()
+  ;; A rasterizer returning RGBA (as for emoji) makes a color glyph: its
+  ;; slots carry +GLYPH-COLOR+, its pixels go to the color atlas, and the
+  ;; runs of rectangle frontends keep it apart from text.
+  (let* ((palette (make-palette :ansi :xterm))
+         (grid (engine-grid (feed (make-test-engine :rows 1 :columns 6)
+                                  :esc "[?25l" "A" (string (code-char #x1F600)) "B")))
+         (atlas (slt::make-glyph-atlas
+                 2 2 (lambda (string style pixels stride x y width height)
+                       (declare (ignore style pixels stride x y))
+                       (and (> (char-code (char string 0)) #xFFFF)
+                            (make-array (* 4 width height) :element-type '(unsigned-byte 8)
+                                                           :initial-element 200)))
+                 :width 16 :height 16))
+         (instances (slt::pack-grid grid atlas palette nil))
+         (fg (slt::palette-foreground palette)))
+    (flet ((slot (column) (ldb (byte 31 0) (aref instances (+ 2 (* 4 column))))))
+      (is (not (logtest (slot 0) slt::+glyph-color+)))
+      (is (logtest (slot 1) slt::+glyph-color+) "the emoji's slot is a color one")
+      (is (logtest (slot 2) slt::+glyph-color+) "and so is its right half's")
+      (is (find 200 (slt::glyph-atlas-color-pixels atlas)) "its pixels are in the color atlas")
+      (is-equal (list (list 0 fg (list (slot 0)))
+                      (list 1 fg (list (slot 1) (slot 2)))
+                      (list 3 fg (list (slot 3))))
+                (mapcar (lambda (run) (list (first run) (second run) (coerce (third run) 'list)))
+                        (nth-value 1 (slt::packed-row-runs instances 6 0)))))))
+
 (deftest pack-grid-recovers-when-the-atlas-fills ()
   (let* ((grid (engine-grid (feed (make-test-engine :rows 1 :columns 8) "abcdefgh")))
          ;; Room for three glyphs besides the blank slot.

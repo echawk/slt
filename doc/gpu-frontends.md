@@ -13,10 +13,14 @@ slt has two GPU frontends that share everything above the graphics API:
   arrays: codepoints, tagged colors and attribute bits.
 - **Glyph atlas and instance packing** (`src/gpu.lisp`).
   - Glyphs are rasterized once into an alpha-only atlas of cell-sized slots.
+  - Color glyphs (emoji) go into the same slots of a second, RGBA atlas,
+    made when the first one appears. A rasterizer returns a color glyph's
+    premultiplied RGBA pixels instead of drawing coverage.
   - A wide glyph takes two adjacent slots.
   - Each cell becomes 4 × u32: foreground RGB, background RGB, the atlas
-    slot (its top bit marks the default background), and decoration flags
-    in the low 8 bits under the underline's RGB.
+    slot (its top bit marks the default background, the next one a color
+    glyph), and decoration flags in the low 8 bits under the underline's
+    RGB.
   - Only dirty rows are repacked, and the atlas grows if one screen overflows
     it.
 - **Emulator** (`src/emulator.lisp`). A reader thread parses PTY output
@@ -35,7 +39,7 @@ vertex buffer:
 - The vertex stage places the cell from the instance index. It looks up the
   glyph's slot in the atlas and passes the colors and flags through.
 - The fragment stage mixes background and foreground by the atlas coverage,
-  then draws strikethrough, the underline in its own color (single, double,
+  or lays a color glyph over the background, then draws strikethrough, the underline in its own color (single, double,
   curly, dotted or dashed; patterns follow the window's x so they continue
   across cells), and bar or underline cursors from the flags.
 
@@ -122,7 +126,14 @@ shares:
   mark follows the base's advance. A mark with its own advance (as in Menlo)
   is drawn at the base's origin.
 
-On macOS the `gl` frontend uses the CoreText rasterizer instead. font-discovery
+- Color emoji are not drawn yet: the color atlas is filled only by CoreText.
+  Noto Color Emoji is a bitmap font (FreeType's BGRA strikes, scaled to the
+  cell), and its emoji sequences and flags are ligatures, which need
+  HarfBuzz.
+
+On macOS the `gl` frontend uses the CoreText rasterizer instead. CoreText
+shapes each cluster, and draws those it sets in a color font (Apple Color
+Emoji) in color, scaled to fit their cells. font-discovery
 c6e4728 aborts there, because it reads `kCTFontFormatAttribute`, a CFNumber,
 as a string.
 
@@ -139,7 +150,8 @@ as a string.
 
 1. Run the `gl` frontend on real Linux and BSD desktops, X11 and Wayland, and
    in CI.
-2. HarfBuzz shaping for combining marks, a color atlas for emoji, subpixel
+2. HarfBuzz shaping for combining marks and emoji sequences, color emoji
+   from FreeType (see above), subpixel
    positioning, and ligatures if wanted.
 3. Check the Linux build (`make` includes `slt/gl` there): GLFW, FreeType
    and fontconfig stay system libraries.
