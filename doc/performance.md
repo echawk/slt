@@ -1,8 +1,7 @@
 # Performance: ideas to come back to
 
-None of this is measured yet. It comes from reading the code after one
-report: on macOS, `mpv --vo=kitty` in one window makes `ls` in another window
-of the same process visibly slow.
+This started from one report: on macOS, `mpv --vo=kitty` in one window makes
+`ls` in another window of the same process visibly slow.
 
 ## What windows share
 
@@ -17,37 +16,71 @@ Two things are shared by every window in the process:
   other windows' readers and the main thread. A window that allocates a lot
   makes every window pause.
 
-## Measure first
+## Measuring
 
-- Log `sb-ext:*gc-run-time*` and the bytes consed per second while mpv plays,
-  to see how much of the stall is GC.
-- Time `render-emulator` and `redraw-cocoa-view` per window on the main
-  thread.
-- Time how long `nextDrawable` in `metal-draw` blocks. When the GPU falls
-  behind it waits for a free drawable, and it waits on the main thread.
+`slt/bench` plays video the way mpv sends it (`bench/images.lisp`): each
+frame moves the cursor home and transmits a new RGB image, with no id, in
+4096-octet base64 chunks, over the last one. The frames go through the
+emulator as child output does, and each is followed by a render.
 
-## Ideas
+    scripts/lisp --eval '(asdf:load-system :slt/bench)' \
+                 --eval '(slt/bench:run-image-stream)'
 
-- **Reuse image textures** (`metal-image-texture`, `src/macos/metal.lisp`).
-  The cache hits only when the RGBA vector is `eq`, and every video frame
-  comes with a new vector. Each frame therefore allocates a new `MTLTexture`
-  and copies it synchronously with `replaceRegion:` on the main thread:
-  about 8 MB per frame at 1080p. When the image id and size are unchanged,
-  write into the existing texture instead, or stage the copy through a
-  shared `MTLBuffer` with a blit so the main thread does not copy.
-- **Allocate less per frame.** Kitty and SIXEL decoding allocate a new RGBA
-  vector per frame (`kitty-command-rgba`, the canvas in animation
-  compositing, scaling in `src/images.lisp`), plus the base64 and zlib
-  buffers. Reusing buffers for an image id whose size has not changed would
-  reduce GC frequency for every window.
-- **Snapshot images more cheaply.** Every render that touches images builds
-  a new store with `terminal-image-display-store` under the engine lock.
-  Copying only the placements that changed would shorten both the copy and
-  the time the lock is held.
-- **Bound one window's share of a frame.** A window flooded with output can
-  keep the main thread busy for its whole frame. Ways to cap that: drop
-  intermediate image frames when a newer one is already pending, and skip
-  the redraw when a newer frame is queued.
+At 1280x720 on an M-series Mac, before and after the changes below:
+
+|                        | before  | after   |
+|------------------------|---------|---------|
+| frames per second      | 8.3     | 72      |
+| feeding, per frame     | 120 ms  | 13.7 ms |
+| consed, per frame      | 17.1 MB | 14.3 MB |
+| images left to draw    | 91      | 1       |
+
+Garbage collection took 2.4% of the time. Rendering, which snapshots the
+images for the frontend, took 0.15 ms per frame.
+
+## Done
+
+- **Find the end of control strings with SIMD.** The ecma48 scanner looked
+  for the end of an APC, DCS or OSC payload with a generic `position-if`,
+  one octet at a time: about 85 ms of each 720p frame. It now skips to the
+  next control with `scan-text`, the vector scan used for text.
+- **Decode Kitty images with typed loops.** Base64 is decoded a whole
+  quartet at a time, into a vector of the exact size (it used to be copied
+  once more to trim it), and RGB becomes RGBA in a typed loop.
+- **Skip images hidden under an opaque one.** mpv never deletes its frames,
+  so they pile up until the 320 MB quota evicts the oldest, as in kitty.
+  `terminal-image-render-list` leaves out records an opaque record drawn
+  later covers entirely; RGB images are opaque, and others are checked once
+  per frame of pixels. Every frontend draws one image per frame instead of
+  ninety, and Metal and GL keep one texture instead of ninety.
+- **Reuse image textures.** Metal and GL keep up to four retired image
+  textures and write a new image of the same size into one of them instead
+  of creating a texture. Metal takes a spare only once the frames that may
+  still read it have finished, and releases spares no image has wanted for
+  120 frames.
+- **Send image pixels to the browser once.** The web frontend resent every
+  image's pixels, base64 in JSON, whenever the grid changed with an image on
+  screen, and resent all ninety stacked frames per video frame. Each client
+  is now sent only pixels it does not have, and the client decodes each
+  image once.
+
+## Still to do
+
+- **Allocate less per frame.** Each 720p frame still conses 14.3 MB: the
+  interceptor's copy of each APC payload, kitty-graphics' copy of the
+  base64, the decoded RGB and the RGBA. Decoding each chunk as it arrives,
+  straight into the RGBA, would leave only the RGBA.
+- **Free covered video frames.** The frames hidden under the newest one stay
+  stored until the quota evicts them: about 320 MB per window playing video.
+  Freeing an anonymous image once an opaque one covers all its placements
+  would save that, but deleting the newer placement would then no longer
+  reveal the one under it, as it does in kitty.
+- **Upload off the main thread.** A new frame is still copied into its
+  texture with `replaceRegion:` on the main thread. Staging it in a shared
+  `MTLBuffer` and blitting it would leave the copy to the GPU.
+- **Measure the real app.** How long `nextDrawable` in `metal-draw` blocks
+  on the main thread, and how long other windows wait for a frame, while mpv
+  plays.
 - **Render off the main thread.** `CAMetalLayer` can be drawn from a
   background thread. Per-window render threads would leave only event
   handling and layer setup on the main thread. This is the largest change
