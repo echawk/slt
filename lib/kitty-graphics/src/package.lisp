@@ -9,6 +9,7 @@
    #:graphics-command-p
    #:graphics-command-controls
    #:graphics-command-data
+   #:graphics-command-data-length
    #:graphics-command-value
    #:graphics-command-integer
    #:graphics-command-action

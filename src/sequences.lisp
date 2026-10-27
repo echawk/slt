@@ -105,10 +105,19 @@ the engine.")
 (defun octets-ascii (octets)
   (map 'string (lambda (octet) (if (< octet 128) (code-char octet) #\?)) octets))
 
+(defun event-data-view (event)
+  "A control string's payload without copying it: a vector displaced to the
+scanner's octets, which hold it only until the scanner goes on."
+  (make-array (- (ecma48:event-data-end event) (ecma48:event-data-start event))
+              :element-type '(unsigned-byte 8)
+              :displaced-to (ecma48:event-octets event)
+              :displaced-index-offset (ecma48:event-data-start event)))
+
 (defun classify-stream-event (parser event)
   "What to do with a scanner EVENT: :PASS it to the engine, :CONSUME it,
 :PASS-THEN act on it, or act on it BEFORE passing it; and the events to
-act on."
+act on.  A :KITTY event's payload is valid only until the handler returns:
+a video's frames are megabytes each, and are decoded as they arrive."
   (case (ecma48:event-kind event)
     (:text (if (terminal-stream-parser-text-events-p parser)
                (values :before (list (list :text (ecma48:event-octets event)
@@ -141,7 +150,7 @@ act on."
                 (t (values :consume (list (list :sixel (ecma48:event-raw event)))))))
     (:apc (if (eq (ecma48:event-terminator event) :interrupted)
               (values :consume '())
-              (values :consume (list (list :kitty (ecma48:event-data event))))))
+              (values :consume (list (list :kitty (event-data-view event))))))
     (t :pass)))
 
 (defun terminal-stream-feed (parser octets feed-normal handler

@@ -30,13 +30,15 @@ At 1280x720 on an M-series Mac, before and after the changes below:
 
 |                        | before  | after   |
 |------------------------|---------|---------|
-| frames per second      | 8.3     | 72      |
-| feeding, per frame     | 120 ms  | 13.7 ms |
-| consed, per frame      | 17.1 MB | 14.3 MB |
+| frames per second      | 8.3     | 86      |
+| feeding, per frame     | 120 ms  | 11.5 ms |
+| consed, per frame      | 17.1 MB | 4.2 MB  |
 | images left to draw    | 91      | 1       |
 
-Garbage collection took 2.4% of the time. Rendering, which snapshots the
-images for the frontend, took 0.15 ms per frame.
+Garbage collection took 0.4% of the time. Rendering, which snapshots the
+images for the frontend, took 0.1 ms per frame. Output captured from mpv
+itself (`mpv --vo=kitty --untimed`, a 1280x720 test pattern) goes through
+at 78 frames per second, with the same 4.3 MB per frame.
 
 ## Done
 
@@ -47,6 +49,14 @@ images for the frontend, took 0.15 ms per frame.
 - **Decode Kitty images with typed loops.** Base64 is decoded a whole
   quartet at a time, into a vector of the exact size (it used to be copied
   once more to trim it), and RGB becomes RGBA in a typed loop.
+- **Decode Kitty pixels as they arrive.** When the first chunk gives plain
+  RGB or RGBA pixels and their size, sent directly and uncompressed, each
+  chunk's base64 is decoded straight into the image's RGBA. The
+  interceptor hands the decoder each APC payload in place, as a vector
+  displaced to the scanner's octets, instead of a copy. A 720p frame used
+  to be copied four times on the way (the payload, its base64, the RGB and
+  the RGBA); now only the RGBA is made. Other images are still joined and
+  decoded at the last chunk.
 - **Skip images hidden under an opaque one.** mpv never deletes its frames,
   so they pile up until the 320 MB quota evicts the oldest, as in kitty.
   `terminal-image-render-list` leaves out records an opaque record drawn
@@ -66,10 +76,6 @@ images for the frontend, took 0.15 ms per frame.
 
 ## Still to do
 
-- **Allocate less per frame.** Each 720p frame still conses 14.3 MB: the
-  interceptor's copy of each APC payload, kitty-graphics' copy of the
-  base64, the decoded RGB and the RGBA. Decoding each chunk as it arrives,
-  straight into the RGBA, would leave only the RGBA.
 - **Free covered video frames.** The frames hidden under the newest one stay
   stored until the quota evicts them: about 320 MB per window playing video.
   Freeing an anonymous image once an opaque one covers all its placements

@@ -1067,7 +1067,7 @@ bottom margin, then right COLUMNS cells (each at most a screenful)."
            (x (kitty-int command #\x))
            (y (kitty-int command #\y))
            (replace-p (= 1 (kitty-int command #\X)))
-           (has-data (plusp (length (kitty-graphics:graphics-command-data command)))))
+           (has-data (plusp (kitty-graphics:graphics-command-data-length command))))
       (when (and (plusp edit) (null (image-frame image edit)))
         (kitty-fail "ENOENT" "frame ~d not found" edit))
       (when (and (plusp base) (null (image-frame image base)))

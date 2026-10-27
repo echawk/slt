@@ -24,7 +24,32 @@
 (defstruct (graphics-command (:constructor %make-graphics-command))
   ;; An alist keyed by characters. Keys are case-sensitive by specification.
   (controls '() :type list)
-  (data #() :type octets))
+  ;; The decoded payload, or NIL when the decoder put the pixels straight
+  ;; into RGBA as they arrived (see DIRECT-RGBA-SIZE).
+  (%data nil :type (or null octets))
+  ;; Those pixels, as RGBA, and how many octets the payload held.
+  (pixels nil :type (or null octets))
+  (payload-length 0 :type (integer 0 *)))
+
+(defun graphics-command-data (command)
+  "COMMAND's decoded payload.  When its pixels were decoded straight into
+RGBA, this rebuilds it from them, without what lay beyond the image."
+  (or (graphics-command-%data command)
+      (let* ((rgba (graphics-command-pixels command))
+             (rgb-p (equal "24" (graphics-command-value command #\f)))
+             (length (min (graphics-command-payload-length command)
+                          (if rgb-p (* 3 (floor (length rgba) 4)) (length rgba))))
+             (data (make-array length :element-type '(unsigned-byte 8))))
+        (dotimes (index length)
+          (setf (aref data index)
+                (aref rgba (if rgb-p (+ index (floor index 3)) index))))
+        (setf (graphics-command-%data command) data))))
+
+(defun graphics-command-data-length (command)
+  "How many octets COMMAND's payload decoded to."
+  (if (graphics-command-%data command)
+      (length (graphics-command-%data command))
+      (graphics-command-payload-length command)))
 
 (defun graphics-command-value (command key &optional default)
   (let ((entry (assoc key (graphics-command-controls command) :test #'char=)))
@@ -128,9 +153,9 @@ Without DECODE-DATA only the controls are read."
   (multiple-value-bind (controls encoded) (payload-parts payload :data decode-data)
     (%make-graphics-command
      :controls controls
-     :data (if (and decode-data (plusp (length encoded)))
-               (decode-base64-parts (list encoded))
-               (make-array 0 :element-type '(unsigned-byte 8))))))
+     :%data (if (and decode-data (plusp (length encoded)))
+                (decode-base64-parts (list encoded))
+                (make-array 0 :element-type '(unsigned-byte 8))))))
 
 (defun encode-controls (controls)
   (format nil "~{~c=~a~^,~}"
@@ -156,13 +181,30 @@ Without DECODE-DATA only the controls are read."
   (max-encoded-bytes (* 64 1024 1024) :type (integer 1 *))
   first-controls
   (encoded-parts '() :type list)
-  (encoded-length 0 :type (integer 0 *)))
+  (encoded-length 0 :type (integer 0 *))
+  ;; Plain pixels are decoded into RGBA as their chunks arrive (see
+  ;; DIRECT-RGBA-SIZE): the RGBA, whether the payload is RGB, the payload
+  ;; octets expected and decoded so far, and the base64 digits (up to
+  ;; three, BITS holding their values) the last chunk ended with.
+  (pixels nil :type (or null octets))
+  (rgb-p nil)
+  (expected 0 :type fixnum)
+  (fill 0 :type fixnum)
+  (bits 0 :type fixnum)
+  (digits 0 :type fixnum)
+  ;; An error in the payload, signalled when the last chunk arrives.
+  (failure nil))
 
 (defun graphics-decoder-reset (decoder)
   "Discard any partial chunked transfer and return DECODER."
   (setf (graphics-decoder-first-controls decoder) nil
         (graphics-decoder-encoded-parts decoder) '()
-        (graphics-decoder-encoded-length decoder) 0)
+        (graphics-decoder-encoded-length decoder) 0
+        (graphics-decoder-pixels decoder) nil
+        (graphics-decoder-fill decoder) 0
+        (graphics-decoder-bits decoder) 0
+        (graphics-decoder-digits decoder) 0
+        (graphics-decoder-failure decoder) nil)
   decoder)
 
 (defun graphics-decoder-pending-p (decoder)
@@ -175,29 +217,48 @@ Without DECODE-DATA only the controls are read."
     (graphics-decoder-reset decoder)))
 
 (defun payload-octets (payload)
-  "PAYLOAD's body (without ESC _ G ... ESC \\ or a leading G) as octets."
-  (let* ((octets (etypecase payload
-                   ((simple-array (unsigned-byte 8) (*)) payload)
-                   ((array (unsigned-byte 8) (*)) (coerce payload 'octets))
-                   (string (map 'octets (lambda (char) (logand #xff (char-code char))) payload))))
-         (length (length octets)))
-    (cond
-      ((and (>= length 5) (= (aref octets 0) 27) (= (aref octets 1) 95) (= (aref octets 2) 71)
-            (= (aref octets (- length 2)) 27) (= (aref octets (1- length)) 92))
-       (values octets 3 (- length 2)))
-      ((and (plusp length) (= (aref octets 0) 71))
-       (values octets 1 length))
-      (t (values octets 0 length)))))
+  "Where PAYLOAD's body (without ESC _ G ... ESC \\ or a leading G) lies, as
+octets, start and end.  An octet vector displaced to a simple one is read in
+place."
+  (multiple-value-bind (octets start end)
+      (etypecase payload
+        ((simple-array (unsigned-byte 8) (*)) (values payload 0 (length payload)))
+        ((array (unsigned-byte 8) (*))
+         (multiple-value-bind (target offset) (array-displacement payload)
+           (if (typep target 'octets)
+               (values target offset (+ offset (length payload)))
+               (values (coerce payload 'octets) 0 (length payload)))))
+        (string (let ((octets (map 'octets (lambda (char) (logand #xff (char-code char)))
+                                   payload)))
+                  (values octets 0 (length octets)))))
+    (let ((length (- end start)))
+      (cond
+        ((and (>= length 5) (= (aref octets start) 27) (= (aref octets (+ start 1)) 95)
+              (= (aref octets (+ start 2)) 71)
+              (= (aref octets (- end 2)) 27) (= (aref octets (1- end)) 92))
+         (values octets (+ start 3) (- end 2)))
+        ((and (plusp length) (= (aref octets start) 71))
+         (values octets (1+ start) end))
+        (t (values octets start end))))))
 
-(defun payload-parts (payload &key (data t))
-  "The controls of PAYLOAD and, with DATA, its base64 data as octets."
+(defun payload-region (payload)
+  "The controls of PAYLOAD, and where its base64 data lies: octets, start
+and end."
   (multiple-value-bind (octets start end) (payload-octets payload)
     (let ((separator (position 59 octets :start start :end end)))
       (values (parse-controls (ascii-octets-to-string
                                (subseq octets start (or separator end))))
-              (if (and data separator)
-                  (subseq octets (1+ separator) end)
-                  (make-array 0 :element-type '(unsigned-byte 8)))))))
+              octets
+              (if separator (1+ separator) end)
+              end))))
+
+(defun payload-parts (payload &key (data t))
+  "The controls of PAYLOAD and, with DATA, its base64 data as octets."
+  (multiple-value-bind (controls octets start end) (payload-region payload)
+    (values controls
+            (if data
+                (subseq octets start end)
+                (make-array 0 :element-type '(unsigned-byte 8))))))
 
 (defparameter +base64-values+
   (let ((table (make-array 256 :element-type '(signed-byte 8) :initial-element -1)))
@@ -277,15 +338,126 @@ Padding may be missing, and separately padded pieces may be joined."
       (finish-group))
     (if (= fill (length out)) out (subseq out 0 fill))))
 
+(defun direct-rgba-size (controls)
+  "When a transfer with CONTROLS sends plain RGB or RGBA pixels of a given
+size, directly and uncompressed, the payload octets they take and whether
+they are RGB; otherwise NIL.  Their chunks are decoded into RGBA as they
+arrive, instead of being kept until the last one."
+  (flet ((value (key default)
+           (let ((entry (assoc key controls :test #'char=)))
+             (if entry (cdr entry) default)))
+         (natural (text)
+           (and text (plusp (length text)) (every #'digit-char-p text)
+                (parse-integer text))))
+    (let ((format (value #\f "32"))
+          (width (natural (value #\s nil)))
+          (height (natural (value #\v nil))))
+      (when (and (member (value #\a "t") '("t" "T" "q" "f") :test #'string=)
+                 (member format '("24" "32") :test #'string=)
+                 (string= (value #\t "d") "d")
+                 (not (equal (value #\o nil) "z"))
+                 width height (plusp width) (plusp height)
+                 (<= (* width height 4) +safety-limit+))
+        (let ((rgb-p (string= format "24")))
+          (values (* width height (if rgb-p 3 4)) rgb-p))))))
+
+(defun decode-direct (decoder octets start end &optional finish)
+  "Decode the base64 in OCTETS from START to END into DECODER's pixels;
+with FINISH, also the digits left over at the end of the payload.  Octets
+beyond the image are counted, not kept.  An error is kept as the
+decoder's failure."
+  (declare (type octets octets) (type fixnum start end) (optimize speed))
+  (let ((pixels (graphics-decoder-pixels decoder))
+        (rgb-p (graphics-decoder-rgb-p decoder))
+        (expected (graphics-decoder-expected decoder))
+        (fill (graphics-decoder-fill decoder))
+        (bits (graphics-decoder-bits decoder))
+        (digits (graphics-decoder-digits decoder))
+        (table +base64-values+)
+        (index start))
+    (declare (type octets pixels) (type fixnum expected fill bits digits index)
+             (type (simple-array (signed-byte 8) (256)) table))
+    (block decode
+      (labels ((fail ()
+                 (setf (graphics-decoder-failure decoder)
+                       (make-condition 'graphics-protocol-error
+                                       :message "Invalid base64 image payload"))
+                 (return-from decode))
+               (emit (octet)
+                 (when (< fill expected)
+                   (let ((target (if rgb-p (+ fill (floor fill 3)) fill)))
+                     (setf (aref pixels target) octet)
+                     (when (and rgb-p (= 2 (mod fill 3)))
+                       (setf (aref pixels (1+ target)) 255))))
+                 (incf fill))
+               (finish-group ()
+                 ;; A lone digit holds nothing whole and is malformed.
+                 (case digits
+                   (1 (fail))
+                   (2 (emit (ldb (byte 8 4) bits)))
+                   (3 (emit (ldb (byte 8 10) bits))
+                    (emit (ldb (byte 8 2) bits))))
+                 (setf bits 0 digits 0)))
+        (loop while (< index end)
+              do (let ((a 0) (b 0) (c 0) (d 0))
+                   (declare (type (signed-byte 8) a b c d))
+                   (if (and (zerop digits)
+                            (<= (+ index 4) end)
+                            (progn (setf a (aref table (aref octets index))
+                                         b (aref table (aref octets (+ index 1)))
+                                         c (aref table (aref octets (+ index 2)))
+                                         d (aref table (aref octets (+ index 3))))
+                                   ;; Negative when any is not a digit.
+                                   (>= (logior a b c d) 0)))
+                       ;; A whole quartet: three octets, one RGB pixel.
+                       (let ((group (logior (ash a 18) (ash b 12) (ash c 6) d)))
+                         (cond
+                           ((and rgb-p (zerop (mod fill 3)) (<= (+ fill 3) expected))
+                            (let ((target (* 4 (floor fill 3))))
+                              (setf (aref pixels target) (ldb (byte 8 16) group)
+                                    (aref pixels (+ target 1)) (ldb (byte 8 8) group)
+                                    (aref pixels (+ target 2)) (ldb (byte 8 0) group)
+                                    (aref pixels (+ target 3)) 255))
+                            (incf fill 3))
+                           ((and (not rgb-p) (<= (+ fill 3) expected))
+                            (setf (aref pixels fill) (ldb (byte 8 16) group)
+                                  (aref pixels (+ fill 1)) (ldb (byte 8 8) group)
+                                  (aref pixels (+ fill 2)) (ldb (byte 8 0) group))
+                            (incf fill 3))
+                           (t (emit (ldb (byte 8 16) group))
+                              (emit (ldb (byte 8 8) group))
+                              (emit (ldb (byte 8 0) group))))
+                         (incf index 4))
+                       (let ((value (aref table (aref octets index))))
+                         (cond
+                           ((>= value 0)
+                            (setf bits (logior (ash (logand bits #x3ffff) 6) value))
+                            (incf digits)
+                            (when (= digits 4)
+                              (emit (ldb (byte 8 16) bits))
+                              (emit (ldb (byte 8 8) bits))
+                              (emit (ldb (byte 8 0) bits))
+                              (setf bits 0 digits 0)))
+                           ((= value -2) (finish-group))
+                           (t (fail)))
+                         (incf index)))))
+        (when finish
+          (finish-group))))
+    (setf (graphics-decoder-fill decoder) fill
+          (graphics-decoder-bits decoder) bits
+          (graphics-decoder-digits decoder) digits)
+    decoder))
+
 (defun graphics-decoder-feed (decoder payload)
   "Feed one complete APC command. Return a command when all chunks arrive.
 
 Base64 is joined before decoding, so callers need not align input chunks to
 base64 quartets. Continuation chunks keep the first chunk's controls; only
 their m and a q (the last one wins) are used, other keys are ignored. A
-protocol error resets the partial transfer."
+protocol error resets the partial transfer.  PAYLOAD may be reused once
+this returns."
   (handler-case
-      (multiple-value-bind (controls encoded) (payload-parts payload)
+      (multiple-value-bind (controls octets start end) (payload-region payload)
         (let* ((continuing (graphics-decoder-first-controls decoder))
                (quiet (assoc #\q controls :test #'char=))
                (more (equal "1" (cdr (assoc #\m controls :test #'char=)))))
@@ -295,20 +467,40 @@ protocol error resets the partial transfer."
                                      (list quiet)))
                       (t continuing)))
           ;; Each chunk costs something, so empty ones cannot pile up.
-          (incf (graphics-decoder-encoded-length decoder) (+ 64 (length encoded)))
+          (incf (graphics-decoder-encoded-length decoder) (+ 64 (- end start)))
           (when (> (graphics-decoder-encoded-length decoder)
                    (graphics-decoder-max-encoded-bytes decoder))
             (protocol-error-with-code
              "EFBIG" "Kitty graphics transfer exceeds the configured quota"))
-          (push encoded (graphics-decoder-encoded-parts decoder))
+          (unless continuing
+            (multiple-value-bind (size rgb-p) (direct-rgba-size controls)
+              (when size
+                (setf (graphics-decoder-pixels decoder)
+                      (make-array (if rgb-p (* 4 (floor size 3)) size)
+                                  :element-type '(unsigned-byte 8))
+                      (graphics-decoder-rgb-p decoder) rgb-p
+                      (graphics-decoder-expected decoder) size))))
+          (cond ((null (graphics-decoder-pixels decoder))
+                 (push (subseq octets start end) (graphics-decoder-encoded-parts decoder)))
+                ((null (graphics-decoder-failure decoder))
+                 (decode-direct decoder octets start end (not more))))
           (if more
               nil
-              (let* ((data (decode-base64-parts
-                            (nreverse (graphics-decoder-encoded-parts decoder))))
-                     (command (%make-graphics-command
-                               :controls (remove #\m (graphics-decoder-first-controls decoder)
-                                                 :key #'car :test #'char=)
-                               :data data)))
+              (let* ((controls (remove #\m (graphics-decoder-first-controls decoder)
+                                       :key #'car :test #'char=))
+                     (command
+                       (cond ((graphics-decoder-failure decoder)
+                              (error (graphics-decoder-failure decoder)))
+                             ((graphics-decoder-pixels decoder)
+                              (%make-graphics-command
+                               :controls controls
+                               :pixels (graphics-decoder-pixels decoder)
+                               :payload-length (graphics-decoder-fill decoder)))
+                             (t
+                              (%make-graphics-command
+                               :controls controls
+                               :%data (decode-base64-parts
+                                       (nreverse (graphics-decoder-encoded-parts decoder))))))))
                 (graphics-decoder-reset decoder)
                 command))))
     (error (condition)
@@ -481,10 +673,15 @@ background, foreground, selection, cursor and URL colors at 248-255."
   "Return decoded RGBA octets, width and height for a transmitted image.
 
 PALETTE maps an index 0-255 to (values r g b) for f=8 and f=16 images."
-  (let ((format (graphics-command-integer command #\f 32))
-        (width (graphics-command-integer command #\s 0))
-        (height (graphics-command-integer command #\v 0))
-        (data (graphics-command-pixel-data command)))
+  (let* ((format (graphics-command-integer command #\f 32))
+         (width (graphics-command-integer command #\s 0))
+         (height (graphics-command-integer command #\v 0))
+         ;; Decoded into RGBA as they arrived, or still to decode.
+         (pixels (graphics-command-pixels command))
+         (data (if pixels
+                   (make-array 0 :element-type '(unsigned-byte 8))
+                   (graphics-command-pixel-data command)))
+         (length (if pixels (graphics-command-payload-length command) (length data))))
     (when (= format 100)
       (return-from graphics-command-rgba (decode-png data)))
     (let ((octets-per-pixel (format-octets-per-pixel format)))
@@ -493,12 +690,13 @@ PALETTE maps an index 0-255 to (values r g b) for f=8 and f=16 images."
       (let ((expected (* width height octets-per-pixel)))
         (when (> (* width height 4) +safety-limit+)
           (protocol-error-with-code "EFBIG" "Refusing image dimensions ~dx~d" width height))
-        (when (< (length data) expected)
+        (when (< length expected)
           (protocol-error-with-code "ENODATA" "Pixel data is too short for ~dx~d f=~d"
                                     width height format))
-        (when (> (length data) expected)
+        (when (> length expected)
           (protocol-error "Pixel data is too long for ~dx~d f=~d" width height format)))
-      (case format
+      (case (if pixels :decoded format)
+        (:decoded (values pixels width height))
         (32 (values data width height))
         (24 (values (rgb-to-rgba (coerce data 'octets) (* width height)) width height))
         (t

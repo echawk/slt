@@ -189,6 +189,51 @@
                                             (subseq encoded start end))))
           while (< end (length encoded)))
     (is (equalp data (graphics-command-data command))))
+  ;; Plain pixels of a given size are decoded into RGBA as they arrive,
+  ;; however the chunks fall; payloads may be displaced vectors.
+  (flet ((transfer (format width height data &key (step 13))
+           (let* ((whole (encode-graphics-command '((#\f . "32")) data))
+                  (encoded (subseq whole (1+ (position #\; whole)) (- (length whole) 2)))
+                  (decoder (make-graphics-decoder))
+                  (command nil))
+             (loop for start = 0 then end
+                   for end = (min (length encoded) (+ start 1 (mod (* start 7) step)))
+                   for chunk = (map 'vector #'char-code
+                                    (format nil "xxG~:[a=T,f=~d,s=~d,v=~d,~;~3*~]m=~d;~a"
+                                            (plusp start) format width height
+                                            (if (< end (length encoded)) 1 0)
+                                            (subseq encoded start end)))
+                   do (setf command
+                            (graphics-decoder-feed
+                             decoder
+                             (make-array (- (length chunk) 2)
+                                         :element-type '(unsigned-byte 8)
+                                         :displaced-to (coerce chunk '(simple-array (unsigned-byte 8) (*)))
+                                         :displaced-index-offset 2)))
+                   while (< end (length encoded)))
+             (is (not (graphics-decoder-pending-p decoder)))
+             ;; Decoded as it arrived, not kept until the end.
+             (is (kitty-graphics::graphics-command-pixels command))
+             command)))
+    (let* ((rgb (let ((v (make-array (* 3 7 5) :element-type '(unsigned-byte 8))))
+                  (dotimes (i (length v) v) (setf (aref v i) (mod (* i 29) 256)))))
+           (command (transfer 24 7 5 rgb)))
+      (is (equalp (kitty-graphics::rgb-to-rgba rgb 35) (graphics-command-rgba command)))
+      (is (equalp rgb (graphics-command-data command)))
+      (is (= (length rgb) (graphics-command-data-length command))))
+    (let* ((rgba (let ((v (make-array (* 4 3 3) :element-type '(unsigned-byte 8))))
+                   (dotimes (i (length v) v) (setf (aref v i) (mod (* i 53) 256)))))
+           (command (transfer 32 3 3 rgba :step 5)))
+      (is (equalp rgba (graphics-command-rgba command))))
+    (is (equal "ENODATA" (code-of (graphics-command-rgba
+                                   (transfer 24 2 2 (octets 1 2 3 4 5 6))))))
+    (is (equal "EINVAL" (code-of (graphics-command-rgba
+                                  (transfer 24 1 1 (octets 1 2 3 4 5 6)))))))
+  ;; A bad digit fails the transfer once its last chunk arrives.
+  (let ((decoder (make-graphics-decoder)))
+    (is (null (graphics-decoder-feed decoder "Ga=T,f=24,s=1,v=1,m=1;AQ*D")))
+    (is (equal "EINVAL" (code-of (graphics-decoder-feed decoder "Gm=0;AAAA"))))
+    (is (not (graphics-decoder-pending-p decoder))))
   ;; Continuation chunks may carry q, the last one wins, and other keys are
   ;; ignored rather than rejected.
   (let ((decoder (make-graphics-decoder)))
