@@ -78,6 +78,9 @@
                                                                             :errorp nil)))
          :on-bell (lambda () (engine-emit-bell engine))
          :on-title (lambda (title) (engine-emit-title engine title))))
+  ;; Grapheme clusters (mode 2027), as Ghostty itself and lispvt start out:
+  ;; emoji sequences share a cell.
+  (engine-feed-string engine (format nil "~c[?2027h" (code-char 27)))
   (when (ensure-ghostty-helper)
     (setf (ghostty-engine-helper engine) (%slt-ghostty-new))))
 

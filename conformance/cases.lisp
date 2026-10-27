@@ -189,6 +189,19 @@
   (:row 0 #.(format nil "e~cx" (code-char #x301)))
   (:cursor 0 2))
 
+;; Grapheme clusters (mode 2027): an emoji ZWJ sequence, a flag and an
+;; emoji-presentation heart each take one wide cell.  libvterm does not
+;; cluster them.
+(define-vt-case emoji-zwj-sequence (:known-failures (:libvterm))
+    (#.(map 'string #'code-char '(#x1F468 #x200D #x1F469 #x200D #x1F467)) "x")
+  (:row 0 #.(map 'string #'code-char '(#x1F468 #x200D #x1F469 #x200D #x1F467 #x78)))
+  (:cursor 0 3))
+
+(define-vt-case emoji-flag-and-presentation (:known-failures (:libvterm))
+    (#.(map 'string #'code-char '(#x1F1FA #x1F1F8 #x2764 #xFE0F)) "x")
+  (:row 0 #.(map 'string #'code-char '(#x1F1FA #x1F1F8 #x2764 #xFE0F #x78)))
+  (:cursor 0 5))
+
 ;;; SGR
 
 (define-vt-case sgr-basic-colors () (:csi "31;42mA" :csi "0mB")

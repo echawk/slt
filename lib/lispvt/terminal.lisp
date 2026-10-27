@@ -54,6 +54,21 @@
   (g1 :ascii :type keyword)
   (gl 0 :type bit)
   (last-char 32 :type (unsigned-byte 32))
+  ;; Grapheme clusters (mode 2027, on by default): emoji sequences share a
+  ;; cell.  The cluster last printed: its cell (row -1 when there is none,
+  ;; or a control or escape sequence came since), where printing it left
+  ;; the cursor, and what decides whether the next codepoint joins it.
+  (graphemes t :type boolean)
+  (cluster-row -1 :type fixnum)
+  (cluster-column 0 :type fixnum)
+  (cluster-after-row 0 :type fixnum)
+  (cluster-after-column 0 :type fixnum)
+  (cluster-after-wrap nil :type boolean)
+  ;; An Extended_Pictographic codepoint and Extend characters so far, then
+  ;; a ZWJ after them; and how many regional indicators.
+  (cluster-pictographic nil :type boolean)
+  (cluster-zwj nil :type boolean)
+  (cluster-regional 0 :type fixnum)
   ;; One bit per displayed row whose contents changed.
   (dirty (make-array 0 :element-type 'bit) :type simple-bit-vector)
   ;; Rows of scrollback shown above the screen.
@@ -141,6 +156,8 @@ BOTTOM rows and COUNT (positive upward) of every scroll."
           (terminal-state term) +ground+
           (terminal-utf8-remaining term) 0)
     (clrhash (terminal-modes term))
+    (setf (terminal-graphemes term) t
+          (terminal-cluster-row term) -1)
     term))
 
 (defun terminal-reset (term)
@@ -403,7 +420,13 @@ to whole wide characters."
                    (setf (terminal-cursor-column term) (1- columns)
                          (terminal-pending-wrap term) (terminal-autowrap term))
                    (setf (terminal-cursor-column term) stop))))
-    (setf (terminal-last-char term) (aref octets (1- end)))))
+    (setf (terminal-last-char term) (aref octets (1- end)))
+    ;; The last character can take marks and selectors (a keycap, 1 FE0F).
+    (note-cluster term (terminal-cursor-row term)
+                  (if (terminal-pending-wrap term)
+                      (terminal-cursor-column term)
+                      (1- (terminal-cursor-column term)))
+                  (aref octets (1- end)))))
 
 (defparameter *dec-special-graphics*
   #(#x00A0 #x25C6 #x2592 #x2409 #x240C #x240D #x240A #x00B0 #x00B1 #x2424
@@ -427,10 +450,91 @@ to whole wide characters."
             (push (cons column string) (line-combining line))))
       (mark-row-dirty term (terminal-cursor-row term)))))
 
+;;; Grapheme clusters
+
+(defun note-cluster-end (term)
+  (setf (terminal-cluster-after-row term) (terminal-cursor-row term)
+        (terminal-cluster-after-column term) (terminal-cursor-column term)
+        (terminal-cluster-after-wrap term) (terminal-pending-wrap term)))
+
+(defun note-cluster (term row column code)
+  "Remember that a cluster starting with CODE was printed at ROW, COLUMN."
+  (setf (terminal-cluster-row term) row
+        (terminal-cluster-column term) column
+        (terminal-cluster-pictographic term) (extended-pictographic-p code)
+        (terminal-cluster-zwj term) nil
+        (terminal-cluster-regional term) (if (regional-indicator-p code) 1 0))
+  (note-cluster-end term))
+
+(defun joins-cluster-p (term code width)
+  "Whether CODE, of WIDTH, extends the cluster just printed: Extend
+characters (zero width), a pictograph after a ZWJ following one (GB11),
+or a second regional indicator (GB12, GB13)."
+  (and (terminal-graphemes term)
+       (>= (terminal-cluster-row term) 0)
+       (= (terminal-cluster-after-row term) (terminal-cursor-row term))
+       (= (terminal-cluster-after-column term) (terminal-cursor-column term))
+       (eq (terminal-cluster-after-wrap term) (terminal-pending-wrap term))
+       (cond ((zerop width) t)
+             ((extended-pictographic-p code) (terminal-cluster-zwj term))
+             ((regional-indicator-p code) (= 1 (terminal-cluster-regional term)))
+             (t nil))))
+
+(defun widen-cluster (term line column)
+  "Make the one-cell cluster at COLUMN of the cursor's LINE two cells wide,
+as an emoji presentation selector or a flag asks, when the row has room."
+  (let ((columns (terminal-columns term)))
+    (when (< (1+ column) columns)
+      (let ((next (1+ column)))
+        (clear-cut-wide-characters line next (1+ next))
+        (line-remove-combining line next (1+ next))
+        (setf (aref (line-attrs line) column)
+              (logior (aref (line-attrs line) column) +attr-wide+)
+              (aref (line-codes line) next) 0
+              (aref (line-fg line) next) (aref (line-fg line) column)
+              (aref (line-bg line) next) (aref (line-bg line) column)
+              (aref (line-attrs line) next)
+              (logior (logandc2 (aref (line-attrs line) column) +attr-wide+)
+                      +attr-wide-spacer+))
+        (note-extent line (1+ next))
+        (if (>= (1+ next) columns)
+            (setf (terminal-cursor-column term) (1- columns)
+                  (terminal-pending-wrap term) (terminal-autowrap term))
+            (setf (terminal-cursor-column term) (1+ next)
+                  (terminal-pending-wrap term) nil))))))
+
+(defun join-cluster (term code)
+  "Add CODE to the cluster just printed."
+  (let* ((row (terminal-cluster-row term))
+         (column (terminal-cluster-column term))
+         (line (screen-line term row))
+         (entry (assoc column (line-combining line)))
+         (string (string (code-char code))))
+    (if entry
+        (setf (cdr entry) (concatenate 'string (cdr entry) string))
+        (push (cons column string) (line-combining line)))
+    (mark-row-dirty term row)
+    (cond ((= code +zero-width-joiner+)
+           (setf (terminal-cluster-zwj term) (terminal-cluster-pictographic term)))
+          ((extended-pictographic-p code)
+           (setf (terminal-cluster-pictographic term) t
+                 (terminal-cluster-zwj term) nil))
+          ((regional-indicator-p code)
+           (incf (terminal-cluster-regional term)))
+          (t (setf (terminal-cluster-zwj term) nil)))
+    (when (and (or (= code +emoji-presentation+)
+                   (= 2 (terminal-cluster-regional term)))
+               (not (logtest (aref (line-attrs line) column) +attr-wide+)))
+      (widen-cluster term line column))
+    (note-cluster-end term)))
+
 (defun print-char (term code)
   (declare (type terminal term) (type (unsigned-byte 32) code))
   (let ((width (char-width code))
         (columns (terminal-columns term)))
+    (when (joins-cluster-p term code width)
+      (join-cluster term code)
+      (return-from print-char))
     (when (zerop width)
       (attach-combining term code)
       (return-from print-char))
@@ -474,7 +578,8 @@ to whole wide characters."
         (if (>= next columns)
             (setf (terminal-cursor-column term) (1- columns)
                   (terminal-pending-wrap term) (terminal-autowrap term))
-            (setf (terminal-cursor-column term) next))))))
+            (setf (terminal-cursor-column term) next)))
+      (note-cluster term (terminal-cursor-row term) column code))))
 
 (defun shift-combining (line start delta limit)
   "Move combining marks at columns >= START by DELTA, dropping those that
@@ -520,6 +625,7 @@ end up outside [START, LIMIT)."
 
 (defun execute-control (term byte)
   (declare (type terminal term) (type (unsigned-byte 8) byte))
+  (setf (terminal-cluster-row term) -1)
   (case byte
     (7 (let ((function (terminal-bell-function term)))
          (when function (funcall function))))
@@ -572,7 +678,8 @@ end up outside [START, LIMIT)."
 
 (defun esc-dispatch (term byte)
   (declare (type terminal term) (type (unsigned-byte 8) byte))
-  (setf (terminal-state term) +ground+)
+  (setf (terminal-state term) +ground+
+        (terminal-cluster-row term) -1)
   (if (zerop (terminal-intermediate-count term))
       (case (code-char byte)
         (#\[ (setf (terminal-state term) +csi+
@@ -779,6 +886,7 @@ Return the color or NIL, and the number of parameters consumed."
 (defun set-dec-mode (term mode on)
   (case mode
     (12 (setf (terminal-cursor-blink term) on))
+    (2027 (setf (terminal-graphemes term) on))
     (6 (setf (terminal-origin term) on)
      (cursor-to term 0 0))
     (7 (setf (terminal-autowrap term) on))
@@ -800,6 +908,7 @@ Return the color or NIL, and the number of parameters consumed."
     (7 (terminal-autowrap term))
     (25 (terminal-cursor-shown term))
     ((47 1047 1049) (terminal-alternate-p term))
+    (2027 (terminal-graphemes term))
     (t (values (gethash mode (terminal-modes term))))))
 
 (defun sgr-color-parameters (color base)
@@ -867,6 +976,7 @@ margins, \" q\" the cursor style.  NIL for others."
 
 (defun csi-dispatch (term byte)
   (declare (type terminal term) (type (unsigned-byte 8) byte))
+  (setf (terminal-cluster-row term) -1)
   (when (or (terminal-param-digits term) (plusp (terminal-param-count term)))
     (push-param term))
   (let ((final (code-char byte))

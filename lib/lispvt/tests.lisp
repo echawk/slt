@@ -154,6 +154,54 @@ default background, on both screens and in the scrollback."
             (terminal-resize term (+ 3 (random 6)) (+ 6 (random 12)))))
         (check (extent-holds-p term))))))
 
+(defun cluster-cells (term)
+  "Row 0 as (TEXT WIDE-P) per cluster: each cell's codepoint and those
+joined to it, and whether it takes two cells."
+  (let ((line (terminal-line term 0)))
+    (loop for column below (length (line-codes line))
+          for code = (aref (line-codes line) column)
+          for attrs = (aref (line-attrs line) column)
+          unless (or (zerop code) (logtest attrs lispvt::+attr-wide-spacer+))
+            collect (list (concatenate 'string (string (code-char code))
+                                       (or (cdr (assoc column (line-combining line))) ""))
+                          (logtest attrs lispvt::+attr-wide+)))))
+
+(defun codes (&rest codes)
+  (map 'string #'code-char codes))
+
+(defun test-grapheme-clusters ()
+  (let ((family (codes #x1F468 #x200D #x1F469 #x200D #x1F467))
+        (thumbs (codes #x1F44D #x1F3FD))
+        (flag (codes #x1F1FA #x1F1F8))
+        (heart (codes #x2764 #xFE0F))
+        (keycap (codes #x31 #xFE0F #x20E3)))
+    ;; A ZWJ family, a skin tone, a flag, an emoji-presentation heart and a
+    ;; keycap: one wide cell each, and the cursor after them all.
+    (let ((term (term 2 30 family thumbs flag heart keycap "x")))
+      (check (equal (list (list family t) (list thumbs t) (list flag t) (list heart t)
+                          (list keycap t) (list "x" nil))
+                    (cluster-cells term)))
+      (check (= 11 (terminal-cursor-column term))))
+    ;; A third regional indicator starts a new cluster.
+    (let ((term (term 2 30 (codes #x1F1FA #x1F1F8 #x1F1E6))))
+      (check (equal (list (list flag t) (list (codes #x1F1E6) nil)) (cluster-cells term))))
+    ;; A pictograph after a ZWJ that follows no pictograph is not joined.
+    (let ((term (term 2 30 (codes #x61 #x200D #x1F600))))
+      (check (equal (list (list (codes #x61 #x200D) nil) (list (codes #x1F600) t))
+                    (cluster-cells term))))
+    ;; Moving the cursor ends the cluster.
+    (let ((term (term 2 30 (codes #x1F468 #x200D) (esc "[C") (codes #x1F469))))
+      (check (= 2 (length (cluster-cells term)))))
+    ;; With mode 2027 reset each codepoint takes its own cells, as before.
+    (let ((term (term 2 30 (esc "[?2027l") family heart)))
+      (check (equal (list (list (codes #x1F468 #x200D) t) (list (codes #x1F469 #x200D) t)
+                          (list (codes #x1F467) t) (list heart nil))
+                    (cluster-cells term)))
+      (check (not (terminal-mode term 2027))))
+    ;; A heart widened at the last column has no room: it stays narrow.
+    (let ((term (term 2 4 "abc" heart)))
+      (check (equal (list (list heart nil)) (last (cluster-cells term)))))))
+
 (defun run-tests ()
   (let ((*failures* '()))
     (test-line-extents)
@@ -167,6 +215,7 @@ default background, on both screens and in the scrollback."
     (test-shrink-moves-lines-to-scrollback)
     (test-colon-sgr)
     (test-mode-report)
+    (test-grapheme-clusters)
     (format t "~&lispvt: ~:[all tests passed~;~:*~d failure~:p~]~%"
             (and *failures* (length *failures*)))
     (null *failures*)))

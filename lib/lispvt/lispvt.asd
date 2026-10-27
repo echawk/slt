@@ -8,6 +8,7 @@
   :components ((:file "package")
                (:file "scan")
                (:file "width")
+               (:file "grapheme")
                (:file "screen")
                (:file "terminal"))
   :in-order-to ((test-op (test-op "lispvt/tests"))))
