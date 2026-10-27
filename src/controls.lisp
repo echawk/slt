@@ -718,30 +718,35 @@ there."
                 return span)))))
 
 (defun apply-link-hover (emulator engine grid)
-  "Underline the hyperlink under the pointer, as kitty does.  Called by
-RENDER-EMULATOR with the engine lock held, once GRID is up to date.  Cells
-underlined here carry +ATTR-HOVER+, which engines never set, so they can be
-told from cells the engine underlined until it rewrites them."
+  "Underline the link under the pointer, an OSC 8 hyperlink or a URL in the
+text, as kitty does.  Called by RENDER-EMULATOR with the engine lock held,
+once GRID is up to date.  Cells underlined here carry +ATTR-HOVER+, which
+engines never set, so they can be told from cells the engine underlined
+until it rewrites them."
   (let* ((old (terminal-emulator-hover-link emulator))
+         (known (terminal-emulator-pointer-known-p emulator))
          (row (terminal-emulator-pointer-row emulator))
-         (span (and (terminal-emulator-links emulator)
-                    (terminal-emulator-pointer-known-p emulator)
-                    (hyperlink-span-at-locked emulator engine row
-                                              (terminal-emulator-pointer-column emulator))))
-         (new (and span
-                   (list row (link-span-column span)
-                         (min (1- (grid-columns grid))
-                              (+ (link-span-column span) (link-span-width span) -1))))))
-    (flet ((update (extent function)
-             (destructuring-bind (row first last) extent
-               (when (< row (grid-rows grid))
-                 (loop for column from first to last
-                       for index = (grid-index grid row column)
-                       for attrs = (aref (grid-attrs grid) index)
-                       for changed = (funcall function attrs)
-                       unless (= changed attrs)
-                         do (setf (aref (grid-attrs grid) index) changed
-                                  (sbit (grid-dirty grid) row) 1))))))
+         (column (terminal-emulator-pointer-column emulator))
+         (span (and known (terminal-emulator-links emulator)
+                    (hyperlink-span-at-locked emulator engine row column)))
+         ;; A list of (ROW FIRST LAST) extents.
+         (new (cond (span
+                     (list (list row (link-span-column span)
+                                 (min (1- (grid-columns grid))
+                                      (+ (link-span-column span) (link-span-width span) -1)))))
+                    (known
+                     ;; The hover underline itself does not change the text.
+                     (nth-value 1 (url-extent grid row column))))))
+    (flet ((update (extents function)
+             (loop for (row first last) in extents
+                   when (< row (grid-rows grid))
+                     do (loop for column from first to (min last (1- (grid-columns grid)))
+                              for index = (grid-index grid row column)
+                              for attrs = (aref (grid-attrs grid) index)
+                              for changed = (funcall function attrs)
+                              unless (= changed attrs)
+                                do (setf (aref (grid-attrs grid) index) changed
+                                         (sbit (grid-dirty grid) row) 1)))))
       (when (and old (not (equal old new)))
         (update old (lambda (attrs)
                       (if (logtest attrs +attr-hover+)

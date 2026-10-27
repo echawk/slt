@@ -274,8 +274,13 @@ Edit commands unless the program tracks the mouse. On the other frontends
 `command-key-handler` on `*key-hook*` gives the same commands on Super.
 `*commands*` maps each menu command to the function it calls.
 
-Command-click (Super-click) opens the link under the pointer
-(`*url-schemes*`). Files dropped on the window (cocoa, gl, gtk and clx) are
+Links are underlined under the pointer, and Command-click (Super-click)
+opens them: OSC 8 hyperlinks (`*hyperlink-schemes*`) and URLs in the text,
+of the schemes in `*url-schemes*` (http, https, ftp, ftps, sftp, file,
+mailto, ssh, git, gemini, gopher, news, nntp, irc, ircs, xmpp, magnet, tel)
+or starting `www.`. A URL that wraps onto the next row is found whole, and
+punctuation or a closing bracket after it is left out unless it is the
+URL's own. Files dropped on the window (cocoa, gl, gtk and clx) are
 pasted as shell-quoted names. The bell beeps (`*audible-bell*`) and bounces
 the Dock icon while slt is in the background (`*bell-hook*` holds
 `ring-bell`). Programs that ask for focus events (mode 1004) get them.

@@ -848,9 +848,8 @@ know them, for children that ask for reports in pixels."
     (setf (terminal-emulator-pointer-row emulator) row
           (terminal-emulator-pointer-column emulator) column
           (terminal-emulator-pointer-known-p emulator) t)
-    ;; Hyperlinks under the pointer are underlined.
-    (when (and moved (or (terminal-emulator-links emulator)
-                         (terminal-emulator-hover-link emulator)))
+    ;; Links under the pointer are underlined.
+    (when moved
       (request-render emulator))
     (when (and (eq action :press) (eql button 1) (eql clicks 1)
                (member :super modifiers)
@@ -1028,8 +1027,11 @@ cocoa frontend's menus take these keys first.)"
 
 ;;; Links
 
-(defvar *url-schemes* '("http" "https" "ftp" "file" "mailto" "ssh" "git")
-  "Schemes of the links Command-click (Super-click elsewhere) opens.")
+(defvar *url-schemes* '("http" "https" "ftp" "ftps" "sftp" "file" "mailto" "ssh" "git"
+                        "gemini" "gopher" "news" "nntp" "irc" "ircs" "xmpp" "magnet" "tel")
+  "Schemes of the URLs in plain text that the pointer underlines and
+Command-click (Super-click elsewhere) opens.  Text starting www. counts
+too, and opens as https.")
 
 (defvar *hyperlink-schemes* '("http" "https" "mailto")
   "Schemes of the OSC 8 hyperlinks Command-click opens.  Their targets are
@@ -1042,33 +1044,84 @@ out.")
          (not (logtest (aref (grid-attrs grid) index) +attr-wide-spacer+))
          (not (find (code-char code) "<>\"'`{}|\\^")))))
 
-(defun url-at (grid row column)
-  "The URL shown at ROW, COLUMN of GRID, or NIL."
+(defun url-start (text)
+  "Where the first URL in TEXT starts, and whether it is a bare www. one."
+  (flet ((boundary-p (position)
+           (or (zerop position)
+               (not (alphanumericp (char text (1- position)))))))
+    (let ((best nil) (www nil))
+      (dolist (scheme *url-schemes*)
+        (let ((position (search (concatenate 'string scheme ":") text :test #'char-equal)))
+          (when (and position (boundary-p position) (or (null best) (< position best)))
+            (setf best position))))
+      (let ((position (search "www." text :test #'char-equal)))
+        (when (and position (boundary-p position)
+                   (or (zerop position) (char/= #\. (char text (1- position))))
+                   (or (null best) (< position best)))
+          (setf best position www t)))
+      (values best www))))
+
+(defun url-end (text start)
+  "Where the URL starting at START in TEXT ends: punctuation after it is
+usually the sentence's, and so is a closing bracket it did not open."
+  (let ((end (length text)))
+    (flet ((unbalanced-p (open close)
+             (> (count close text :start start :end end)
+                (count open text :start start :end end))))
+      (loop while (> end start)
+            do (let ((last (char text (1- end))))
+                 (cond ((find last ".,;:!?")
+                        (decf end))
+                       ((and (char= last #\)) (unbalanced-p #\( #\)))
+                        (decf end))
+                       ((and (char= last #\]) (unbalanced-p #\[ #\]))
+                        (decf end))
+                       (t (return))))))
+    end))
+
+(defun url-extent (grid row column)
+  "The URL shown at ROW, COLUMN of GRID, or NIL; and its cells as a list of
+(ROW FIRST-COLUMN LAST-COLUMN), one per row.  A run of URL characters that
+reaches the last column goes on at the start of the next row, as a wrapped
+URL does."
   (when (and (< -1 row (grid-rows grid)) (< -1 column (grid-columns grid)))
     (let* ((columns (grid-columns grid))
-           (row-start (* row columns))
-           (index (+ row-start column)))
+           (total (* columns (grid-rows grid)))
+           (index (+ (* row columns) column)))
       (when (url-cell-p grid index)
         (let ((first index)
               (last index))
-          (loop while (and (> first row-start) (url-cell-p grid (1- first)))
+          (loop while (and (> first 0) (url-cell-p grid (1- first)))
                 do (decf first))
-          (loop while (and (< last (+ row-start columns -1)) (url-cell-p grid (1+ last)))
+          (loop while (and (< last (1- total)) (url-cell-p grid (1+ last)))
                 do (incf last))
-          (let* ((text (grid-range-text grid first last))
-                 (start (let ((positions
-                                (loop for scheme in *url-schemes*
-                                      for position = (search (concatenate 'string scheme ":")
-                                                             text :test #'char-equal)
-                                      when position collect position)))
-                          (and positions (reduce #'min positions)))))
-            (when start
-              ;; Punctuation after a link is usually the sentence's.
-              (let ((url (string-right-trim ".,;:!?)]'" (subseq text start))))
-                (when (and (< (position #\: url) (1- (length url)))
-                           ;; The link must cover the clicked cell.
-                           (<= (+ first start) index (+ first start (length url) -1)))
-                  url)))))))))
+          ;; The run's text, and the cell each of its characters is in.
+          (let* ((cells (make-array 0 :adjustable t :fill-pointer 0))
+                 (text (with-output-to-string (out)
+                         (loop for cell from first to last
+                               do (loop for char across (grid-cell-string grid cell)
+                                        do (write-char char out)
+                                           (vector-push-extend cell cells))))))
+            (multiple-value-bind (start www) (url-start text)
+              (when start
+                (let* ((end (url-end text start))
+                       (url (subseq text start end))
+                       (head (if www 4 (1+ (position #\: url)))))
+                  (when (and (> (length url) head)
+                             (<= (aref cells start) index (aref cells (1- end))))
+                    (values (if www (concatenate 'string "https://" url) url)
+                            (loop with from = (aref cells start)
+                                  with to = (aref cells (1- end))
+                                  for r from (floor from columns) to (floor to columns)
+                                  collect (list r
+                                                (if (= r (floor from columns)) (mod from columns) 0)
+                                                (if (= r (floor to columns))
+                                                    (mod to columns)
+                                                    (1- columns)))))))))))))))
+
+(defun url-at (grid row column)
+  "The URL shown at ROW, COLUMN of GRID, or NIL."
+  (values (url-extent grid row column)))
 
 (defun open-url-at (emulator row column)
   "Open the link at ROW, COLUMN; return true if there was one."
