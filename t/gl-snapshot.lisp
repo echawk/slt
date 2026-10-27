@@ -65,6 +65,30 @@
                                               (< (ldb (byte 8 0) p) 90))))
              "a color emoji is drawn in color"))))
 
+(defun check-replaced-image (emulator view)
+  "Put a blue image over the red one, as a video's next frame comes: it is
+drawn, and it takes over the red one's texture."
+  (let* ((store (terminal-emulator-image-store emulator))
+         (renderer (gl-view-renderer view))
+         (red (second (gethash 1 (gl-renderer-image-textures renderer)))))
+    (store-image store 2 0 1 1
+                 (make-array 4 :element-type '(unsigned-byte 8)
+                               :initial-contents '(0 0 255 255))
+                 :opaque-p t)
+    (push (make-terminal-image-placement :image-id 2 :row 3 :column 1
+                                         :columns 1 :rows 1 :z-index 1)
+          (terminal-image-store-placements store))
+    (setf (terminal-image-store-dirty-p store) t)
+    (render-emulator emulator :force t)
+    (multiple-value-bind (rgb width) (snapshot-gl-view view (merge-pathnames "replaced.ppm" *output*))
+      (let ((cw (gl-view-cell-width view)) (ch (gl-view-cell-height view)))
+        (check (= (pixel rgb width (+ cw (floor cw 2)) (+ (* 3 ch) (floor ch 2))) #x0000ff)
+               "an image over another is drawn in its place")))
+    (check (and red
+                (null (gethash 1 (gl-renderer-image-textures renderer)))
+                (eql red (second (gethash 2 (gl-renderer-image-textures renderer)))))
+           "the covered image's texture is reused for the new one")))
+
 (defun palette-ansi-rgb (palette index)
   (aref (palette-colors palette) index))
 
@@ -84,7 +108,8 @@
               (frontend-schedule frontend view 1500
                                 (lambda ()
                                   (render-emulator emulator :force t)
-                                  (handler-case (check-snapshot view)
+                                  (handler-case (progn (check-snapshot view)
+                                                       (check-replaced-image emulator view))
                                     (error (condition)
                                       (check nil (format nil "snapshot: ~a" condition))))
                                   (destroy-emulator emulator)

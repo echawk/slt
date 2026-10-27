@@ -53,7 +53,10 @@
   (frame-deadline nil)
   ;; The transmission of an indexed-color (f=8 or f=16) image, whose colors
   ;; follow the terminal's palette; NIL otherwise, or once it has frames.
-  (indexed nil))
+  (indexed nil)
+  ;; Whether every pixel of OPAQUE-RGBA is opaque (see IMAGE-OPAQUE-P).
+  (opaque-rgba nil)
+  (opaque-p nil))
 
 (defstruct terminal-image-placement
   (image-id 0 :type (integer 0))
@@ -182,11 +185,28 @@ number), or with INTERNAL one no client can name."
                  (error 'kitty-command-error :code "ENOSPC"
                                              :message "image exceeds the storage quota")))))
 
-(defun store-image (store id number width height rgba &key anonymous-p)
+(defun rgba-opaque-p (rgba)
+  "True when every pixel of RGBA has full alpha."
+  (declare (type (simple-array (unsigned-byte 8) (*)) rgba) (optimize speed))
+  (loop for index of-type fixnum from 3 below (length rgba) by 4
+        always (= 255 (aref rgba index))))
+
+(defun image-opaque-p (image)
+  "True when IMAGE's current frame has no transparent pixels.  The answer is
+kept until the frame changes."
+  (let ((rgba (terminal-image-rgba image)))
+    (unless (eq rgba (terminal-image-opaque-rgba image))
+      (setf (terminal-image-opaque-p image) (rgba-opaque-p rgba)
+            (terminal-image-opaque-rgba image) rgba))
+    (terminal-image-opaque-p image)))
+
+(defun store-image (store id number width height rgba &key anonymous-p opaque-p)
+  "Store RGBA as image ID.  OPAQUE-P says it is known to be opaque."
   (remove-image store id)
   (evict-images-to-fit store (length rgba))
   (let ((image (make-terminal-image :id id :number number :width width :height height
                                     :rgba rgba :anonymous-p anonymous-p
+                                    :opaque-rgba (and opaque-p rgba) :opaque-p opaque-p
                                     :access (incf (terminal-image-store-clock store)))))
     (vector-push-extend (make-terminal-image-frame :rgba rgba :gap 0)
                         (terminal-image-frames image))
@@ -360,25 +380,49 @@ cells in a row, joined with the rows below that have the same runs."
                                     (list fragment image left upper
                                           (- right left) (- lower upper)))))))))))
 
+(defparameter +max-covering-records+ 16
+  "How many opaque records DROP-COVERED-RECORDS tests each record against.")
+
+(defun drop-covered-records (records)
+  "RECORDS, in drawing order, without those an opaque record drawn later
+covers entirely.  A video player sends each frame as a new image over the
+last, and none of the older frames needs drawing."
+  (let ((covers '()) (kept '()))
+    (dolist (record (reverse records) kept)
+      (destructuring-bind (placement image x y width height) record
+        (declare (ignore placement))
+        (unless (find-if (lambda (cover)
+                           (destructuring-bind (cx cy cw ch) cover
+                             (and (<= cx x) (<= cy y)
+                                  (<= (+ x width) (+ cx cw))
+                                  (<= (+ y height) (+ cy ch)))))
+                         covers)
+          (push record kept)
+          (when (and (< (length covers) +max-covering-records+)
+                     (image-opaque-p image))
+            (push (list x y width height) covers)))))))
+
 (defun terminal-image-render-list (store cell-width cell-height)
   "Return visible (PLACEMENT IMAGE X Y WIDTH HEIGHT) records in z order, lower
-image ids first among equal z-indices."
-  (sort
-   (loop for placement in (terminal-image-store-placements store)
-         for image = (gethash (terminal-image-placement-image-id placement)
-                              (terminal-image-store-images store))
-         when (and image
-                   (eq (terminal-image-placement-screen placement)
-                       (terminal-image-store-active-screen store))
-                   (not (terminal-image-placement-virtual-p placement))
-                   (null (terminal-image-placement-parent placement)))
-           append (placement-render-records placement image cell-width cell-height))
-   (lambda (a b)
-     (let ((za (terminal-image-placement-z-index (first a)))
-           (zb (terminal-image-placement-z-index (first b))))
-       (or (< za zb)
-           (and (= za zb)
-                (< (terminal-image-id (second a)) (terminal-image-id (second b)))))))))
+image ids first among equal z-indices, leaving out those hidden under
+opaque images."
+  (drop-covered-records
+   (sort
+    (loop for placement in (terminal-image-store-placements store)
+          for image = (gethash (terminal-image-placement-image-id placement)
+                               (terminal-image-store-images store))
+          when (and image
+                    (eq (terminal-image-placement-screen placement)
+                        (terminal-image-store-active-screen store))
+                    (not (terminal-image-placement-virtual-p placement))
+                    (null (terminal-image-placement-parent placement)))
+            append (placement-render-records placement image cell-width cell-height))
+    (lambda (a b)
+      (let ((za (terminal-image-placement-z-index (first a)))
+            (zb (terminal-image-placement-z-index (first b))))
+        (or (< za zb)
+            (and (= za zb)
+                 (< (terminal-image-id (second a)) (terminal-image-id (second b))))))))))
 
 ;;; Deleting placements
 
@@ -843,7 +887,9 @@ bottom margin, then right COLUMNS cells (each at most a screenful)."
         (return-from kitty-transmit (kitty-response command "OK")))
       (let* ((id (image-store-id store requested number))
              (image (store-image store id number width height rgba
-                                 :anonymous-p anonymous-p)))
+                                 :anonymous-p anonymous-p
+                                 ;; RGB has no alpha.
+                                 :opaque-p (= 24 (kitty-int command #\f)))))
         (when (kitty-indexed-p command)
           (setf (terminal-image-indexed image) command))
         (when display-p
@@ -1482,6 +1528,8 @@ being shown (NIL hides every image)."
                 (let* ((id (terminal-image-placement-image-id placement))
                        (image (gethash id (terminal-image-store-images store))))
                   (when (and image (not (gethash id (terminal-image-store-images display))))
+                    ;; Asked here, the answer stays with the image.
+                    (image-opaque-p image)
                     (setf (gethash id (terminal-image-store-images display))
                           (copy-terminal-image image))))))))))
     (setf (terminal-image-store-placements display) (nreverse placements))

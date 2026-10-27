@@ -180,7 +180,10 @@ precision highp int;
   (color-texture 0 :type (unsigned-byte 32))
   (color-generation -1 :type fixnum)
   (color-height 0 :type fixnum)
+  ;; Image id to (RGBA TEXTURE WIDTH HEIGHT): the texture holds RGBA.
   (image-textures (make-hash-table) :type hash-table)
+  ;; Image textures no longer shown, newest first, as (TEXTURE WIDTH HEIGHT).
+  (spare-textures '() :type list)
   (uniforms (make-hash-table :test #'equal) :type hash-table))
 
 (defun make-gl-renderer (&optional (api :gl))
@@ -225,8 +228,9 @@ precision highp int;
     (gl:delete-textures (list (gl-renderer-atlas-texture renderer)
                               (gl-renderer-color-texture renderer)))
     (maphash (lambda (id entry) (declare (ignore id))
-               (gl:delete-textures (list (cdr entry))))
+               (gl:delete-textures (list (second entry))))
              (gl-renderer-image-textures renderer))
+    (gl:delete-textures (mapcar #'first (gl-renderer-spare-textures renderer)))
     (gl:delete-buffers (list (gl-renderer-buffer renderer)))
     (gl:delete-buffers (list (gl-renderer-image-buffer renderer)))
     (gl:delete-vertex-arrays (list (gl-renderer-vertex-array renderer)
@@ -293,32 +297,65 @@ precision highp int;
     (sb-sys:with-pinned-objects (instances)
       (%gl:buffer-sub-data :array-buffer 0 bytes (sb-sys:vector-sap instances)))))
 
+(defconstant +gl-spare-textures+ 4
+  "Retired image textures kept for new images of the same size: a video
+sends a new image per frame.")
+
+(defun gl-retire-texture (renderer texture width height)
+  (push (list texture width height) (gl-renderer-spare-textures renderer))
+  (let ((extra (nthcdr +gl-spare-textures+ (gl-renderer-spare-textures renderer))))
+    (when extra
+      (gl:delete-textures (mapcar #'first extra))
+      (setf (gl-renderer-spare-textures renderer)
+            (ldiff (gl-renderer-spare-textures renderer) extra)))))
+
 (defun gl-image-texture (renderer image)
   (let* ((id (terminal-image-id image))
-         (entry (gethash id (gl-renderer-image-textures renderer))))
-    (if (and entry (eq (terminal-image-rgba image) (car entry)))
-        (cdr entry)
-        (let ((texture (gl:gen-texture))
-              (rgba (terminal-image-rgba image)))
-          (when entry (gl:delete-textures (list (cdr entry))))
-          (gl:bind-texture :texture-2d texture)
-          (gl:tex-parameter :texture-2d :texture-min-filter :linear)
-          (gl:tex-parameter :texture-2d :texture-mag-filter :linear)
-          (gl:tex-parameter :texture-2d :texture-wrap-s :clamp-to-edge)
-          (gl:tex-parameter :texture-2d :texture-wrap-t :clamp-to-edge)
+         (entry (gethash id (gl-renderer-image-textures renderer)))
+         (rgba (terminal-image-rgba image))
+         (width (terminal-image-width image))
+         (height (terminal-image-height image)))
+    (if (and entry (eq rgba (first entry)))
+        (second entry)
+        (let ((spare (find-if (lambda (spare)
+                                (and (= width (second spare)) (= height (third spare))))
+                              (gl-renderer-spare-textures renderer))))
           (gl:pixel-store :unpack-alignment 1)
-          (sb-sys:with-pinned-objects (rgba)
-            (gl:tex-image-2d :texture-2d 0 :rgba8
-                             (terminal-image-width image) (terminal-image-height image) 0
-                             :rgba :unsigned-byte (sb-sys:vector-sap rgba)))
-          (setf (gethash id (gl-renderer-image-textures renderer)) (cons rgba texture))
-          texture))))
+          (let ((texture
+                  (if spare
+                      ;; GL orders the update after draws that read the old
+                      ;; pixels, so the texture can be written at once.
+                      (let ((texture (first spare)))
+                        (setf (gl-renderer-spare-textures renderer)
+                              (delete spare (gl-renderer-spare-textures renderer)))
+                        (gl:bind-texture :texture-2d texture)
+                        (sb-sys:with-pinned-objects (rgba)
+                          (%gl:tex-sub-image-2d :texture-2d 0 0 0 width height
+                                                :rgba :unsigned-byte (sb-sys:vector-sap rgba)))
+                        texture)
+                      (let ((texture (gl:gen-texture)))
+                        (gl:bind-texture :texture-2d texture)
+                        (gl:tex-parameter :texture-2d :texture-min-filter :linear)
+                        (gl:tex-parameter :texture-2d :texture-mag-filter :linear)
+                        (gl:tex-parameter :texture-2d :texture-wrap-s :clamp-to-edge)
+                        (gl:tex-parameter :texture-2d :texture-wrap-t :clamp-to-edge)
+                        (sb-sys:with-pinned-objects (rgba)
+                          (gl:tex-image-2d :texture-2d 0 :rgba8 width height 0
+                                           :rgba :unsigned-byte (sb-sys:vector-sap rgba)))
+                        texture))))
+            ;; Retired only now, so trimming the spares cannot free SPARE.
+            (when entry
+              (apply #'gl-retire-texture renderer (rest entry)))
+            (setf (gethash id (gl-renderer-image-textures renderer))
+                  (list rgba texture width height))
+            texture)))))
 
 (defun gl-prune-image-textures (renderer records)
+  "Retire the textures of images RECORDS no longer draw."
   (let ((live (mapcar (lambda (record) (terminal-image-id (second record))) records)))
     (maphash (lambda (id entry)
                (unless (member id live)
-                 (gl:delete-textures (list (cdr entry)))
+                 (apply #'gl-retire-texture renderer (rest entry))
                  (remhash id (gl-renderer-image-textures renderer))))
              (gl-renderer-image-textures renderer))))
 

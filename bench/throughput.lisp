@@ -1,6 +1,6 @@
 (uiop:define-package #:slt/bench
   (:use #:cl #:slt)
-  (:export #:run-throughput))
+  (:export #:run-throughput #:run-image-stream))
 
 (in-package #:slt/bench)
 

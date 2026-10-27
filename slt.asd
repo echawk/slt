@@ -103,10 +103,11 @@ from slt/glyphs drawn with the RENDER extension."
   :components ((:file "engine-libvterm")))
 
 (asdf:defsystem #:slt/bench
-  :description "Engine throughput benchmarks."
-  :depends-on (:slt/core)
+  :description "Engine and image throughput benchmarks."
+  :depends-on (:slt/core :cl-base64)
   :pathname "bench/"
-  :components ((:file "throughput")))
+  :components ((:file "throughput")
+               (:file "images")))
 
 (asdf:defsystem #:slt/ghostty
   :description "libghostty-vt engine for slt (run 'make ghostty' first)."

@@ -156,7 +156,11 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
   image-pipeline
   layer
   (atlas-texture nil)
+  ;; Image id to (RGBA TEXTURE WIDTH HEIGHT): the texture holds RGBA.
   (image-textures (make-hash-table) :type hash-table)
+  ;; Image textures no longer shown, newest first, as (FRAME TEXTURE WIDTH
+  ;; HEIGHT): FRAME is when they were retired.
+  (spare-textures '() :type list)
   (atlas-texture-generation -1)
   ;; The color glyphs' RGBA atlas, once there are any.
   (color-texture nil)
@@ -238,8 +242,10 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
     (map nil #'release (metal-renderer-buffers renderer))
     (release (metal-renderer-atlas-texture renderer))
     (release (metal-renderer-color-texture renderer))
-    (maphash (lambda (id entry) (declare (ignore id)) (release (cdr entry)))
+    (maphash (lambda (id entry) (declare (ignore id)) (release (second entry)))
              (metal-renderer-image-textures renderer))
+    (dolist (spare (metal-renderer-spare-textures renderer))
+      (release (second spare)))
     (release (metal-renderer-pipeline renderer))
     (release (metal-renderer-image-pipeline renderer))
     (release (metal-renderer-queue renderer))
@@ -248,41 +254,86 @@ fragment float4 image_fragment(ImageFragment in [[stage_in]],
     (setf (metal-renderer-pipeline renderer) nil
           (metal-renderer-atlas-texture renderer) nil)))
 
+(defconstant +metal-spare-textures+ 4
+  "Retired image textures kept for new images of the same size: a video
+sends a new image per frame.")
+
+(defun metal-retire-texture (renderer texture width height)
+  (push (list (metal-renderer-frame renderer) texture width height)
+        (metal-renderer-spare-textures renderer))
+  (let ((extra (nthcdr +metal-spare-textures+ (metal-renderer-spare-textures renderer))))
+    (when extra
+      (dolist (spare extra)
+        (msg (second spare) "release" :void))
+      (setf (metal-renderer-spare-textures renderer)
+            (ldiff (metal-renderer-spare-textures renderer) extra)))))
+
+(defun metal-take-texture (renderer width height)
+  "A spare texture of WIDTH x HEIGHT that no frame in flight still reads,
+or NIL."
+  (let ((spare (find-if (lambda (spare)
+                          (destructuring-bind (frame texture w h) spare
+                            (declare (ignore texture))
+                            (and (= w width) (= h height)
+                                 (>= (metal-renderer-frame renderer)
+                                     (+ frame +metal-frames-in-flight+)))))
+                        (metal-renderer-spare-textures renderer))))
+    (when spare
+      (setf (metal-renderer-spare-textures renderer)
+            (delete spare (metal-renderer-spare-textures renderer)))
+      (second spare))))
+
 (defun metal-image-texture (renderer image)
   (let* ((id (terminal-image-id image))
-         (entry (gethash id (metal-renderer-image-textures renderer))))
-    (if (and entry (eq (terminal-image-rgba image) (car entry)))
-        (cdr entry)
-        (progn
-          (when entry (msg (cdr entry) "release" :void))
-          (let* ((width (terminal-image-width image))
-                 (height (terminal-image-height image))
-                 (descriptor (msg "MTLTextureDescriptor"
+         (entry (gethash id (metal-renderer-image-textures renderer)))
+         (rgba (terminal-image-rgba image)))
+    (if (and entry (eq rgba (first entry)))
+        (second entry)
+        (let* ((width (terminal-image-width image))
+               (height (terminal-image-height image))
+               (texture
+                 (or (metal-take-texture renderer width height)
+                     (let ((descriptor
+                             (msg "MTLTextureDescriptor"
                                   "texture2DDescriptorWithPixelFormat:width:height:mipmapped:"
                                   :unsigned-long +mtl-pixel-format-rgba8-unorm+
-                                  :unsigned-long width :unsigned-long height :bool nil))
-                 (texture (msg (metal-renderer-device renderer)
-                               "newTextureWithDescriptor:" :pointer descriptor))
-                 (rgba (terminal-image-rgba image)))
-            (cffi:with-foreign-object (region :unsigned-long 6)
-              (loop for value in (list 0 0 0 width height 1)
-                    for i from 0
-                    do (setf (cffi:mem-aref region :unsigned-long i) value))
-              (sb-sys:with-pinned-objects (rgba)
-                (msg texture "replaceRegion:mipmapLevel:withBytes:bytesPerRow:"
-                     :pointer region :unsigned-long 0
-                     :pointer (sb-sys:vector-sap rgba) :unsigned-long (* width 4) :void)))
-            (setf (gethash id (metal-renderer-image-textures renderer))
-                  (cons rgba texture))
-            texture)))))
+                                  :unsigned-long width :unsigned-long height :bool nil)))
+                       (msg (metal-renderer-device renderer)
+                            "newTextureWithDescriptor:" :pointer descriptor)))))
+          ;; The old texture may still be in a frame in flight.
+          (when entry
+            (apply #'metal-retire-texture renderer (rest entry)))
+          (cffi:with-foreign-object (region :unsigned-long 6)
+            (loop for value in (list 0 0 0 width height 1)
+                  for i from 0
+                  do (setf (cffi:mem-aref region :unsigned-long i) value))
+            (sb-sys:with-pinned-objects (rgba)
+              (msg texture "replaceRegion:mipmapLevel:withBytes:bytesPerRow:"
+                   :pointer region :unsigned-long 0
+                   :pointer (sb-sys:vector-sap rgba) :unsigned-long (* width 4) :void)))
+          (setf (gethash id (metal-renderer-image-textures renderer))
+                (list rgba texture width height))
+          texture))))
+
+(defconstant +metal-spare-texture-frames+ 120
+  "Frames a spare texture is kept before it is released.")
 
 (defun metal-prune-image-textures (renderer records)
-  (let ((live (mapcar (lambda (record) (terminal-image-id (second record))) records)))
+  "Retire the textures of images RECORDS no longer draw, and release spare
+textures nothing has wanted for a while."
+  (let ((live (mapcar (lambda (record) (terminal-image-id (second record))) records))
+        (frame (metal-renderer-frame renderer)))
     (maphash (lambda (id entry)
                (unless (member id live)
-                 (msg (cdr entry) "release" :void)
+                 (apply #'metal-retire-texture renderer (rest entry))
                  (remhash id (metal-renderer-image-textures renderer))))
-             (metal-renderer-image-textures renderer))))
+             (metal-renderer-image-textures renderer))
+    (setf (metal-renderer-spare-textures renderer)
+          (delete-if (lambda (spare)
+                       (when (> frame (+ (first spare) +metal-spare-texture-frames+))
+                         (msg (second spare) "release" :void)
+                         t))
+                     (metal-renderer-spare-textures renderer)))))
 
 (defun metal-encode-images (renderer encoder records viewport-width viewport-height padding)
   (when records
