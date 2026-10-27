@@ -211,7 +211,15 @@ Without DECODE-DATA only the controls are read."
   "Decode base64 split across the octet vectors PARTS, at any boundaries.
 Padding may be missing, and separately padded pieces may be joined."
   (let* ((total (reduce #'+ parts :key #'length))
-         (out (make-array (+ 3 (floor (* 3 total) 4)) :element-type '(unsigned-byte 8)))
+         ;; What the digits before the closing padding hold, so that well
+         ;; formed input fills OUT exactly.
+         (padding (loop for part in (reverse parts)
+                        for trailing = (or (position 61 part :from-end t :test #'/=)
+                                           -1)
+                        sum (- (length part) trailing 1)
+                        while (minusp trailing)))
+         (out (make-array (floor (* 3 (- total padding)) 4)
+                          :element-type '(unsigned-byte 8)))
          (fill 0)
          (bits 0)
          (count 0)
@@ -230,22 +238,42 @@ Padding may be missing, and separately padded pieces may be joined."
                 (incf fill 2)))
              (setf bits 0 count 0)))
       (dolist (part parts)
-        (let ((part (coerce part 'octets)))
-          (declare (type (simple-array (unsigned-byte 8) (*)) part))
-          (loop for octet across part
-                for value = (aref table octet)
-                do (cond
-                     ((>= value 0)
-                      (setf bits (logior (ash (logand bits #x3ffff) 6) value))
-                      (incf count)
-                      (when (= count 4)
-                        (setf (aref out fill) (ldb (byte 8 16) bits)
-                              (aref out (+ fill 1)) (ldb (byte 8 8) bits)
-                              (aref out (+ fill 2)) (ldb (byte 8 0) bits))
-                        (incf fill 3)
-                        (setf bits 0 count 0)))
-                     ((= value -2) (finish-group))
-                     (t (protocol-error "Invalid base64 image payload"))))))
+        (let ((part (coerce part 'octets))
+              (index 0))
+          (declare (type (simple-array (unsigned-byte 8) (*)) part)
+                   (type fixnum index))
+          (loop while (< index (length part))
+                do (let ((a 0) (b 0) (c 0) (d 0))
+                     (declare (type (signed-byte 8) a b c d))
+                     (if (and (zerop count)
+                              (<= (+ index 4) (length part))
+                              (progn (setf a (aref table (aref part index))
+                                           b (aref table (aref part (+ index 1)))
+                                           c (aref table (aref part (+ index 2)))
+                                           d (aref table (aref part (+ index 3))))
+                                     ;; Negative when any is not a digit.
+                                     (>= (logior a b c d) 0)))
+                         ;; A whole quartet of digits, the common case.
+                         (let ((group (logior (ash a 18) (ash b 12) (ash c 6) d)))
+                           (setf (aref out fill) (ldb (byte 8 16) group)
+                                 (aref out (+ fill 1)) (ldb (byte 8 8) group)
+                                 (aref out (+ fill 2)) (ldb (byte 8 0) group))
+                           (incf fill 3)
+                           (incf index 4))
+                         (let ((value (aref table (aref part index))))
+                           (cond
+                             ((>= value 0)
+                              (setf bits (logior (ash (logand bits #x3ffff) 6) value))
+                              (incf count)
+                              (when (= count 4)
+                                (setf (aref out fill) (ldb (byte 8 16) bits)
+                                      (aref out (+ fill 1)) (ldb (byte 8 8) bits)
+                                      (aref out (+ fill 2)) (ldb (byte 8 0) bits))
+                                (incf fill 3)
+                                (setf bits 0 count 0)))
+                             ((= value -2) (finish-group))
+                             (t (protocol-error "Invalid base64 image payload")))
+                           (incf index)))))))
       (finish-group))
     (if (= fill (length out)) out (subseq out 0 fill))))
 
@@ -435,6 +463,20 @@ background, foreground, selection, cursor and URL colors at 248-255."
                        (- index 248))))
         (values (ldb (byte 8 16) rgb) (ldb (byte 8 8) rgb) (ldb (byte 8 0) rgb)))))
 
+(defun rgb-to-rgba (data pixels)
+  "PIXELS pixels of RGB DATA as opaque RGBA."
+  (declare (type octets data) (type fixnum pixels) (optimize speed))
+  (let ((rgba (make-array (* 4 pixels) :element-type '(unsigned-byte 8))))
+    (when (< (length data) (* 3 pixels))
+      (error "Too little RGB data for ~d pixels" pixels))
+    (loop for source of-type fixnum from 0 by 3
+          for target of-type fixnum from 0 below (* 4 pixels) by 4
+          do (setf (aref rgba target) (aref data source)
+                   (aref rgba (+ target 1)) (aref data (+ source 1))
+                   (aref rgba (+ target 2)) (aref data (+ source 2))
+                   (aref rgba (+ target 3)) 255))
+    rgba))
+
 (defun graphics-command-rgba (command &key (palette #'default-palette))
   "Return decoded RGBA octets, width and height for a transmitted image.
 
@@ -456,25 +498,22 @@ PALETTE maps an index 0-255 to (values r g b) for f=8 and f=16 images."
                                     width height format))
         (when (> (length data) expected)
           (protocol-error "Pixel data is too long for ~dx~d f=~d" width height format)))
-      (if (= format 32)
-          (values data width height)
-          (let ((rgba (make-array (* width height 4) :element-type '(unsigned-byte 8)))
-                (colors (make-array 256 :initial-element nil)))
-            (flet ((color (index)
-                     (or (aref colors index)
-                         (setf (aref colors index)
-                               (multiple-value-list (funcall palette index))))))
-              (loop for source from 0 below (length data) by octets-per-pixel
-                    for target from 0 by 4
-                    do (if (= format 24)
-                           (setf (aref rgba target) (aref data source)
-                                 (aref rgba (+ target 1)) (aref data (+ source 1))
-                                 (aref rgba (+ target 2)) (aref data (+ source 2))
-                                 (aref rgba (+ target 3)) 255)
-                           (destructuring-bind (r g b) (color (aref data source))
-                             (setf (aref rgba target) r
-                                   (aref rgba (+ target 1)) g
-                                   (aref rgba (+ target 2)) b
-                                   (aref rgba (+ target 3))
-                                   (if (= format 16) (aref data (1+ source)) 255))))))
-            (values rgba width height))))))
+      (case format
+        (32 (values data width height))
+        (24 (values (rgb-to-rgba (coerce data 'octets) (* width height)) width height))
+        (t
+         (let ((rgba (make-array (* width height 4) :element-type '(unsigned-byte 8)))
+               (colors (make-array 256 :initial-element nil)))
+           (flet ((color (index)
+                    (or (aref colors index)
+                        (setf (aref colors index)
+                              (multiple-value-list (funcall palette index))))))
+             (loop for source from 0 below (length data) by octets-per-pixel
+                   for target from 0 by 4
+                   do (destructuring-bind (r g b) (color (aref data source))
+                        (setf (aref rgba target) r
+                              (aref rgba (+ target 1)) g
+                              (aref rgba (+ target 2)) b
+                              (aref rgba (+ target 3))
+                              (if (= format 16) (aref data (1+ source)) 255)))))
+           (values rgba width height)))))))

@@ -164,6 +164,19 @@ whole or :PASS to have it passed on as :RAW events as it arrives; with
       (replace buffer octets :start1 fill :start2 start :end2 end)
       (setf (scanner-fill scanner) needed))))
 
+(defun find-string-terminator (octets start end bel-p)
+  "The index of the first octet ending a control string in OCTETS from START
+to END -- ESC, CAN, SUB and, with BEL-P, BEL -- or NIL.  Payloads are mostly
+text, so SCAN-TEXT skips to each control."
+  (declare (type octets octets) (type index start end) (optimize speed))
+  (loop for i of-type index = (scan-text octets start end)
+        while (< i end)
+        do (let ((byte (aref octets i)))
+             (if (or (= byte +esc+) (= byte +can+) (= byte +sub+)
+                     (and bel-p (= byte +bel+)))
+                 (return i)
+                 (setf start (1+ i))))))
+
 (defun scan (scanner octets function &key (start 0) (end (length octets)))
   "Scan OCTETS from START to END, calling FUNCTION with an EVENT for each
 complete item.  A sequence left unfinished at END is completed by later
@@ -429,8 +442,8 @@ calls."
                                (unless (eq (scanner-state scanner) :string-pass)
                                  (incf index)))))
                    (:string
-                    (let ((stop (position-if #'string-terminator-p octets
-                                             :start index :end end)))
+                    (let ((stop (find-string-terminator
+                                 octets index end (eq (scanner-string-kind scanner) :osc))))
                       (setf index (or stop end))
                       (when (> (length-so-far index) (scanner-string-limit scanner))
                         ;; Too long to collect: pass it on as it comes.
@@ -464,8 +477,8 @@ calls."
                                                                :initial-element +esc+)
                                          0 1))))
                    (:string-pass
-                    (let ((stop (position-if #'string-terminator-p octets
-                                             :start index :end end)))
+                    (let ((stop (find-string-terminator
+                                 octets index end (eq (scanner-string-kind scanner) :osc))))
                       (when (< index (or stop end))
                         (emit :raw index (or stop end)))
                       (setf index (or stop end)

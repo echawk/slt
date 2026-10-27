@@ -166,6 +166,29 @@
               (graphics-command-data (parse-graphics-command "G;/w==/w"))))
   (is (equal "EINVAL" (code-of (parse-graphics-command "G;AQ*DBAU"))))
   (is (equal "EINVAL" (code-of (parse-graphics-command "G;AQIDB"))))
+  ;; Padding split from its digits, or after a whole quartet.
+  (let ((decoder (make-graphics-decoder)))
+    (graphics-decoder-feed decoder "Gf=32,m=1;AQI")
+    (graphics-decoder-feed decoder "Gm=1;D=")
+    (is (equalp (octets 1 2 3)
+                (graphics-command-data (graphics-decoder-feed decoder "Gm=0;=")))))
+  (is (equalp (octets 1 2 3)
+              (graphics-command-data (parse-graphics-command "G;AQID="))))
+  ;; Chunks at any boundary decode as the whole would.
+  (let* ((data (let ((v (make-array 3001 :element-type '(unsigned-byte 8))))
+                 (dotimes (i (length v) v) (setf (aref v i) (mod (* i 37) 256)))))
+         (encoded (let ((whole (encode-graphics-command '((#\f . "32")) data)))
+                    (subseq whole (1+ (position #\; whole)) (- (length whole) 2))))
+         (decoder (make-graphics-decoder))
+         (command nil))
+    (loop for start = 0 then end
+          for end = (min (length encoded) (+ start 1 (mod (* start 7) 13)))
+          do (setf command (graphics-decoder-feed
+                            decoder (format nil "G~:[a=t,f=32,~;~]m=~d;~a"
+                                            (plusp start) (if (< end (length encoded)) 1 0)
+                                            (subseq encoded start end))))
+          while (< end (length encoded)))
+    (is (equalp data (graphics-command-data command))))
   ;; Continuation chunks may carry q, the last one wins, and other keys are
   ;; ignored rather than rejected.
   (let ((decoder (make-graphics-decoder)))
