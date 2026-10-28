@@ -135,6 +135,7 @@
    #:*window-padding*
    #:*font-fallback-families*
    #:*iterm2-images*
+   #:*ligatures*
    #:*commands*
    #:command-key-handler
    #:select-all

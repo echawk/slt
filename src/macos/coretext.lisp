@@ -17,6 +17,7 @@
 (defconstant +cf-string-encoding-utf8+ #x08000100)
 (defconstant +cg-image-alpha-only+ 7)
 (defconstant +bits-per-component+ 8)
+(defconstant +color-glyph-cells+ 2 "The most cells a color glyph (an emoji) takes.")
 ;; kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big: R, G, B, A octets.
 (defconstant +cg-rgba-premultiplied+ (logior 1 (ash 4 12)))
 (defconstant +ct-font-color-glyphs-trait+ (ash 1 13))
@@ -63,6 +64,10 @@
 (cffi:defcfun ("CTLineGetTypographicBounds" %ct-line-typographic-bounds) :double
   (line :pointer) (ascent :pointer) (descent :pointer) (leading :pointer))
 (cffi:defcfun ("CTRunGetAttributes" %ct-run-attributes) :pointer (run :pointer))
+(cffi:defcfun ("CTRunGetGlyphCount" %ct-run-glyph-count) :long (run :pointer))
+;; The CFRange argument, passed by value, is its location and length.
+(cffi:defcfun ("CTRunGetGlyphs" %ct-run-get-glyphs) :void
+  (run :pointer) (location :long) (length :long) (buffer :pointer))
 (cffi:defcfun ("CTFontGetSymbolicTraits" %ct-font-symbolic-traits) :uint32 (font :pointer))
 (cffi:defcfun ("CFArrayGetCount" %cf-array-count) :long (array :pointer))
 (cffi:defcfun ("CFArrayGetValueAtIndex" %cf-array-value) :pointer (array :pointer) (index :long))
@@ -239,7 +244,7 @@ or a null pointer."
   (cell-width 1 :type fixnum)
   (cell-height 1 :type fixnum)
   (baseline 0 :type fixnum)
-  ;; Scratch bitmap two cells wide, reused for every glyph.
+  ;; Scratch bitmap as wide as the longest ligature, reused for every glyph.
   (bitmap (cffi:null-pointer))
   (context (cffi:null-pointer))
   ;; The same for color glyphs, RGBA, made when the first one is drawn.
@@ -271,11 +276,12 @@ or a null pointer."
          (leading (ct-font-leading regular))
          (cell-width (max 1 (round (ct-advance-of regular #\M))))
          (cell-height (max 1 (ceiling (+ ascent descent leading))))
-         (bitmap (cffi:foreign-alloc :uint8 :count (* 2 cell-width cell-height)
+         (bitmap-width (* +max-ligature-cells+ cell-width))
+         (bitmap (cffi:foreign-alloc :uint8 :count (* bitmap-width cell-height)
                                             :initial-element 0))
-         (context (%cg-bitmap-context-create bitmap (* 2 cell-width) cell-height
+         (context (%cg-bitmap-context-create bitmap bitmap-width cell-height
                                              +bits-per-component+
-                                             (* 2 cell-width) (cffi:null-pointer)
+                                             bitmap-width (cffi:null-pointer)
                                              +cg-image-alpha-only+)))
     (%cg-context-set-should-smooth-fonts context nil)
     (%make-coretext-font
@@ -354,7 +360,7 @@ or a null pointer."
 
 (defun coretext-color-context (font)
   (when (cffi:null-pointer-p (coretext-font-color-context font))
-    (let* ((width (* 2 (coretext-font-cell-width font)))
+    (let* ((width (* +color-glyph-cells+ (coretext-font-cell-width font)))
            (height (coretext-font-cell-height font))
            (bitmap (cffi:foreign-alloc :uint8 :count (* +rgba-octets+ width height)
                                              :initial-element 0))
@@ -421,13 +427,39 @@ up: (values LEFT BOTTOM WIDTH HEIGHT), or NIL when it draws nothing."
                 (values (- left pen-x) (- height bottom pen-y)
                         (- right left) (- bottom top)))))))))
 
+(defun ct-draw-line-centered (context line ink-x ink-y ink-width ink-height width height scale)
+  "Draw LINE, whose ink lies as CT-LINE-INK says, scaled by SCALE with its
+ink centered in the WIDTH x HEIGHT box at the origin of CONTEXT."
+  (let ((scale (coerce scale 'double-float)))
+    (%cg-context-save-gstate context)
+    (%cg-context-translate context
+                           (- (/ (- width (* ink-width scale)) 2) (* ink-x scale))
+                           (- (/ (- height (* ink-height scale)) 2) (* ink-y scale)))
+    (%cg-context-scale context scale scale)
+    (%cg-context-set-text-position context 0d0 0d0)
+    (%ct-line-draw line context)
+    (%cg-context-restore-gstate context)))
+
+(defun ct-line-fallback-p (line ct-font)
+  "True when CoreText set some of LINE in a font other than CT-FONT."
+  (let ((runs (%ct-line-glyph-runs line))
+        (key (foreign-global "kCTFontAttributeName"))
+        (own (let ((name (%ct-font-copy-postscript-name ct-font)))
+               (prog1 (cf-string-lisp name) (cf-release name)))))
+    (loop for i below (%cf-array-count runs)
+          for run-font = (%cf-dictionary-value (%ct-run-attributes (%cf-array-value runs i)) key)
+            thereis (and (not (cffi:null-pointer-p run-font))
+                         (let ((name (%ct-font-copy-postscript-name run-font)))
+                           (prog1 (string/= own (cf-string-lisp name))
+                             (cf-release name)))))))
+
 (defun coretext-draw-color-line (font line width height)
   "Draw LINE in color with its ink scaled to fill WIDTH x HEIGHT pixels,
 keeping its proportions, and centered; return the box's premultiplied RGBA
 pixels."
   (let* ((context (coretext-color-context font))
          (bitmap (coretext-font-color-bitmap font))
-         (bitmap-width (* 2 (coretext-font-cell-width font)))
+         (bitmap-width (* +color-glyph-cells+ (coretext-font-cell-width font)))
          (bitmap-height (coretext-font-cell-height font))
          (rgba (make-array (* +rgba-octets+ width height) :element-type '(unsigned-byte 8)
                                                          :initial-element 0)))
@@ -436,16 +468,8 @@ pixels."
                             (coerce bitmap-height 'double-float))
     (multiple-value-bind (ink-x ink-y ink-width ink-height) (ct-line-ink line)
       (when ink-x
-        (let ((scale (coerce (min (/ width ink-width) (/ height ink-height)) 'double-float)))
-          (%cg-context-save-gstate context)
-          ;; Put the scaled ink box in the middle of the cells.
-          (%cg-context-translate context
-                                 (- (/ (- width (* ink-width scale)) 2) (* ink-x scale))
-                                 (- (/ (- height (* ink-height scale)) 2) (* ink-y scale)))
-          (%cg-context-scale context scale scale)
-          (%cg-context-set-text-position context 0d0 0d0)
-          (%ct-line-draw line context)
-          (%cg-context-restore-gstate context))))
+        (ct-draw-line-centered context line ink-x ink-y ink-width ink-height width height
+                               (min (/ width ink-width) (/ height ink-height)))))
     ;; Bitmap rows are stored top to bottom, like the atlas.
     (dotimes (row (min height bitmap-height) rgba)
       (dotimes (byte (* +rgba-octets+ (min width bitmap-width)))
@@ -489,27 +513,72 @@ has it."
         (call-with-ct-line fallback string function)
         result)))
 
+(defun ct-line-glyphs (line)
+  "The glyphs of LINE, in order."
+  (let ((runs (%ct-line-glyph-runs line)))
+    (loop for i below (%cf-array-count runs)
+          for run = (%cf-array-value runs i)
+          for count = (%ct-run-glyph-count run)
+          append (cffi:with-foreign-object (glyphs :uint16 (max 1 count))
+                   ;; A zero range means the whole run.
+                   (%ct-run-get-glyphs run 0 0 glyphs)
+                   (loop for g below count collect (cffi:mem-aref glyphs :uint16 g))))))
+
+(defun ct-character-glyphs (ct-font string)
+  "The glyph CT-FONT has for each character of STRING on its own, or NIL
+when it lacks one."
+  (let ((count (length string)))
+    (cffi:with-foreign-objects ((characters :uint16 count) (glyphs :uint16 count))
+      (dotimes (i count)
+        (setf (cffi:mem-aref characters :uint16 i) (char-code (char string i))))
+      (and (%ct-font-glyphs ct-font characters glyphs count)
+           (loop for i below count collect (cffi:mem-aref glyphs :uint16 i))))))
+
+(defun coretext-shaper (font)
+  "A GLYPH-ATLAS shaper for FONT: true when CoreText draws a run of ASCII
+otherwise than its characters' own glyphs one by one, which is what a
+ligature or a contextual alternate (Fira Code, JetBrains Mono) does."
+  (lambda (string style)
+    (let* ((ct-font (coretext-font-for-style font style))
+           (own (ct-character-glyphs ct-font string)))
+      (and own
+           (call-with-ct-line ct-font string
+                              (lambda (line)
+                                (not (equal own (ct-line-glyphs line)))))))))
+
 (defun coretext-rasterizer (font)
   "A GLYPH-ATLAS rasterizer drawing with FONT."
   (lambda (string style pixels stride x y width height)
     (declare (type u8-vector pixels))
     (let* ((context (coretext-font-context font))
            (bitmap (coretext-font-bitmap font))
-           (bitmap-width (* 2 (coretext-font-cell-width font)))
+           (bitmap-width (* +max-ligature-cells+ (coretext-font-cell-width font)))
            (bitmap-height (coretext-font-cell-height font)))
       (call-with-coretext-line
        font style string
        (lambda (line)
          (if (ct-line-color-p line)
              (coretext-draw-color-line font line width height)
-             (progn
+             (let ((baseline (coretext-font-baseline font)))
                (%cg-context-clear-rect context 0d0 0d0
                                        (coerce bitmap-width 'double-float)
                                        (coerce bitmap-height 'double-float))
-               (%cg-context-set-text-position context 0d0
-                                              (coerce (coretext-font-baseline font)
-                                                      'double-float))
-               (%ct-line-draw line context)
+               ;; Fallback fonts' glyphs (Nerd Font icons among them) may be
+               ;; larger than the cells, or sit outside them: those are
+               ;; shrunk to fit and centered, as Ghostty does.
+               (multiple-value-bind (ink-x ink-y ink-width ink-height)
+                   (and (ct-line-fallback-p line (coretext-font-for-style font style))
+                        (ct-line-ink line))
+                 (if (and ink-x
+                          (or (minusp ink-x) (> (+ ink-x ink-width) width)
+                              (minusp (+ baseline ink-y))
+                              (> (+ baseline ink-y ink-height) height)))
+                     (ct-draw-line-centered context line ink-x ink-y ink-width ink-height
+                                            width height
+                                            (min 1 (/ width ink-width) (/ height ink-height)))
+                     (progn
+                       (%cg-context-set-text-position context 0d0 (coerce baseline 'double-float))
+                       (%ct-line-draw line context))))
                ;; Bitmap rows are stored top to bottom, like the atlas.
                (dotimes (row (min height bitmap-height))
                  (let ((source (* row bitmap-width))

@@ -142,7 +142,8 @@ whose window it is.  ARGUMENTS follow the window, as in DEFCALLBACK."
                 (gl-view-scale view) scale
                 (gl-view-cell-width view) cw
                 (gl-view-cell-height view) ch
-                (gl-view-atlas view) (make-glyph-atlas cw ch (glyph-font-rasterizer font))
+                (gl-view-atlas view) (make-glyph-atlas cw ch (glyph-font-rasterizer font)
+                                                              :shaper (glyph-font-shaper font))
                 (gl-view-instances view) nil))))))
 
 (defun gl-view-content-scale (view)

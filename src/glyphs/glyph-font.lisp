@@ -20,6 +20,11 @@
   #+darwin (coretext-rasterizer font)
   #-darwin (freetype-rasterizer font))
 
+(defun glyph-font-shaper (font)
+  "A GLYPH-ATLAS shaper for FONT, or NIL where text is not shaped yet."
+  #+darwin (coretext-shaper font)
+  #-darwin (progn font nil))
+
 (defun close-glyph-font (font)
   #+darwin (free-coretext-font font)
   #-darwin (free-ft-font font))

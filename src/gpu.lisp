@@ -52,6 +52,13 @@
   ;; Rows of pixels that changed since the frontend last uploaded them.
   (dirty-start nil :type (or null fixnum))
   (dirty-end 0 :type fixnum)
+  ;; (FUNCTION STRING STYLE): true when the font draws STRING, a run of
+  ;; cells, otherwise than its characters one by one (ligatures); NIL when
+  ;; the rasterizer cannot shape.
+  (shaper nil :type (or null function))
+  ;; (STRING . STYLE-KEY) -> the first of the slots holding STRING's run,
+  ;; or :NONE when it has no ligature.
+  (ligatures (make-hash-table :test #'equal) :type hash-table)
   ;; (FUNCTION STRING STYLE PIXELS STRIDE X Y WIDTH HEIGHT): draw STRING's
   ;; coverage into PIXELS within the box; STYLE is a list of :bold :italic.
   ;; For a color glyph it may instead return the box's premultiplied RGBA
@@ -65,7 +72,8 @@
 past it a full atlas is cleared first, and grows only when one screen of
 glyphs does not fit.")
 
-(defun make-glyph-atlas (slot-width slot-height rasterizer &key (width 2048) (height 256))
+(defun make-glyph-atlas (slot-width slot-height rasterizer
+                         &key (width 2048) (height 256) shaper)
   (let ((slots-per-row (max 2 (floor width slot-width)))
         (slot-rows (max 1 (floor height slot-height))))
     (%make-glyph-atlas :slot-width slot-width
@@ -76,7 +84,8 @@ glyphs does not fit.")
                        :slot-rows slot-rows
                        :pixels (make-array (* width height) :element-type '(unsigned-byte 8)
                                                             :initial-element 0)
-                       :rasterizer rasterizer)))
+                       :rasterizer rasterizer
+                       :shaper shaper)))
 
 (defun glyph-atlas-clear (atlas)
   (fill (glyph-atlas-pixels atlas) 0)
@@ -86,6 +95,7 @@ glyphs does not fit.")
           (glyph-atlas-color-dirty-end atlas) (glyph-atlas-height atlas)))
   (clrhash (glyph-atlas-table atlas))
   (clrhash (glyph-atlas-cluster-table atlas))
+  (clrhash (glyph-atlas-ligatures atlas))
   (setf (glyph-atlas-next-slot atlas) 1
         (glyph-atlas-dirty-start atlas) 0
         (glyph-atlas-dirty-end atlas) (glyph-atlas-height atlas))
@@ -206,6 +216,86 @@ it on first use.  Return NIL when the atlas is full."
                       (logior slot +glyph-color+)
                       slot)))))))
 
+;;; Ligatures.  A run of cells holding ASCII punctuation in one style, as
+;;; ->, != or ===, is offered to the atlas's shaper; when the font draws it
+;;; otherwise than character by character, the run is drawn once over as
+;;; many adjacent slots as it has cells, the way a wide character takes two.
+
+(defparameter +max-ligature-cells+ 16
+  "The longest run of cells shaped together; longer ones are split.")
+
+(defconstant +ascii-code-limit+ 128)
+
+(defun ligature-character-p (code)
+  "True for the characters runs of which are shaped: ASCII punctuation."
+  (and (< code +ascii-code-limit+)
+       (let ((char (code-char code)))
+         (and (graphic-char-p char) (not (alphanumericp char)) (char/= char #\Space)))))
+
+(defun glyph-atlas-ligature (atlas text attrs)
+  "The first of the slots holding the run TEXT in ATTRS's style when the
+font draws it with ligatures; NIL when it has none; :FULL when it has one
+but the atlas is full."
+  (let* ((bold (logtest attrs +attr-bold+))
+         (italic (logtest attrs +attr-italic+))
+         (style (append (and bold '(:bold)) (and italic '(:italic))))
+         (key (cons text (glyph-key 0 bold italic nil)))
+         (known (gethash key (glyph-atlas-ligatures atlas))))
+    (cond ((eq known :none) nil)
+          (known)
+          ((not (funcall (glyph-atlas-shaper atlas) text style))
+           (setf (gethash key (glyph-atlas-ligatures atlas)) :none)
+           nil)
+          (t (let ((slot (allocate-glyph-slots atlas (length text))))
+               (if slot
+                   (progn (rasterize-into-slot atlas slot text style (length text))
+                          (setf (gethash key (glyph-atlas-ligatures atlas)) slot))
+                   :full))))))
+
+(defun row-ligature-slots (grid row atlas)
+  "For ROW of GRID, a vector of the slots ligatures give its cells (NIL for
+other cells), NIL when it has none, or :FULL when the atlas filled up."
+  (when (and *ligatures* (glyph-atlas-shaper atlas))
+    (let ((columns (grid-columns grid))
+          (slots nil))
+      (flet ((candidate-p (column)
+               (let ((index (grid-index grid row column)))
+                 (and (ligature-character-p (grid-glyph-code grid index))
+                      (not (gethash index (grid-combining grid)))
+                      (not (logtest (aref (grid-attrs grid) index)
+                                    (logior +attr-wide+ +attr-wide-spacer+ +attr-invisible+))))))
+             (style (column)
+               (logand (aref (grid-attrs grid) (grid-index grid row column))
+                       (logior +attr-bold+ +attr-italic+))))
+        (loop with column = 0
+              while (< column columns)
+              do (if (not (candidate-p column))
+                     (incf column)
+                     (let ((end (loop for next from (1+ column)
+                                      while (and (< next columns)
+                                                 (< (- next column) +max-ligature-cells+)
+                                                 (candidate-p next)
+                                                 (= (style next) (style column)))
+                                      finally (return next))))
+                       (when (> (- end column) 1)
+                         (let* ((text (map 'string
+                                           (lambda (c)
+                                             (code-char (grid-glyph-code
+                                                         grid (grid-index grid row c))))
+                                           (loop for c from column below end collect c)))
+                                (slot (glyph-atlas-ligature
+                                       atlas text
+                                       (aref (grid-attrs grid) (grid-index grid row column)))))
+                           (cond ((eq slot :full) (return-from row-ligature-slots :full))
+                                 (slot
+                                  (unless slots
+                                    (setf slots (make-array columns :initial-element nil)))
+                                  (loop for c from column below end
+                                        for s from slot
+                                        do (setf (aref slots c) s))))))
+                       (setf column end))))
+        slots))))
+
 (defun make-cell-instances (grid)
   (make-array (* +gpu-words-per-cell+ (grid-rows grid) (grid-columns grid))
               :element-type '(unsigned-byte 32) :initial-element 0))
@@ -221,7 +311,10 @@ it on first use.  Return NIL when the atlas is full."
                             (grid-cursor-column grid)))
         (wide-slot nil)
         (wide-fg 0)
-        (wide-bg 0))
+        (wide-bg 0)
+        (ligature-slots (row-ligature-slots grid row atlas)))
+    (when (eq ligature-slots :full)
+      (return-from pack-grid-row nil))
     (dotimes (column columns t)
       (let* ((index (grid-index grid row column))
              (code (grid-glyph-code grid index))
@@ -246,6 +339,7 @@ it on first use.  Return NIL when the atlas is full."
             (setf bg (palette-selection palette)))
           (let ((slot
                   (cond
+                    ((and ligature-slots (aref ligature-slots column)))
                     ((logtest attrs +attr-wide-spacer+)
                      (prog1 (if wide-slot (1+ wide-slot) 0)
                        (when wide-slot

@@ -142,7 +142,16 @@ Emoji) in color, scaled to fit their cells. Each font's cascade list holds
 process), ahead of CoreText's own fallbacks; a character CoreText still
 sets in LastResort is looked up among the installed fonts with a
 character-set `CTFontCollection` query, as Ghostty's CoreText discovery
-does. font-discovery
+does.  A fallback font's glyph whose ink would leave its cells is shrunk
+to fit and centered.
+
+Ligatures: each row's runs of ASCII punctuation in one style (up to
+`+max-ligature-cells+`) go to the atlas's shaper, which says whether the
+font draws the run otherwise than character by character (a ligature or a
+contextual alternate).  Such a run is rasterized once across as many
+adjacent slots as it has cells, as a wide character takes two, and the
+answer is cached per run and style.  Only the CoreText rasterizer shapes;
+`*ligatures*` turns it off. font-discovery
 c6e4728 aborts there, because it reads `kCTFontFormatAttribute`, a CFNumber,
 as a string.
 

@@ -635,7 +635,8 @@ the next timer, or NIL."
                     :glyph-set (xlib:render-create-glyph-set
                                 (xlib:find-standard-picture-format display :a8))
                     :font font
-                    :atlas (make-glyph-atlas cw ch (glyph-font-rasterizer font))
+                    :atlas (make-glyph-atlas cw ch (glyph-font-rasterizer font)
+                                     :shaper (glyph-font-shaper font))
                     :cell-width cw :cell-height ch
                     :width width :height height)))
         (push view (clx-frontend-views frontend))

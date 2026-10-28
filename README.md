@@ -302,8 +302,15 @@ Characters the font lacks are drawn from the first family in
 Its default holds Symbols Nerd Font Mono, which slt ships in `fonts/`
 (next to the executable), so the icons Emacs, Neovim and shell prompts
 print need no patched font. On macOS, CoreText's own fallbacks (emoji, CJK)
-come after the list. Elsewhere color fonts (Noto Color Emoji) draw in
-color too.
+come after the list, and a fallback font's glyph larger than its cell (as
+many icons are) is shrunk to fit and centered, as in Ghostty. Elsewhere
+color fonts (Noto Color Emoji) draw in color too.
+
+Ligatures (`->`, `!=`, `===` in fonts such as Fira Code, JetBrains Mono or
+Victor Mono) are drawn over their characters' cells when the font has them
+and `*ligatures*` is true, the default; set it to `nil` to draw every
+character on its own. Runs of ASCII punctuation are shaped, by CoreText on
+macOS; elsewhere shaping waits for HarfBuzz.
 
 The cursor blinks when the program asks for it (DECSCUSR 1, 3 or 5, or
 mode 12), only in the focused window, and stays shown while you type. Set

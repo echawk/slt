@@ -310,6 +310,12 @@ Frontends without a place for it ignore it.")
     (otherwise
      '("Monospace"))))
 
+(defvar *ligatures* t
+  "Draw the ligatures the font has (as in Fira Code or JetBrains Mono: ->,
+!=, === ...) over the cells of their characters.  Fonts without ligatures
+are not affected.  Only runs of ASCII punctuation are shaped, and only by
+CoreText, on macOS.")
+
 (defparameter +bundled-symbols-family+ "Symbols Nerd Font Mono"
   "The family of the symbols font slt ships (fonts/README.md).")
 

@@ -687,7 +687,8 @@ delivering its close notification."
                                  :delegate delegate
                                  :renderer renderer
                                  :font font
-                                 :atlas (make-glyph-atlas cw ch (coretext-rasterizer font))
+                                 :atlas (make-glyph-atlas cw ch (coretext-rasterizer font)
+                                                  :shaper (coretext-shaper font))
                                  :scale (msg window "backingScaleFactor" :double)
                                  :cell-width cw
                                  :cell-height ch
@@ -975,7 +976,8 @@ button's menu."
           (cocoa-view-font-size view) size
           (cocoa-view-cell-width view) cw
           (cocoa-view-cell-height view) ch
-          (cocoa-view-atlas view) (make-glyph-atlas cw ch (coretext-rasterizer font))
+          (cocoa-view-atlas view) (make-glyph-atlas cw ch (coretext-rasterizer font)
+                                                  :shaper (coretext-shaper font))
           ;; A new atlas starts at generation 0 too: make the renderer
           ;; replace its texture.
           (metal-renderer-atlas-texture-generation (cocoa-view-renderer view)) -1)
