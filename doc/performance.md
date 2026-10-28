@@ -26,19 +26,36 @@ emulator as child output does, and each is followed by a render.
     scripts/lisp --eval '(asdf:load-system :slt/bench)' \
                  --eval '(slt/bench:run-image-stream)'
 
-At 1280x720 on an M-series Mac, before and after the changes below:
+At 1280x720 on an M-series Mac, at first and now:
 
-|                        | before  | after   |
-|------------------------|---------|---------|
-| frames per second      | 8.3     | 86      |
-| feeding, per frame     | 120 ms  | 11.5 ms |
-| consed, per frame      | 17.1 MB | 4.2 MB  |
-| images left to draw    | 91      | 1       |
+|                        | at first | now     |
+|------------------------|----------|---------|
+| frames per second      | 8.3      | 345     |
+| feeding, per frame     | 120 ms   | 2.9 ms  |
+| consed, per frame      | 17.1 MB  | 4.1 MB  |
+| images stored          | 91       | 1       |
+| images left to draw    | 91       | 1       |
 
-Garbage collection took 0.4% of the time. Rendering, which snapshots the
-images for the frontend, took 0.1 ms per frame. Output captured from mpv
-itself (`mpv --vo=kitty --untimed`, a 1280x720 test pattern) goes through
-at 78 frames per second, with the same 4.3 MB per frame.
+Rendering, which snapshots the images for the frontend, takes 0.03 ms per
+frame. Output captured from mpv itself (`mpv --vo=kitty --untimed`, a
+1280x720 test pattern) goes through the same way.
+
+**The real app.** With timers around the Cocoa frame work while a window
+plays that capture as fast as `cat` sends it, the main thread spends a
+mean 0.05 ms per display-link tick, 0.44 ms at the 95th percentile and
+3.4 ms at most. Drawing a frame takes 0.44 ms, of which the image upload
+(`replaceRegion:`) is 0.30 ms and waiting for `nextDrawable` under
+0.1 ms. Other windows have little to wait for.
+
+**Memory.** bin/slt's physical footprint (`vmmap -summary`) with one
+lispvt window, before and after playing the capture three times:
+
+|                          | at first | now        |
+|--------------------------|----------|------------|
+| idle                     | 188 MB   | 178 MB     |
+| after the video          | 635 MB   | 250-300 MB |
+| after a full collection  | 411 MB   | 194 MB     |
+| images stored            | 221 MB   | 3.7 MB     |
 
 ## Done
 
@@ -58,7 +75,7 @@ at 78 frames per second, with the same 4.3 MB per frame.
   the RGBA); now only the RGBA is made. Other images are still joined and
   decoded at the last chunk.
 - **Skip images hidden under an opaque one.** mpv never deletes its frames,
-  so they pile up until the 320 MB quota evicts the oldest, as in kitty.
+  so they piled up until the 320 MB quota evicted the oldest, as in kitty.
   `terminal-image-render-list` leaves out records an opaque record drawn
   later covers entirely; RGB images are opaque, and others are checked once
   per frame of pixels. Every frontend draws one image per frame instead of
@@ -73,21 +90,37 @@ at 78 frames per second, with the same 4.3 MB per frame.
   screen, and resent all ninety stacked frames per video frame. Each client
   is now sent only pixels it does not have, and the client decodes each
   image once.
+- **Free video frames hidden for good.** A new opaque anonymous image placed with the same geometry as an older
+  anonymous one of the same size now frees it: the two are drawn alike at
+  any cell size and every delete command or scroll removes both, so
+  nothing could show the older one again, as in kitty.
+- **Decode base64 16 digits at a time.** `lib/simd-base64` classifies 16
+  digits, maps them to sextets and repacks them as four RGBA pixels in
+  vector registers (NEON on arm64, SSE2 on x86-64). kitty-graphics also
+  parses each chunk's controls from its octets instead of a string copy.
+- **Start glyph atlases small.** They were 2048 pixels square from the
+  start, plus a 16 MB color atlas after one emoji, per window and again on
+  the GPU. They now start 256 high and double, keeping their glyphs.
+- **Collect garbage sooner.** SBCL lets 5% of the heap (215 MB of 4 GB)
+  be allocated between collections. bin/slt sets 64 MB, which costs no
+  throughput in either benchmark.
+
+## Measured and left alone
+
+- **Upload off the main thread.** The upload is 0.3 ms of a 720p frame;
+  staging it through a shared `MTLBuffer` would save little.
+- **Render off the main thread.** The main thread is idle nearly all the
+  time while video plays, so per-window render threads are not needed.
+- **Reuse frame buffers.** A tenth of feeding is the kernel zeroing each
+  new 3.7 MB frame. Reusing a freed frame's vector would race with the
+  frontend still drawing it.
+- **Opacity of RGBA frames.** Checking every alpha of a 720p frame takes
+  0.4 ms, once per frame.
 
 ## Still to do
 
-- **Free covered video frames.** The frames hidden under the newest one stay
-  stored until the quota evicts them: about 320 MB per window playing video.
-  Freeing an anonymous image once an opaque one covers all its placements
-  would save that, but deleting the newer placement would then no longer
-  reveal the one under it, as it does in kitty.
-- **Upload off the main thread.** A new frame is still copied into its
-  texture with `replaceRegion:` on the main thread. Staging it in a shared
-  `MTLBuffer` and blitting it would leave the copy to the GPU.
-- **Measure the real app.** How long `nextDrawable` in `metal-draw` blocks
-  on the main thread, and how long other windows wait for a frame, while mpv
-  plays.
-- **Render off the main thread.** `CAMetalLayer` can be drawn from a
-  background thread. Per-window render threads would leave only event
-  handling and layer setup on the main thread. This is the largest change
-  and should wait until the cheaper ideas above have been measured.
+- **Scrollback.** lispvt keeps each scrollback line at full width, 14
+  octets a cell: 22 MB for 10,000 lines of 160 columns, mostly blank.
+  Trimming lines to their text as they enter the scrollback would save
+  most of it, but the lines it evicts could then no longer be reused, so
+  every scroll would allocate. (The ghostty engine keeps its own.)
