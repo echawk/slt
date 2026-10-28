@@ -222,8 +222,15 @@
 (defun parse-cli-arguments (arguments)
   (clingon:parse-command-line (make-cli-command) arguments))
 
+(defvar *gc-nursery-bytes* (* 64 1024 1024)
+  "Bytes bin/slt allocates between garbage collections.  SBCL's default, 5%
+of the heap, lets about 200 MB of garbage pile up between them; collecting
+more often costs no throughput, since what is collected is mostly
+short-lived.")
+
 (defun main (&optional (arguments (uiop:command-line-arguments)))
   "Entry point of bin/slt.  ARGUMENTS default to the process's command line."
+  (setf (sb-ext:bytes-consed-between-gcs) *gc-nursery-bytes*)
   ;; Older macOS passes -psn_0_NNNN to applications the Finder starts.
   (clingon:run (make-cli-command)
                (remove-if (lambda (argument) (uiop:string-prefix-p "-psn_" argument))

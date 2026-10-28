@@ -60,7 +60,12 @@
   ;; Incremented whenever the atlas is cleared, invalidating packed slots.
   (generation 0 :type fixnum))
 
-(defun make-glyph-atlas (slot-width slot-height rasterizer &key (width 2048) (height 2048))
+(defparameter +glyph-atlas-full-height+ 2048
+  "Atlases start small and grow, keeping their glyphs, up to this height;
+past it a full atlas is cleared first, and grows only when one screen of
+glyphs does not fit.")
+
+(defun make-glyph-atlas (slot-width slot-height rasterizer &key (width 2048) (height 256))
   (let ((slots-per-row (max 2 (floor width slot-width)))
         (slot-rows (max 1 (floor height slot-height))))
     (%make-glyph-atlas :slot-width slot-width
@@ -87,20 +92,34 @@
   (incf (glyph-atlas-generation atlas))
   atlas)
 
-(defun glyph-atlas-grow (atlas)
-  "Double the atlas height (the texture must then be recreated) and clear it."
+(defun glyph-atlas-grow (atlas &key keep)
+  "Double the atlas height (the texture must then be recreated) and clear
+it, or with KEEP keep its glyphs in their slots."
   (let ((height (min 16384 (* 2 (glyph-atlas-height atlas)))))
     (when (= height (glyph-atlas-height atlas))
       (error "The glyph atlas cannot hold one screen of glyphs."))
-    (setf (glyph-atlas-height atlas) height
-          (glyph-atlas-slot-rows atlas) (max 1 (floor height (glyph-atlas-slot-height atlas)))
-          (glyph-atlas-pixels atlas) (make-array (* (glyph-atlas-width atlas) height)
-                                                 :element-type '(unsigned-byte 8))
-          (glyph-atlas-color-pixels atlas)
-          (and (glyph-atlas-color-pixels atlas)
-               (make-array (* 4 (glyph-atlas-width atlas) height)
-                           :element-type '(unsigned-byte 8))))
-    (glyph-atlas-clear atlas)))
+    (flet ((grown (pixels octets-per-pixel)
+             (and pixels
+                  (let ((new (make-array (* octets-per-pixel (glyph-atlas-width atlas) height)
+                                         :element-type '(unsigned-byte 8)
+                                         :initial-element 0)))
+                    (when keep (replace new pixels))
+                    new))))
+      (setf (glyph-atlas-height atlas) height
+            (glyph-atlas-slot-rows atlas) (max 1 (floor height (glyph-atlas-slot-height atlas)))
+            (glyph-atlas-pixels atlas) (grown (glyph-atlas-pixels atlas) 1)
+            (glyph-atlas-color-pixels atlas) (grown (glyph-atlas-color-pixels atlas) 4)))
+    (if keep
+        ;; Same slots, larger textures: renderers recreate and fill them.
+        (progn
+          (setf (glyph-atlas-dirty-start atlas) 0
+                (glyph-atlas-dirty-end atlas) height)
+          (when (glyph-atlas-color-pixels atlas)
+            (setf (glyph-atlas-color-dirty-start atlas) 0
+                  (glyph-atlas-color-dirty-end atlas) height))
+          (incf (glyph-atlas-generation atlas))
+          atlas)
+        (glyph-atlas-clear atlas))))
 
 (defun glyph-atlas-take-color-dirty (atlas)
   "Return the dirty row range [START, END) of the color atlas and reset
@@ -261,14 +280,19 @@ cleared and every row repacked."
                (when (= 1 (sbit (grid-dirty grid) row))
                  (unless (pack-grid-row grid row atlas palette instances)
                    (return nil))))))
-      ;; Clearing evicts glyphs from earlier screens; if one screen alone
-      ;; does not fit, grow the atlas until it does.
+      ;; A small atlas grows keeping its glyphs.  A full-size one is
+      ;; cleared, evicting glyphs from earlier screens; if one screen alone
+      ;; does not fit, it grows until it does.
       (loop for attempt from 0
             until (pack-dirty)
-            do (if (zerop attempt)
-                   (glyph-atlas-clear atlas)
-                   (glyph-atlas-grow atlas))
-               (grid-mark-all-dirty grid)))
+            do (cond ((< (glyph-atlas-height atlas) +glyph-atlas-full-height+)
+                      (glyph-atlas-grow atlas :keep t))
+                     ((zerop attempt)
+                      (glyph-atlas-clear atlas)
+                      (grid-mark-all-dirty grid))
+                     (t
+                      (glyph-atlas-grow atlas)
+                      (grid-mark-all-dirty grid)))))
     instances))
 
 (defun packed-row-runs (instances columns row)

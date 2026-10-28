@@ -859,6 +859,47 @@ bottom margin, then right COLUMNS cells (each at most a screenful)."
     (setf (terminal-image-store-dirty-p store) t)
     placement))
 
+(defun same-placement-geometry-p (a b)
+  (and (eq (terminal-image-placement-screen a) (terminal-image-placement-screen b))
+       (= (terminal-image-placement-row a) (terminal-image-placement-row b))
+       (= (terminal-image-placement-column a) (terminal-image-placement-column b))
+       (eql (terminal-image-placement-columns a) (terminal-image-placement-columns b))
+       (eql (terminal-image-placement-rows a) (terminal-image-placement-rows b))
+       (= (terminal-image-placement-source-x a) (terminal-image-placement-source-x b))
+       (= (terminal-image-placement-source-y a) (terminal-image-placement-source-y b))
+       (eql (terminal-image-placement-source-width a) (terminal-image-placement-source-width b))
+       (eql (terminal-image-placement-source-height a) (terminal-image-placement-source-height b))
+       (= (terminal-image-placement-x-offset a) (terminal-image-placement-x-offset b))
+       (= (terminal-image-placement-y-offset a) (terminal-image-placement-y-offset b))
+       (= (terminal-image-placement-z-index a) (terminal-image-placement-z-index b))))
+
+(defun free-covered-images (store placement image)
+  "Free the anonymous images PLACEMENT of opaque anonymous IMAGE hides for
+good.  A video player sends each frame as a new image over the last and
+never deletes one; the frames would otherwise stay stored until the quota
+evicts them.  An older image goes when its placement has the same geometry
+and its image the same size: the two are drawn alike at any cell size, and
+every delete command or scroll that removes one removes the other, so
+nothing could show the older one again."
+  (when (and (terminal-image-anonymous-p image)
+             (not (terminal-image-placement-virtual-p placement))
+             (null (terminal-image-placement-parent placement))
+             (image-opaque-p image))
+    (let ((images (terminal-image-store-images store)))
+      (delete-placements-if
+       store
+       (lambda (old)
+         (let ((under (gethash (terminal-image-placement-image-id old) images)))
+           (and (not (eq old placement))
+                under
+                (terminal-image-anonymous-p under)
+                (< (terminal-image-id under) (terminal-image-id image))
+                (= (terminal-image-width under) (terminal-image-width image))
+                (= (terminal-image-height under) (terminal-image-height image))
+                (not (terminal-image-placement-virtual-p old))
+                (null (terminal-image-placement-parent old))
+                (same-placement-geometry-p old placement))))))))
+
 (defun kitty-put (store command engine id image)
   (multiple-value-bind (row column) (engine-cursor-position engine)
     (let ((placement (place-image store id row column command
@@ -873,6 +914,7 @@ bottom margin, then right COLUMNS cells (each at most a screenful)."
                                  (terminal-image-store-cell-width store)
                                  (terminal-image-store-cell-height store))
           (kitty-move-cursor engine columns rows)))
+      (free-covered-images store placement image)
       placement)))
 
 (defun kitty-transmit (store command engine)

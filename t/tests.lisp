@@ -607,6 +607,41 @@ replies sent to the child."
                                    '(1 1 1 2 2 2))))
       (is-equal 2 (length (drawn))))))
 
+(deftest video-frames-hidden-for-good-are-freed ()
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (declare (ignore engine))
+    (flet ((frame (at format width &rest pixels)
+             (funcall feed (format nil "~c[~aH~a" (code-char 27) at
+                                   (kitty `((#\a . "T") (#\f . ,format) (#\s . ,width)
+                                            (#\v . "1") (#\C . "1") (#\q . "2"))
+                                          pixels))))
+           (stored ()
+             (hash-table-count (slt::terminal-image-store-images store))))
+      (dotimes (i 5)
+        (frame "1;1" "24" "2" i i i 9 9 9))
+      (is-equal 1 (stored) "only the newest of identical frames is kept")
+      ;; A frame with transparent pixels frees nothing; an opaque one over
+      ;; it frees both.
+      (frame "1;1" "32" "2" 1 2 3 255 4 5 6 128)
+      (is-equal 2 (stored))
+      (frame "1;1" "32" "2" 1 2 3 255 4 5 6 255)
+      (is-equal 1 (stored))
+      ;; Elsewhere, or of another size, the frame under it could show again
+      ;; (a delete at a cell only one of them covers), so it stays.
+      (frame "1;2" "24" "2" 1 1 1 2 2 2)
+      (frame "1;1" "24" "1" 1 1 1)
+      (is-equal 3 (stored))
+      ;; Images with ids are left to the client.
+      (funcall feed (format nil "~c[2;1H~a~c[2;1H~a" (code-char 27)
+                            (kitty '((#\a . "T") (#\i . "7") (#\f . "24") (#\s . "1")
+                                     (#\v . "1") (#\C . "1") (#\q . "2"))
+                                   '(1 1 1))
+                            (code-char 27)
+                            (kitty '((#\a . "T") (#\f . "24") (#\s . "1") (#\v . "1")
+                                     (#\C . "1") (#\q . "2"))
+                                   '(2 2 2))))
+      (is (gethash 7 (slt::terminal-image-store-images store))))))
+
 (defun session-row-text (engine row)
   (let ((grid (make-grid (engine-rows engine) (engine-columns engine))))
     (engine-update-grid engine grid :force t)
@@ -1886,6 +1921,20 @@ emulator wrote back since the last call."
                       (list 3 fg (list (slot 3))))
                 (mapcar (lambda (run) (list (first run) (second run) (coerce (third run) 'list)))
                         (nth-value 1 (slt::packed-row-runs instances 6 0)))))))
+
+(deftest a-small-glyph-atlas-grows-keeping-its-glyphs ()
+  (let* ((grid (engine-grid (feed (make-test-engine :rows 1 :columns 8) "abcdefgh")))
+         ;; Room for three glyphs besides the blank slot.
+         (atlas (slt::make-glyph-atlas 4 4 #'fake-rasterizer :width 8 :height 8))
+         (a (loop for char across "abc"
+                  collect (slt::glyph-atlas-slot atlas (char-code char) nil 0)))
+         (pixels (copy-seq (slt::glyph-atlas-pixels atlas))))
+    (slt::pack-grid grid atlas (make-palette) nil)
+    (is (> (slt::glyph-atlas-height atlas) 8) "atlas grew")
+    (is-equal a (loop for char across "abc"
+                      collect (slt::glyph-atlas-slot atlas (char-code char) nil 0))
+              "glyphs keep their slots")
+    (is (equalp pixels (subseq (slt::glyph-atlas-pixels atlas) 0 64)) "and their pixels")))
 
 (deftest pack-grid-recovers-when-the-atlas-fills ()
   (let* ((grid (engine-grid (feed (make-test-engine :rows 1 :columns 8) "abcdefgh")))
