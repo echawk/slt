@@ -133,7 +133,12 @@ shares:
 
 On macOS the `gl` frontend uses the CoreText rasterizer instead. CoreText
 shapes each cluster, and draws those it sets in a color font (Apple Color
-Emoji) in color, scaled to fit their cells. font-discovery
+Emoji) in color, scaled to fit their cells. Each font's cascade list holds
+`*font-fallback-families*` (the fonts in `fonts/` are registered for the
+process), ahead of CoreText's own fallbacks; a character CoreText still
+sets in LastResort is looked up among the installed fonts with a
+character-set `CTFontCollection` query, as Ghostty's CoreText discovery
+does. font-discovery
 c6e4728 aborts there, because it reads `kCTFontFormatAttribute`, a CFNumber,
 as a string.
 

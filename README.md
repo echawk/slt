@@ -287,6 +287,14 @@ the Dock icon while slt is in the background (`*bell-hook*` holds
 `ring-bell`). Programs that ask for focus events (mode 1004) get them.
 `*window-padding*` sets the space around the grid in points.
 
+Characters the font lacks are drawn from the first family in
+`*font-fallback-families*` that has them, then from any installed font.
+Its default holds Symbols Nerd Font Mono, which slt ships in `fonts/`
+(next to the executable), so the icons Emacs, Neovim and shell prompts
+print need no patched font. On macOS, CoreText's own fallbacks (emoji, CJK)
+come after the list; elsewhere the shipped font is used only once
+installed, as fontconfig does not see `fonts/` yet.
+
 The cursor blinks when the program asks for it (DECSCUSR 1, 3 or 5, or
 mode 12), only in the focused window, and stays shown while you type. Set
 `*cursor-blink*` to `t` to always blink or `nil` never to, and

@@ -42,6 +42,8 @@ SBCL_CORE="$core" scripts/lisp \
   --eval '(dolist (system (uiop:split-string (or (uiop:getenv "SLT_SYSTEMS") "") :separator " "))
              (when (plusp (length system)) (asdf:load-system system)))' \
   --eval '(asdf:make :slt/app)'
+# Fonts slt falls back to (fonts/README.md), found next to the executable.
+cp -R fonts bin/fonts
 
 # The executable asks for @executable_path/libzstd.1.dylib; Deploy copied
 # zstd under its versioned name.

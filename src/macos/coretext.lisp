@@ -6,6 +6,13 @@
 ;;;; into an alpha-only bitmap whose coverage is copied into the glyph
 ;;;; atlas.  A line set in a color font (Apple Color Emoji) is drawn in color
 ;;;; instead, scaled to fit its cells, and handed to the atlas as RGBA.
+;;;;
+;;;; CoreText's own fallback picks from a fixed list of Apple fonts, so the
+;;;; icons programs print from the private use area (Nerd Font symbols) come
+;;;; out as LastResort's placeholder.  Every font falls back first to
+;;;; *FONT-FALLBACK-FAMILIES* (its cascade list), which by default names the
+;;;; Symbols Nerd Font Mono slt ships, and a character that still ends up in
+;;;; LastResort is looked for among the installed fonts.
 
 (defconstant +cf-string-encoding-utf8+ #x08000100)
 (defconstant +cg-image-alpha-only+ 7)
@@ -84,6 +91,145 @@
 (defun foreign-global (name)
   (cffi:mem-ref (cffi:foreign-symbol-pointer name) :pointer))
 
+(cffi:defcfun ("CFArrayCreate" %cf-array-create) :pointer
+  (allocator :pointer) (values :pointer) (count :long) (callbacks :pointer))
+(cffi:defcfun ("CFCharacterSetCreateWithCharactersInRange" %cf-charset-create-with-range)
+    :pointer
+  (allocator :pointer) (location :long) (length :long))
+(cffi:defcfun ("CFStringGetCString" %cf-string-get-c-string) :bool
+  (string :pointer) (buffer :pointer) (size :long) (encoding :uint32))
+(cffi:defcfun ("CFStringGetLength" %cf-string-length) :long (string :pointer))
+(cffi:defcfun ("CFStringGetMaximumSizeForEncoding" %cf-string-maximum-size) :long
+  (length :long) (encoding :uint32))
+(cffi:defcfun ("CTFontDescriptorCreateWithAttributes" %ct-font-descriptor-create) :pointer
+  (attributes :pointer))
+(cffi:defcfun ("CTFontCreateWithFontDescriptor" %ct-font-create-with-descriptor) :pointer
+  (descriptor :pointer) (size :double) (matrix :pointer))
+(cffi:defcfun ("CTFontCreateCopyWithAttributes" %ct-font-create-copy-with-attributes) :pointer
+  (font :pointer) (size :double) (matrix :pointer) (attributes :pointer))
+(cffi:defcfun ("CTFontGetSize" %ct-font-size) :double (font :pointer))
+(cffi:defcfun ("CTFontCopyPostScriptName" %ct-font-copy-postscript-name) :pointer
+  (font :pointer))
+(cffi:defcfun ("CTFontCollectionCreateWithFontDescriptors" %ct-font-collection-create) :pointer
+  (descriptors :pointer) (options :pointer))
+(cffi:defcfun ("CTFontCollectionCreateMatchingFontDescriptors"
+               %ct-font-collection-matching-descriptors)
+    :pointer
+  (collection :pointer))
+
+(defun cf-dictionary (&rest keys-and-values)
+  "A CFDictionary of the CF objects KEYS-AND-VALUES; release with CF-RELEASE."
+  (let ((count (floor (length keys-and-values) 2)))
+    (cffi:with-foreign-objects ((keys :pointer count) (values :pointer count))
+      (loop for (key value) on keys-and-values by #'cddr
+            for i from 0
+            do (setf (cffi:mem-aref keys :pointer i) key
+                     (cffi:mem-aref values :pointer i) value))
+      (%cf-dictionary-create (cffi:null-pointer) keys values count
+                             (cffi:foreign-symbol-pointer "kCFTypeDictionaryKeyCallBacks")
+                             (cffi:foreign-symbol-pointer "kCFTypeDictionaryValueCallBacks")))))
+
+(defun cf-array (&rest objects)
+  "A CFArray of the CF OBJECTS; release with CF-RELEASE."
+  (cffi:with-foreign-object (values :pointer (max 1 (length objects)))
+    (loop for object in objects
+          for i from 0
+          do (setf (cffi:mem-aref values :pointer i) object))
+    (%cf-array-create (cffi:null-pointer) values (length objects)
+                      (cffi:foreign-symbol-pointer "kCFTypeArrayCallBacks"))))
+
+(defun cf-string-lisp (string)
+  "The Lisp string of the CFString STRING."
+  ;; Room for the encoded characters and the terminating NUL.
+  (let ((size (1+ (%cf-string-maximum-size (%cf-string-length string)
+                                           +cf-string-encoding-utf8+))))
+    (cffi:with-foreign-object (buffer :char size)
+      (if (%cf-string-get-c-string string buffer size +cf-string-encoding-utf8+)
+          (cffi:foreign-string-to-lisp buffer)
+          ""))))
+
+;;; Fallback fonts.
+
+(cffi:defcfun ("CFURLCreateFromFileSystemRepresentation" %cf-url-create) :pointer
+  (allocator :pointer) (path :string) (length :long) (directory-p :bool))
+(cffi:defcfun ("CTFontManagerRegisterFontsForURL" %ct-font-manager-register-url) :bool
+  (url :pointer) (scope :uint32) (error :pointer))
+
+(defconstant +ct-font-manager-scope-process+ 1)
+
+(defvar *bundled-fonts-registered* nil)
+
+(defun forget-bundled-fonts ()
+  (setf *bundled-fonts-registered* nil))
+
+;; Registration belongs to a process: a saved image registers again.
+(pushnew 'forget-bundled-fonts sb-ext:*save-hooks*)
+
+(defun register-bundled-fonts ()
+  "Make the fonts slt ships available to this process by family name."
+  (unless *bundled-fonts-registered*
+    (setf *bundled-fonts-registered* t)
+    (dolist (file (bundled-font-files))
+      (let* ((path (uiop:native-namestring file))
+             (url (%cf-url-create (cffi:null-pointer) path
+                                  (length (sb-ext:string-to-octets path :external-format :utf-8))
+                                  nil)))
+        (%ct-font-manager-register-url url +ct-font-manager-scope-process+ (cffi:null-pointer))
+        (cf-release url)))))
+
+(defun ct-font-with-fallbacks (font)
+  "A copy of FONT that falls back to *FONT-FALLBACK-FAMILIES* before the
+system's fallbacks; FONT is released."
+  (register-bundled-fonts)
+  (let* ((names (mapcar #'cf-string *font-fallback-families*))
+         (descriptors (loop for name in names
+                            collect (let ((attributes (cf-dictionary
+                                                       (foreign-global "kCTFontFamilyNameAttribute")
+                                                       name)))
+                                      (prog1 (%ct-font-descriptor-create attributes)
+                                        (cf-release attributes)))))
+         (cascade (apply #'cf-array descriptors))
+         (attributes (cf-dictionary (foreign-global "kCTFontCascadeListAttribute") cascade))
+         (descriptor (%ct-font-descriptor-create attributes))
+         (copy (%ct-font-create-copy-with-attributes font 0d0 (cffi:null-pointer) descriptor)))
+    (mapc #'cf-release (list* descriptor attributes cascade (append descriptors names)))
+    (if (cffi:null-pointer-p copy)
+        font
+        (progn (cf-release font) copy))))
+
+(defparameter +last-resort-font-name+ "LastResort"
+  "The PostScript name of the font CoreText draws characters no font has
+with, as placeholders.")
+
+(defun ct-font-last-resort-p (font)
+  "True for the LastResort font."
+  (let ((name (%ct-font-copy-postscript-name font)))
+    (prog1 (string= +last-resort-font-name+ (cf-string-lisp name))
+      (cf-release name))))
+
+(defun installed-font-for (code size)
+  "A new CTFont of SIZE from some installed font with the character CODE,
+or a null pointer."
+  (let* ((set (%cf-charset-create-with-range (cffi:null-pointer) code 1))
+         (attributes (cf-dictionary (foreign-global "kCTFontCharacterSetAttribute") set))
+         (descriptor (%ct-font-descriptor-create attributes))
+         (descriptors (cf-array descriptor))
+         (collection (%ct-font-collection-create descriptors (cffi:null-pointer)))
+         (matches (%ct-font-collection-matching-descriptors collection)))
+    (unwind-protect
+         (if (or (cffi:null-pointer-p matches) (zerop (%cf-array-count matches)))
+             (cffi:null-pointer)
+             (loop for i below (%cf-array-count matches)
+                   for font = (%ct-font-create-with-descriptor (%cf-array-value matches i)
+                                                               size (cffi:null-pointer))
+                   do (if (ct-font-last-resort-p font)
+                          (cf-release font)
+                          (return font))
+                   finally (return (cffi:null-pointer))))
+      (dolist (object (list matches collection descriptors descriptor attributes set))
+        (unless (cffi:null-pointer-p object)
+          (cf-release object))))))
+
 (defstruct (coretext-font (:constructor %make-coretext-font))
   (regular (cffi:null-pointer))
   (bold (cffi:null-pointer))
@@ -97,11 +243,14 @@
   (context (cffi:null-pointer))
   ;; The same for color glyphs, RGBA, made when the first one is drawn.
   (color-bitmap (cffi:null-pointer))
-  (color-context (cffi:null-pointer)))
+  (color-context (cffi:null-pointer))
+  ;; Codepoints CoreText could only draw with LastResort -> the installed
+  ;; font found to have them, or a null pointer.
+  (fallbacks (make-hash-table) :type hash-table))
 
 (defun ct-font-variant (font traits)
   (let ((variant (%ct-font-create-copy-with-traits font 0d0 (cffi:null-pointer) traits traits)))
-    (if (cffi:null-pointer-p variant) font variant)))
+    (if (cffi:null-pointer-p variant) font (ct-font-with-fallbacks variant))))
 
 (defun ct-advance-of (font char)
   (cffi:with-foreign-objects ((unichar :uint16) (glyph :uint16))
@@ -112,9 +261,10 @@
 (defun make-coretext-font (family size)
   "Open FAMILY at SIZE device pixels and measure its cell."
   (let* ((name (cf-string family))
-         (regular (prog1 (%ct-font-create-with-name name (coerce size 'double-float)
-                                                    (cffi:null-pointer))
-                    (cf-release name)))
+         (regular (ct-font-with-fallbacks
+                   (prog1 (%ct-font-create-with-name name (coerce size 'double-float)
+                                                     (cffi:null-pointer))
+                     (cf-release name))))
          (ascent (ct-font-ascent regular))
          (descent (ct-font-descent regular))
          (leading (ct-font-leading regular))
@@ -145,7 +295,13 @@
       (unless (or (cffi:null-pointer-p handle)
                   (member handle released :test #'cffi:pointer-eq))
         (push handle released)
-        (cf-release handle))))
+        (cf-release handle)))
+    (maphash (lambda (code handle)
+               (declare (ignore code))
+               (unless (cffi:null-pointer-p handle)
+                 (cf-release handle)))
+             (coretext-font-fallbacks font))
+    (clrhash (coretext-font-fallbacks font)))
   (dolist (context (list (coretext-font-context font) (coretext-font-color-context font)))
     (unless (cffi:null-pointer-p context)
       (cg-context-release context)))
@@ -240,6 +396,43 @@ return the box's premultiplied RGBA pixels."
         (setf (aref rgba (+ byte (* 4 width row)))
               (cffi:mem-aref bitmap :uint8 (+ byte (* 4 bitmap-width row))))))))
 
+(defun ct-line-last-resort-p (line)
+  "True when CoreText found no font but LastResort for some of LINE."
+  (let ((runs (%ct-line-glyph-runs line))
+        (key (foreign-global "kCTFontAttributeName")))
+    (loop for i below (%cf-array-count runs)
+          for run-font = (%cf-dictionary-value (%ct-run-attributes (%cf-array-value runs i)) key)
+            thereis (and (not (cffi:null-pointer-p run-font))
+                         (ct-font-last-resort-p run-font)))))
+
+(defun coretext-fallback-font (font code)
+  "An installed font with the character CODE, at FONT's size, or NIL; the
+answer is kept."
+  (let ((found (multiple-value-bind (handle known)
+                   (gethash code (coretext-font-fallbacks font))
+                 (if known
+                     handle
+                     (setf (gethash code (coretext-font-fallbacks font))
+                           (installed-font-for code (%ct-font-size
+                                                     (coretext-font-regular font))))))))
+    (and (not (cffi:null-pointer-p found)) found)))
+
+(defun call-with-coretext-line (font style string function)
+  "Call FUNCTION with a CTLine of STRING in FONT's STYLE, or, when CoreText
+would draw its first character with LastResort, in an installed font that
+has it."
+  (let* ((fallback nil)
+         (result (call-with-ct-line
+                  (coretext-font-for-style font style) string
+                  (lambda (line)
+                    (unless (and (ct-line-last-resort-p line)
+                                 (setf fallback (coretext-fallback-font
+                                                 font (char-code (char string 0)))))
+                      (funcall function line))))))
+    (if fallback
+        (call-with-ct-line fallback string function)
+        result)))
+
 (defun coretext-rasterizer (font)
   "A GLYPH-ATLAS rasterizer drawing with FONT."
   (lambda (string style pixels stride x y width height)
@@ -248,8 +441,8 @@ return the box's premultiplied RGBA pixels."
            (bitmap (coretext-font-bitmap font))
            (bitmap-width (* 2 (coretext-font-cell-width font)))
            (bitmap-height (coretext-font-cell-height font)))
-      (call-with-ct-line
-       (coretext-font-for-style font style) string
+      (call-with-coretext-line
+       font style string
        (lambda (line)
          (if (ct-line-color-p line)
              (coretext-draw-color-line font line width height)

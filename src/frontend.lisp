@@ -310,6 +310,46 @@ Frontends without a place for it ignore it.")
     (otherwise
      '("Monospace"))))
 
+(defparameter +bundled-symbols-family+ "Symbols Nerd Font Mono"
+  "The family of the symbols font slt ships (fonts/README.md).")
+
+(defun default-font-fallback-families (&optional (operating-system (uiop:operating-system)))
+  (cons +bundled-symbols-family+
+        (case operating-system
+          ;; CoreText's own fallbacks come after these.
+          ((:darwin :macosx) '())
+          (otherwise
+           '("DejaVu Sans Mono" "Noto Sans Mono" "Noto Sans Symbols" "Noto Sans Symbols 2"
+             "Noto Sans CJK SC" "Noto Sans Math" "DejaVu Sans" "Symbola" "Unifont")))))
+
+(defvar *font-fallback-families* (default-font-fallback-families)
+  "Families to try, in order, for characters the terminal font lacks,
+before searching every installed font.  The fonts slt ships (see
+BUNDLED-FONT-DIRECTORY) are found by family like installed ones; on macOS
+CoreText's own fallbacks (emoji, CJK, symbols) come after these.")
+
+(defparameter +bundled-font-directory-name+ "fonts/"
+  "The directory of the fonts slt ships: next to the executable (where the
+build copies it), or at the top of the source tree.")
+
+(defparameter +font-file-patterns+ '("*.ttf" "*.otf"))
+
+(defun bundled-font-directory ()
+  "The directory of the fonts slt ships, or NIL."
+  (find-if #'uiop:directory-exists-p
+           (list (and sb-ext:*runtime-pathname*
+                      (uiop:merge-pathnames* +bundled-font-directory-name+
+                                             (uiop:pathname-directory-pathname
+                                              sb-ext:*runtime-pathname*)))
+                 (ignore-errors (asdf:system-relative-pathname
+                                 :slt/core +bundled-font-directory-name+)))))
+
+(defun bundled-font-files ()
+  (let ((directory (bundled-font-directory)))
+    (and directory
+         (loop for pattern in +font-file-patterns+
+               append (uiop:directory-files directory pattern)))))
+
 (defun pick-font-family (available-families preferred-families fallback)
   (or (find-if (lambda (family)
                  (member family available-families :test #'string-equal))

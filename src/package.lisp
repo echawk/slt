@@ -133,6 +133,7 @@
    #:frontend-set-progress
    #:frontend-open-url
    #:*window-padding*
+   #:*font-fallback-families*
    #:*commands*
    #:command-key-handler
    #:select-all

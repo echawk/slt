@@ -21,12 +21,6 @@
   (load-named-library 'libfreetype '("libfreetype.so.6" "libfreetype.so")
                       "FreeType was not found; install it (libfreetype6 / freetype)"))
 
-(defvar *font-fallback-families*
-  '("DejaVu Sans Mono" "Noto Sans Mono" "Noto Sans Symbols" "Noto Sans Symbols 2"
-    "Noto Sans CJK SC" "Noto Sans Math" "DejaVu Sans" "Symbola" "Unifont")
-  "Families to try, in order, for characters the terminal font lacks,
-before searching every installed font.")
-
 (defun font-monospace-families ()
   (sort (remove-duplicates
          (loop for font in (font-discovery:list-fonts :spacing :monospace)
