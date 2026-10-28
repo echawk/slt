@@ -153,6 +153,7 @@ flows, the settings and the security choices. The reusable pieces live in
 
 - [`ecma48`](lib/ecma48/) scans control sequences;
 - [`terminal-osc`](lib/terminal-osc/) parses OSC payloads;
+- [`simd-base64`](lib/simd-base64/) decodes base64 into octets or RGBA;
 - [`kitty-keyboard`](lib/kitty-keyboard/) implements the keyboard protocol.
 
 ## Terminal graphics

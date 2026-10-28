@@ -69,83 +69,26 @@ RGBA, this rebuilds it from them, without what lay beyond the image."
 (defun graphics-command-more-p (command)
   (= 1 (graphics-command-integer command #\m 0)))
 
-(defun strip-envelope (payload)
-  (cond
-    ((and (>= (length payload) 4)
-          (char= (char payload 0) (code-char 27))
-          (char= (char payload 1) #\_)
-          (char= (char payload 2) #\G)
-          (char= (char payload (- (length payload) 2)) (code-char 27))
-          (char= (char payload (1- (length payload))) #\\))
-     (subseq payload 3 (- (length payload) 2)))
-    ((and (plusp (length payload)) (char= (char payload 0) #\G))
-     (subseq payload 1))
-    (t payload)))
-
-(defun parse-controls (text)
-  (if (zerop (length text))
-      '()
-      (loop with start = 0
-            for comma = (position #\, text :start start)
-            for end = (or comma (length text))
-            for equals = (position #\= text :start start :end end)
-            unless (and equals (= equals (1+ start)) (< equals (1- end)))
-              do (protocol-error "Malformed Kitty graphics control field: ~s"
-                                 (subseq text start end))
-            collect (cons (char text start) (subseq text (1+ equals) end))
-            while comma
-            do (setf start (1+ comma)))))
-
-(defun ascii-octets-to-string (octets)
-  (map 'string #'code-char octets))
-
-(defun ensure-string (payload)
-  (etypecase payload
-    (string payload)
-    ((array (unsigned-byte 8) (*)) (ascii-octets-to-string payload))))
-
-(defun base64-char-p (char)
-  (or (char<= #\A char #\Z) (char<= #\a char #\z) (char<= #\0 char #\9)
-      (char= char #\+) (char= char #\/)))
-
-(defun decode-base64-segment (text start end)
-  (let ((length (- end start)))
-    (when (= 1 (mod length 4))
-      (protocol-error "Invalid base64 image payload"))
-    (handler-case
-        (cl-base64:base64-string-to-usb8-array
-         (concatenate 'string (subseq text start end)
-                      (make-string (mod (- length) 4) :initial-element #\=)))
-      (error () (protocol-error "Invalid base64 image payload")))))
-
-(defun decode-base64 (text)
-  "Decode TEXT, which may lack padding or join separately padded chunks."
-  (unless (every (lambda (char) (or (base64-char-p char) (char= char #\=))) text)
-    (protocol-error "Invalid base64 image payload"))
-  (let ((segments
-          (loop with start = 0
-                for padding = (position #\= text :start start)
-                for end = (or padding (length text))
-                when (< start end)
-                  collect (decode-base64-segment text start end)
-                while padding
-                do (setf start (or (position #\= text :start padding :test-not #'char=)
-                                   (length text))))))
-    (if (and segments (null (rest segments)))
-        (first segments)
-        (join-vectors segments 'octets))))
-
-(defun join-vectors (vectors type)
-  "Concatenate VECTORS into one new vector of TYPE (OCTETS or STRING),
-however many there are."
-  (let* ((total (reduce #'+ vectors :key #'length))
-         (result (if (eq type 'string)
-                     (make-string total)
-                     (make-array total :element-type '(unsigned-byte 8))))
-         (start 0))
-    (dolist (vector vectors result)
-      (replace result vector :start1 start)
-      (incf start (length vector)))))
+(defun parse-controls (octets start end)
+  "The control fields of OCTETS from START to END, k=v,k=v..., as an alist
+of (KEY-CHARACTER . VALUE-STRING)."
+  (declare (type octets octets) (type fixnum start end) (optimize speed))
+  (flet ((text (start end)
+           (let ((string (make-string (- end start))))
+             (loop for i of-type fixnum from start below end
+                   for j of-type fixnum from 0
+                   do (setf (schar string j) (code-char (aref octets i))))
+             string)))
+    (if (= start end)
+        '()
+        (loop for comma = (position 44 octets :start start :end end)
+              for field-end of-type fixnum = (or comma end)
+              unless (and (< (+ start 2) field-end) (= 61 (aref octets (1+ start))))
+                do (protocol-error "Malformed Kitty graphics control field: ~s"
+                                   (text start field-end))
+              collect (cons (code-char (aref octets start)) (text (+ start 2) field-end))
+              while comma
+              do (setf start (1+ comma))))))
 
 (defun parse-graphics-command (payload &key (decode-data t))
   "Parse a Kitty graphics APC payload or complete ESC _ G ... ESC \\ sequence.
@@ -183,15 +126,8 @@ Without DECODE-DATA only the controls are read."
   (encoded-parts '() :type list)
   (encoded-length 0 :type (integer 0 *))
   ;; Plain pixels are decoded into RGBA as their chunks arrive (see
-  ;; DIRECT-RGBA-SIZE): the RGBA, whether the payload is RGB, the payload
-  ;; octets expected and decoded so far, and the base64 digits (up to
-  ;; three, BITS holding their values) the last chunk ended with.
-  (pixels nil :type (or null octets))
-  (rgb-p nil)
-  (expected 0 :type fixnum)
-  (fill 0 :type fixnum)
-  (bits 0 :type fixnum)
-  (digits 0 :type fixnum)
+  ;; DIRECT-RGBA-SIZE), by this base64 decoder.
+  (base64 nil :type (or null simd-base64:decoder))
   ;; An error in the payload, signalled when the last chunk arrives.
   (failure nil))
 
@@ -200,10 +136,7 @@ Without DECODE-DATA only the controls are read."
   (setf (graphics-decoder-first-controls decoder) nil
         (graphics-decoder-encoded-parts decoder) '()
         (graphics-decoder-encoded-length decoder) 0
-        (graphics-decoder-pixels decoder) nil
-        (graphics-decoder-fill decoder) 0
-        (graphics-decoder-bits decoder) 0
-        (graphics-decoder-digits decoder) 0
+        (graphics-decoder-base64 decoder) nil
         (graphics-decoder-failure decoder) nil)
   decoder)
 
@@ -246,8 +179,7 @@ place."
 and end."
   (multiple-value-bind (octets start end) (payload-octets payload)
     (let ((separator (position 59 octets :start start :end end)))
-      (values (parse-controls (ascii-octets-to-string
-                               (subseq octets start (or separator end))))
+      (values (parse-controls octets start (or separator end))
               octets
               (if separator (1+ separator) end)
               end))))
@@ -260,83 +192,12 @@ and end."
                 (subseq octets start end)
                 (make-array 0 :element-type '(unsigned-byte 8))))))
 
-(defparameter +base64-values+
-  (let ((table (make-array 256 :element-type '(signed-byte 8) :initial-element -1)))
-    (loop for char across "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-          for value from 0
-          do (setf (aref table (char-code char)) value))
-    (setf (aref table (char-code #\=)) -2)
-    table))
-
 (defun decode-base64-parts (parts)
   "Decode base64 split across the octet vectors PARTS, at any boundaries.
 Padding may be missing, and separately padded pieces may be joined."
-  (let* ((total (reduce #'+ parts :key #'length))
-         ;; What the digits before the closing padding hold, so that well
-         ;; formed input fills OUT exactly.
-         (padding (loop for part in (reverse parts)
-                        for trailing = (or (position 61 part :from-end t :test #'/=)
-                                           -1)
-                        sum (- (length part) trailing 1)
-                        while (minusp trailing)))
-         (out (make-array (floor (* 3 (- total padding)) 4)
-                          :element-type '(unsigned-byte 8)))
-         (fill 0)
-         (bits 0)
-         (count 0)
-         (table +base64-values+))
-    (declare (type (simple-array (unsigned-byte 8) (*)) out)
-             (type fixnum fill bits count)
-             (type (simple-array (signed-byte 8) (256)) table))
-    (flet ((finish-group ()
-             ;; Emit what a quartet of COUNT digits holds; a lone digit holds
-             ;; nothing whole and is malformed.
-             (case count
-               (1 (protocol-error "Invalid base64 image payload"))
-               (2 (setf (aref out fill) (ldb (byte 8 4) bits)) (incf fill 1))
-               (3 (setf (aref out fill) (ldb (byte 8 10) bits)
-                        (aref out (1+ fill)) (ldb (byte 8 2) bits))
-                (incf fill 2)))
-             (setf bits 0 count 0)))
-      (dolist (part parts)
-        (let ((part (coerce part 'octets))
-              (index 0))
-          (declare (type (simple-array (unsigned-byte 8) (*)) part)
-                   (type fixnum index))
-          (loop while (< index (length part))
-                do (let ((a 0) (b 0) (c 0) (d 0))
-                     (declare (type (signed-byte 8) a b c d))
-                     (if (and (zerop count)
-                              (<= (+ index 4) (length part))
-                              (progn (setf a (aref table (aref part index))
-                                           b (aref table (aref part (+ index 1)))
-                                           c (aref table (aref part (+ index 2)))
-                                           d (aref table (aref part (+ index 3))))
-                                     ;; Negative when any is not a digit.
-                                     (>= (logior a b c d) 0)))
-                         ;; A whole quartet of digits, the common case.
-                         (let ((group (logior (ash a 18) (ash b 12) (ash c 6) d)))
-                           (setf (aref out fill) (ldb (byte 8 16) group)
-                                 (aref out (+ fill 1)) (ldb (byte 8 8) group)
-                                 (aref out (+ fill 2)) (ldb (byte 8 0) group))
-                           (incf fill 3)
-                           (incf index 4))
-                         (let ((value (aref table (aref part index))))
-                           (cond
-                             ((>= value 0)
-                              (setf bits (logior (ash (logand bits #x3ffff) 6) value))
-                              (incf count)
-                              (when (= count 4)
-                                (setf (aref out fill) (ldb (byte 8 16) bits)
-                                      (aref out (+ fill 1)) (ldb (byte 8 8) bits)
-                                      (aref out (+ fill 2)) (ldb (byte 8 0) bits))
-                                (incf fill 3)
-                                (setf bits 0 count 0)))
-                             ((= value -2) (finish-group))
-                             (t (protocol-error "Invalid base64 image payload")))
-                           (incf index)))))))
-      (finish-group))
-    (if (= fill (length out)) out (subseq out 0 fill))))
+  (handler-case (simd-base64:decode parts)
+    (simd-base64:base64-error ()
+      (protocol-error "Invalid base64 image payload"))))
 
 (defun direct-rgba-size (controls)
   "When a transfer with CONTROLS sends plain RGB or RGBA pixels of a given
@@ -363,90 +224,17 @@ arrive, instead of being kept until the last one."
 
 (defun decode-direct (decoder octets start end &optional finish)
   "Decode the base64 in OCTETS from START to END into DECODER's pixels;
-with FINISH, also the digits left over at the end of the payload.  Octets
-beyond the image are counted, not kept.  An error is kept as the
-decoder's failure."
-  (declare (type octets octets) (type fixnum start end) (optimize speed))
-  (let ((pixels (graphics-decoder-pixels decoder))
-        (rgb-p (graphics-decoder-rgb-p decoder))
-        (expected (graphics-decoder-expected decoder))
-        (fill (graphics-decoder-fill decoder))
-        (bits (graphics-decoder-bits decoder))
-        (digits (graphics-decoder-digits decoder))
-        (table +base64-values+)
-        (index start))
-    (declare (type octets pixels) (type fixnum expected fill bits digits index)
-             (type (simple-array (signed-byte 8) (256)) table))
-    (block decode
-      (labels ((fail ()
-                 (setf (graphics-decoder-failure decoder)
-                       (make-condition 'graphics-protocol-error
-                                       :message "Invalid base64 image payload"))
-                 (return-from decode))
-               (emit (octet)
-                 (when (< fill expected)
-                   (let ((target (if rgb-p (+ fill (floor fill 3)) fill)))
-                     (setf (aref pixels target) octet)
-                     (when (and rgb-p (= 2 (mod fill 3)))
-                       (setf (aref pixels (1+ target)) 255))))
-                 (incf fill))
-               (finish-group ()
-                 ;; A lone digit holds nothing whole and is malformed.
-                 (case digits
-                   (1 (fail))
-                   (2 (emit (ldb (byte 8 4) bits)))
-                   (3 (emit (ldb (byte 8 10) bits))
-                    (emit (ldb (byte 8 2) bits))))
-                 (setf bits 0 digits 0)))
-        (loop while (< index end)
-              do (let ((a 0) (b 0) (c 0) (d 0))
-                   (declare (type (signed-byte 8) a b c d))
-                   (if (and (zerop digits)
-                            (<= (+ index 4) end)
-                            (progn (setf a (aref table (aref octets index))
-                                         b (aref table (aref octets (+ index 1)))
-                                         c (aref table (aref octets (+ index 2)))
-                                         d (aref table (aref octets (+ index 3))))
-                                   ;; Negative when any is not a digit.
-                                   (>= (logior a b c d) 0)))
-                       ;; A whole quartet: three octets, one RGB pixel.
-                       (let ((group (logior (ash a 18) (ash b 12) (ash c 6) d)))
-                         (cond
-                           ((and rgb-p (zerop (mod fill 3)) (<= (+ fill 3) expected))
-                            (let ((target (* 4 (floor fill 3))))
-                              (setf (aref pixels target) (ldb (byte 8 16) group)
-                                    (aref pixels (+ target 1)) (ldb (byte 8 8) group)
-                                    (aref pixels (+ target 2)) (ldb (byte 8 0) group)
-                                    (aref pixels (+ target 3)) 255))
-                            (incf fill 3))
-                           ((and (not rgb-p) (<= (+ fill 3) expected))
-                            (setf (aref pixels fill) (ldb (byte 8 16) group)
-                                  (aref pixels (+ fill 1)) (ldb (byte 8 8) group)
-                                  (aref pixels (+ fill 2)) (ldb (byte 8 0) group))
-                            (incf fill 3))
-                           (t (emit (ldb (byte 8 16) group))
-                              (emit (ldb (byte 8 8) group))
-                              (emit (ldb (byte 8 0) group))))
-                         (incf index 4))
-                       (let ((value (aref table (aref octets index))))
-                         (cond
-                           ((>= value 0)
-                            (setf bits (logior (ash (logand bits #x3ffff) 6) value))
-                            (incf digits)
-                            (when (= digits 4)
-                              (emit (ldb (byte 8 16) bits))
-                              (emit (ldb (byte 8 8) bits))
-                              (emit (ldb (byte 8 0) bits))
-                              (setf bits 0 digits 0)))
-                           ((= value -2) (finish-group))
-                           (t (fail)))
-                         (incf index)))))
-        (when finish
-          (finish-group))))
-    (setf (graphics-decoder-fill decoder) fill
-          (graphics-decoder-bits decoder) bits
-          (graphics-decoder-digits decoder) digits)
-    decoder))
+with FINISH, also the digits left over at the end of the payload.  An
+error is kept as the decoder's failure."
+  (let ((base64 (graphics-decoder-base64 decoder)))
+    (handler-case
+        (progn (simd-base64:decoder-feed base64 octets :start start :end end)
+               (when finish
+                 (simd-base64:decoder-finish base64)))
+      (simd-base64:base64-error ()
+        (setf (graphics-decoder-failure decoder)
+              (make-condition 'graphics-protocol-error
+                              :message "Invalid base64 image payload"))))))
 
 (defun graphics-decoder-feed (decoder payload)
   "Feed one complete APC command. Return a command when all chunks arrive.
@@ -475,12 +263,12 @@ this returns."
           (unless continuing
             (multiple-value-bind (size rgb-p) (direct-rgba-size controls)
               (when size
-                (setf (graphics-decoder-pixels decoder)
-                      (make-array (if rgb-p (* 4 (floor size 3)) size)
-                                  :element-type '(unsigned-byte 8))
-                      (graphics-decoder-rgb-p decoder) rgb-p
-                      (graphics-decoder-expected decoder) size))))
-          (cond ((null (graphics-decoder-pixels decoder))
+                (setf (graphics-decoder-base64 decoder)
+                      (simd-base64:make-decoder
+                       (make-array (if rgb-p (* 4 (floor size 3)) size)
+                                   :element-type '(unsigned-byte 8))
+                       :layout (if rgb-p :rgba :octets))))))
+          (cond ((null (graphics-decoder-base64 decoder))
                  (push (subseq octets start end) (graphics-decoder-encoded-parts decoder)))
                 ((null (graphics-decoder-failure decoder))
                  (decode-direct decoder octets start end (not more))))
@@ -491,11 +279,12 @@ this returns."
                      (command
                        (cond ((graphics-decoder-failure decoder)
                               (error (graphics-decoder-failure decoder)))
-                             ((graphics-decoder-pixels decoder)
-                              (%make-graphics-command
-                               :controls controls
-                               :pixels (graphics-decoder-pixels decoder)
-                               :payload-length (graphics-decoder-fill decoder)))
+                             ((graphics-decoder-base64 decoder)
+                              (let ((base64 (graphics-decoder-base64 decoder)))
+                                (%make-graphics-command
+                                 :controls controls
+                                 :pixels (simd-base64:decoder-output base64)
+                                 :payload-length (simd-base64:decoder-fill base64))))
                              (t
                               (%make-graphics-command
                                :controls controls

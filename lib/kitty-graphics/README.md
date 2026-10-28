@@ -9,8 +9,9 @@ of slt and provides:
 - quota-limited base64 chunk reassembly (padding optional; continuation
   chunks may carry `q`), with `graphics-decoder-abort` for delete commands;
   plain RGB or RGBA pixels of a given size are decoded into RGBA as their
-  chunks arrive, so a video frame is not held twice, and a payload may be
-  an octet vector displaced into the caller's buffer;
+  chunks arrive (with [`simd-base64`](../simd-base64/), 16 digits per
+  step), so a video frame is not held twice, and a payload may be an octet
+  vector displaced into the caller's buffer;
 - normalization of 24-bit RGB, 32-bit RGBA, indexed (`f=8`/`f=16`, with a
   replaceable palette) and PNG transfers to RGBA8;
 - zlib decompression for every format and direct, regular-file,
