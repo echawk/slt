@@ -27,6 +27,23 @@
   "OSC numbers slt implements; others (the title among them) are left to
 the engine.")
 
+(defparameter +osc-collect-limit+ (* 4 1024 1024)
+  "The longest OSC string collected, but for iTerm2's images.")
+
+(defparameter +iterm-osc-prefix+ "1337;"
+  "What OSC strings carrying iTerm2 files start with.")
+
+(defun iterm-file-osc-p (octets start end)
+  "True when the OSC payload in OCTETS from START to END is an iTerm2 file
+command (see ITERM-COMMAND)."
+  (let ((after (+ start (length +iterm-osc-prefix+))))
+    (and (<= after end)
+         (loop for char across +iterm-osc-prefix+
+               for index from start
+               always (= (char-code char) (aref octets index)))
+         (iterm-command octets after end)
+         t)))
+
 (defun stream-string-policy (kind event first-octet)
   "Collect the control strings slt may act on; pass the rest on at once."
   (case kind
@@ -42,8 +59,11 @@ the engine.")
                 (t :pass)))
     (:apc (if (and *kitty-graphics-images* (= first-octet (char-code #\G)))
               :collect :pass))
-    ;; OSC strings are small but for OSC 52; bound them well below images.
-    (:osc (values :collect (* 4 1024 1024)))
+    ;; OSC strings are small but for OSC 52 and iTerm2's images (OSC 1337,
+    ;; bound only as other images are); bound the rest well below images.
+    (:osc (if (and *iterm2-images* (= first-octet (char-code (char +iterm-osc-prefix+ 0))))
+              :collect
+              (values :collect +osc-collect-limit+)))
     (t :pass)))
 
 (defun make-terminal-stream-parser (&key (max-control-bytes (* 70 1024 1024)))
@@ -131,6 +151,16 @@ a video's frames are megabytes each, and are decoded as they arrive."
                  :pass))
     (:csi (if (ecma48:event-valid-p event) (classify-csi parser event) :pass))
     (:osc
+     (let ((octets (ecma48:event-octets event))
+           (start (ecma48:event-data-start event))
+           (end (ecma48:event-data-end event)))
+       (when (and *iterm2-images* (iterm-file-osc-p octets start end))
+         (return-from classify-stream-event
+           (if (eq (ecma48:event-terminator event) :interrupted)
+               (values :consume '())
+               ;; Valid only until the handler returns, as :KITTY's.
+               (values :consume (list (list :iterm-file octets
+                                            (+ start (length +iterm-osc-prefix+)) end)))))))
      (multiple-value-bind (number text)
          (terminal-osc:parse-osc (ecma48:event-octets event)
                                  :start (ecma48:event-data-start event)

@@ -74,6 +74,9 @@
   (virtual-p nil)
   (screen :primary :type (member :primary :alternate))
   (erase-on-write-p nil)
+  ;; With both COLUMNS and ROWS, fill them instead of keeping the image's
+  ;; proportions.
+  (stretch-p nil)
   ;; Cells (DC + DR * COLUMNS) no longer showing the image.
   (hidden-cells (make-hash-table :test #'eql) :type hash-table)
   ;; (FIRST . LAST): the only rows still shown after being clipped by a
@@ -106,6 +109,9 @@
   (reported-scroll 0 :type integer)
   (active-screen :primary :type (member :primary :alternate))
   (kitty-decoder (kitty-graphics:make-graphics-decoder))
+  ;; An iTerm2 file sent in parts (MultipartFile): its arguments and the
+  ;; base64 parts so far, newest first, and their length.
+  (iterm-upload nil)
   ;; The palette indexed-color images are drawn with; NIL for *PALETTE*.
   (palette nil)
   ;; Geometry, kept current by the emulator.
@@ -250,6 +256,8 @@ letterboxed into them; with neither it keeps its own pixel size."
           (sw (max 1 sw))
           (sh (max 1 sh)))
       (cond
+        ((and columns rows (terminal-image-placement-stretch-p placement))
+         (values columns rows xo yo (* columns cell-width) (* rows cell-height)))
         ((and columns rows)
          (multiple-value-bind (x y w h)
              (fit-rectangle sw sh (* columns cell-width) (* rows cell-height))
@@ -1281,6 +1289,180 @@ nothing could show the older one again."
                     (image-placed-p store (terminal-image-id image)))
             do (setf changed t))
     changed))
+
+;;; iTerm2 inline images: OSC 1337 ; File=ARGUMENTS : BASE64 ST, or the
+;;; same file in parts, MultipartFile=ARGUMENTS, then FilePart=BASE64 as
+;;; often as needed, then FileEnd.  The ARGUMENTS are KEY=VALUE separated by
+;;; semicolons; only files with inline=1 are shown, at the cursor, which
+;;; then moves past them as after a Kitty image (unless doNotMoveCursor=1,
+;;; a WezTerm extension).  Sizes follow WezTerm's reading of iTerm2's.
+
+(defvar *iterm2-images* t
+  "Show iTerm2 inline images (OSC 1337 File).")
+
+(defparameter +iterm-image-commands+
+  '(("File" . :file) ("MultipartFile" . :multipart-file)
+    ("FilePart" . :file-part) ("FileEnd" . :file-end))
+  "The OSC 1337 commands that send files, before = (or alone).")
+
+(defun iterm-command (octets start end)
+  "The file command OCTETS hold from START to END (after 1337;), and where
+its argument begins; or NIL."
+  (let* ((equals (position (char-code #\=) octets :start start :end end))
+         (name (map 'string #'code-char (subseq octets start (or equals end)))))
+    (let ((command (cdr (assoc name +iterm-image-commands+ :test #'string=))))
+      (and command (values command (if equals (1+ equals) end))))))
+
+(defun parse-iterm-arguments (text)
+  "The KEY=VALUE;... TEXT as an alist of strings."
+  (loop for field in (uiop:split-string text :separator ";")
+        for equals = (position #\= field)
+        when equals
+          collect (cons (subseq field 0 equals) (subseq field (1+ equals)))))
+
+(defun iterm-argument (arguments key &optional default)
+  (let ((entry (assoc key arguments :test #'string=)))
+    (if entry (cdr entry) default)))
+
+(defparameter +iterm-pixel-suffix+ "px")
+(defparameter +iterm-percent-suffix+ "%")
+(defparameter +iterm-automatic-size+ "auto")
+(defconstant +percent+ 100)
+
+(defun iterm-size-pixels (text cell-pixels screen-pixels)
+  "The pixels the size TEXT (N cells, Npx, N% of the screen or auto) asks
+for, or NIL for auto."
+  (flet ((number-before (suffix)
+           (and (uiop:string-suffix-p text suffix)
+                (parse-integer text :end (- (length text) (length suffix)) :junk-allowed t))))
+    (let ((pixels (number-before +iterm-pixel-suffix+))
+          (percent (number-before +iterm-percent-suffix+))
+          (cells (and (not (string= text +iterm-automatic-size+))
+                      (every #'digit-char-p text)
+                      (plusp (length text))
+                      (parse-integer text))))
+      (cond (pixels pixels)
+            (percent (floor (* percent screen-pixels) +percent+))
+            (cells (* cells cell-pixels))))))
+
+(defun iterm-image-pixels (arguments width height store)
+  "The size in pixels to show an image of WIDTH x HEIGHT pixels at, as
+ARGUMENTS ask: (values WIDTH HEIGHT STRETCH-P)."
+  (let* ((cell-width (terminal-image-store-cell-width store))
+         (cell-height (terminal-image-store-cell-height store))
+         (screen-width (* cell-width (terminal-image-store-columns store)))
+         (screen-height (* cell-height (terminal-image-store-rows store)))
+         (wanted-width (iterm-size-pixels (iterm-argument arguments "width" +iterm-automatic-size+)
+                                          cell-width screen-width))
+         (wanted-height (iterm-size-pixels (iterm-argument arguments "height"
+                                                           +iterm-automatic-size+)
+                                           cell-height screen-height))
+         (preserve-p (string/= "0" (iterm-argument arguments "preserveAspectRatio" "1"))))
+    (cond
+      ((and wanted-width wanted-height)
+       (if preserve-p
+           (multiple-value-bind (x y w h) (fit-rectangle width height wanted-width wanted-height)
+             (declare (ignore x y))
+             (values w h nil))
+           (values wanted-width wanted-height t)))
+      (wanted-width (values wanted-width (max 1 (round (* wanted-width height) width)) nil))
+      (wanted-height (values (max 1 (round (* wanted-height width) height)) wanted-height nil))
+      ;; Its own size, shrunk to fit the screen.
+      ((or (> width screen-width) (> height screen-height))
+       (multiple-value-bind (x y w h) (fit-rectangle width height screen-width screen-height)
+         (declare (ignore x y))
+         (values w h nil)))
+      (t (values width height nil)))))
+
+(defun store-image-frames (store frames width height loops-p)
+  "Store FRAMES (IMAGE-FILE-FRAMEs) as a new anonymous image, animated when
+there are several, and return it."
+  (let* ((id (image-store-id store 0 0))
+         (first (first frames))
+         (image (store-image store id 0 width height (image-file-frame-rgba first)
+                             :anonymous-p t)))
+    (when (rest frames)
+      (setf (terminal-image-frame-gap (aref (terminal-image-frames image) 0))
+            (image-file-frame-delay-ms first))
+      (dolist (frame (rest frames))
+        (let ((rgba (image-file-frame-rgba frame)))
+          (evict-images-to-fit store (length rgba))
+          (vector-push-extend (make-terminal-image-frame :rgba rgba
+                                                         :gap (image-file-frame-delay-ms frame))
+                              (terminal-image-frames image))
+          (incf (terminal-image-store-bytes store) (length rgba))))
+      (setf (terminal-image-animation image) :running
+            ;; A GIF that does not loop plays once.
+            (terminal-image-max-loops image) (if loops-p 0 1)
+            (terminal-image-frame-deadline image) (+ (now-ms) (image-file-frame-delay-ms first))))
+    image))
+
+(defstruct (iterm-image (:constructor make-iterm-image (arguments frames width height &optional loops-p)))
+  "An iTerm2 image file decoded and ready to show."
+  arguments frames width height loops-p)
+
+(defun show-iterm-image (store image engine)
+  "Store the decoded IMAGE (an ITERM-IMAGE) and show it at the cursor."
+  (let ((arguments (iterm-image-arguments image)))
+    (multiple-value-bind (shown-width shown-height stretch-p)
+        (iterm-image-pixels arguments (iterm-image-width image) (iterm-image-height image) store)
+      (let* ((stored (store-image-frames store (iterm-image-frames image)
+                                         (iterm-image-width image) (iterm-image-height image)
+                                         (iterm-image-loops-p image)))
+             (command (kitty-graphics:parse-graphics-command
+                       (kitty-graphics:encode-graphics-command
+                        `((#\c . ,(princ-to-string
+                                   (ceiling shown-width (terminal-image-store-cell-width store))))
+                          (#\r . ,(princ-to-string
+                                   (ceiling shown-height (terminal-image-store-cell-height store))))
+                          ,@(and (string= "1" (iterm-argument arguments "doNotMoveCursor" "0"))
+                                 '((#\C . "1")))))
+                       :decode-data nil))
+             (placement (kitty-put store command engine (terminal-image-id stored) stored)))
+        (setf (terminal-image-placement-stretch-p placement) stretch-p)))))
+
+(defun decode-iterm-file (arguments parts)
+  "The ITERM-IMAGE in the base64 PARTS, or NIL when ARGUMENTS do not ask
+for it to be shown."
+  (when (string= "1" (iterm-argument arguments "inline" "0"))
+    (multiple-value-call #'make-iterm-image
+      arguments
+      (decode-image-file (handler-case (simd-base64:decode parts)
+                           (simd-base64:base64-error ()
+                             (image-file-error "Invalid base64 image file")))))))
+
+(defun prepare-iterm-file (store octets start end)
+  "Act on the OSC 1337 file command in OCTETS from START to END (what
+follows 1337;): return an ITERM-IMAGE to show, or NIL.  Decoding touches
+only the store's upload state, not the engine or what renderers read."
+  (flet ((text (from to) (map 'string #'code-char (subseq octets from to))))
+    (multiple-value-bind (command argument-start) (iterm-command octets start end)
+      (case command
+        (:file
+         (let ((colon (position (char-code #\:) octets :start argument-start :end end)))
+           (and colon
+                (decode-iterm-file (parse-iterm-arguments (text argument-start colon))
+                                   (list (subseq octets (1+ colon) end))))))
+        (:multipart-file
+         (setf (terminal-image-store-iterm-upload store)
+               (list (parse-iterm-arguments (text argument-start end)) '() 0))
+         nil)
+        (:file-part
+         (let ((upload (terminal-image-store-iterm-upload store)))
+           (when upload
+             (let ((size (+ (third upload) (- end argument-start))))
+               (if (> size (kitty-graphics:graphics-decoder-max-encoded-bytes
+                            (terminal-image-store-kitty-decoder store)))
+                   ;; Larger than a Kitty transfer may be: forget it.
+                   (setf (terminal-image-store-iterm-upload store) nil)
+                   (setf (second upload) (cons (subseq octets argument-start end)
+                                               (second upload))
+                         (third upload) size)))))
+         nil)
+        (:file-end
+         (let ((upload (shiftf (terminal-image-store-iterm-upload store) nil)))
+           (and upload
+                (decode-iterm-file (first upload) (reverse (second upload))))))))))
 
 (defun handle-kitty-command (store payload engine)
   "Execute the Kitty graphics command PAYLOAD (an APC body).  Return the reply

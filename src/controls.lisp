@@ -96,6 +96,12 @@ commands that failed, with FAILED."
                              (if command
                                  (run-kitty-command store command engine decoded)
                                  reply)))))
+        (:iterm-file
+         (graphics-guard ("showing an iTerm2 image")
+           (let ((image (without-engine-lock (emulator)
+                          (apply #'prepare-iterm-file store arguments))))
+             (when image
+               (show-iterm-image store image engine)))))
         (:osc
          (graphics-guard ("handling an OSC string")
            (destructuring-bind (number text terminator) arguments

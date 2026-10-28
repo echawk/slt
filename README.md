@@ -158,8 +158,9 @@ flows, the settings and the security choices. The reusable pieces live in
 
 ## Terminal graphics
 
-slt recognizes SIXEL DCS sequences and Kitty graphics APC sequences before
-they reach the selected VT engine, so graphics work with every engine.
+slt recognizes SIXEL DCS sequences, Kitty graphics APC sequences and
+iTerm2 inline images (OSC 1337) before they reach the selected VT engine,
+so graphics work with every engine.
 
 SIXEL is decoded through `libsixel`. An image leaves the cursor on the line
 below it, as in mlterm, konsole and libvte terminals. Images honor
@@ -180,11 +181,20 @@ palette changes (OSC 4), and images with negative z are drawn under the
 text: below cell backgrounds that are not the default for z under
 -1073741824, above them otherwise.
 
+iTerm2 inline images (`imgcat` and the tools that use its protocol) may be
+PNG, baseline JPEG (through cl-jpeg, which does not decode progressive
+JPEG) or GIF, animated GIFs included, sent whole (`File=`) or in parts
+(`MultipartFile=`, `FilePart=`, `FileEnd`). Files without `inline=1` are
+downloads, which slt ignores. `width` and `height` take cells, pixels
+(`px`), a percentage of the screen or `auto`; with `preserveAspectRatio=0`
+the image fills both. The cursor then moves past the image as after a Kitty
+image, unless `doNotMoveCursor=1` (from WezTerm).
+
 Placements scroll with the text, into the scrollback and within scroll
 regions, and are cleared by `ED 2`/`ED 3`, RIS and entering the alternate
 screen. Images are rendered by the cocoa/Metal, GL, GTK/Cairo, CLX, Tk,
-web, and headless frontends. Set `*sixel-images*` or `*kitty-graphics-images*`
-to `nil` to pass that protocol through untouched.
+web, and headless frontends. Set `*sixel-images*`, `*kitty-graphics-images*` or
+`*iterm2-images*` to `nil` to pass that protocol through untouched.
 
 On macOS, install the SIXEL decoder with `brew install libsixel`. The reusable
 bindings and Kitty codec live in [`lib/cl-libsixel`](lib/cl-libsixel/) and

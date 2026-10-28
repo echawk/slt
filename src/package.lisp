@@ -134,6 +134,7 @@
    #:frontend-open-url
    #:*window-padding*
    #:*font-fallback-families*
+   #:*iterm2-images*
    #:*commands*
    #:command-key-handler
    #:select-all

@@ -569,8 +569,14 @@ replies sent to the child."
                      (let ((reply (slt::handle-kitty-command store payload engine)))
                        (when reply (push reply replies))))
                    :on-control (lambda (event)
-                                 (let ((reply (slt::handle-graphics-control store event engine)))
-                                   (when reply (push reply replies))))))
+                                 (if (eq (first event) :iterm-file)
+                                     (let ((image (apply #'slt::prepare-iterm-file store
+                                                         (rest event))))
+                                       (when image
+                                         (slt::show-iterm-image store image engine)))
+                                     (let ((reply (slt::handle-graphics-control
+                                                   store event engine)))
+                                       (when reply (push reply replies)))))))
                 (nreverse replies))))))
 
 (defun kitty (controls &optional data)
@@ -641,6 +647,98 @@ replies sent to the child."
                                      (#\C . "1") (#\q . "2"))
                                    '(2 2 2))))
       (is (gethash 7 (slt::terminal-image-store-images store))))))
+
+(defun gif-octets (width height colors &key (delay 10))
+  "A GIF of WIDTH x HEIGHT pixels with a frame in each of COLORS, (R G B)."
+  (let* ((table (skippy:make-color-table))
+         (stream (skippy:make-data-stream :width width :height height :color-table table
+                                          :loopingp t)))
+    (dolist (color colors)
+      (skippy:add-image (skippy:make-image
+                         :width width :height height :delay-time delay
+                         :image-data (skippy:make-image-data
+                                      width height
+                                      :initial-element (skippy:ensure-color
+                                                        (apply #'skippy:rgb-color color) table)))
+                        stream))
+    (flexi-streams:with-output-to-sequence (out)
+      (skippy:write-data-stream stream out))))
+
+(defun iterm-file (arguments octets)
+  (format nil "~c]1337;File=~a:~a~c" (code-char 27) arguments
+          (cl-base64:usb8-array-to-base64-string octets) (code-char 7)))
+
+(deftest iterm2-inline-images-are-shown-at-the-cursor ()
+  (multiple-value-bind (engine store feed) (graphics-session :rows 6 :columns 20)
+    (let ((gif (gif-octets 4 2 '((255 0 0)))))
+      (flet ((placements () (slt::terminal-image-store-placements store))
+             (cursor () (multiple-value-list (slt::engine-cursor-position engine))))
+        ;; Not inline: a download, which slt does not do.
+        (funcall feed (iterm-file "inline=0" gif))
+        (is (null (placements)))
+        (funcall feed (iterm-file "inline=1" gif))
+        (is-equal 1 (length (placements)))
+        (let ((image (gethash (slt::terminal-image-placement-image-id (first (placements)))
+                              (slt::terminal-image-store-images store))))
+          (is-equal '(4 2) (list (slt::terminal-image-width image)
+                                 (slt::terminal-image-height image)))
+          (is-equal '(255 0 0 255) (coerce (subseq (slt::terminal-image-rgba image) 0 4) 'list)))
+        (is-equal '(0 1) (cursor) "the cursor moves past the image")
+        ;; Three cells wide; the height follows the proportions.
+        (funcall feed (format nil "~c[2;1H" (code-char 27)) (iterm-file "inline=1;width=3" gif))
+        (let ((placement (first (placements))))
+          (is-equal 3 (slt::terminal-image-placement-columns placement))
+          (is-equal 1 (slt::terminal-image-placement-rows placement))
+          (is (not (slt::terminal-image-placement-stretch-p placement))))
+        (is-equal '(1 3) (cursor))
+        (funcall feed (format nil "~c[4;1H" (code-char 27))
+                 (iterm-file "inline=1;width=16px;height=100%;preserveAspectRatio=0;doNotMoveCursor=1"
+                             gif))
+        (let ((placement (first (placements))))
+          (is-equal '(2 6) (list (slt::terminal-image-placement-columns placement)
+                                 (slt::terminal-image-placement-rows placement)))
+          (is (slt::terminal-image-placement-stretch-p placement)))
+        (is-equal '(3 0) (cursor) "doNotMoveCursor leaves the cursor")))))
+
+(deftest iterm2-jpeg-files-are-shown ()
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (declare (ignore engine))
+    (let* ((width 16) (height 8)
+           ;; cl-jpeg's encoder takes pixels as B G R: this is pure green.
+           (pixels (make-array (* 3 width height) :element-type '(unsigned-byte 8))))
+      (dotimes (pixel (* width height))
+        (setf (aref pixels (1+ (* 3 pixel))) 255))
+      (funcall feed (iterm-file "inline=1"
+                                (flexi-streams:with-output-to-sequence (out)
+                                  (jpeg:encode-image-stream out pixels 3 height width))))
+      (let* ((image (gethash (slt::terminal-image-placement-image-id
+                              (first (slt::terminal-image-store-placements store)))
+                             (slt::terminal-image-store-images store)))
+             (pixel (coerce (subseq (slt::terminal-image-rgba image) 0 4) 'list)))
+        (is-equal (list width height) (list (slt::terminal-image-width image)
+                                            (slt::terminal-image-height image)))
+        (is (and (< (first pixel) 8) (> (second pixel) 247) (< (third pixel) 8)
+                 (= 255 (fourth pixel)))
+            "green, give or take JPEG's loss")))))
+
+(deftest iterm2-files-may-come-in-parts-and-animate ()
+  (multiple-value-bind (engine store feed) (graphics-session)
+    (declare (ignore engine))
+    (let* ((base64 (cl-base64:usb8-array-to-base64-string
+                    (gif-octets 2 2 '((255 0 0) (0 0 255)) :delay 5)))
+           (half (floor (length base64) 2))
+           (osc (lambda (text) (format nil "~c]1337;~a~c" (code-char 27) text (code-char 7)))))
+      (funcall feed (funcall osc "MultipartFile=inline=1")
+               (funcall osc (format nil "FilePart=~a" (subseq base64 0 half)))
+               (funcall osc (format nil "FilePart=~a" (subseq base64 half))))
+      (is (null (slt::terminal-image-store-placements store)) "nothing before FileEnd")
+      (funcall feed (funcall osc "FileEnd"))
+      (let ((image (gethash (slt::terminal-image-placement-image-id
+                             (first (slt::terminal-image-store-placements store)))
+                            (slt::terminal-image-store-images store))))
+        (is-equal 2 (length (slt::terminal-image-frames image)))
+        (is-equal :running (slt::terminal-image-animation image))
+        (is-equal 50 (slt::terminal-image-frame-gap (aref (slt::terminal-image-frames image) 0)))))))
 
 (defun session-row-text (engine row)
   (let ((grid (make-grid (engine-rows engine) (engine-columns engine))))

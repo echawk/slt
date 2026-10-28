@@ -36,6 +36,7 @@ cl-glfw3-examples, ghcr.io/ocicl/cl-glfw3@sha256:cc60fcd0651451ee21c56f69ad22d53
 cl-glu, ghcr.io/ocicl/cl-glut@sha256:7fb8c6d046f7f9e40a7aee62748670b2bf95a216f8ef6979972c85c81a047c33, cl-opengl-20260812-6a4b55d/cl-glu.asd
 cl-glut, ghcr.io/ocicl/cl-glut@sha256:7fb8c6d046f7f9e40a7aee62748670b2bf95a216f8ef6979972c85c81a047c33, cl-opengl-20260812-6a4b55d/cl-glut.asd
 cl-glut-examples, ghcr.io/ocicl/cl-glut@sha256:7fb8c6d046f7f9e40a7aee62748670b2bf95a216f8ef6979972c85c81a047c33, cl-opengl-20260812-6a4b55d/cl-glut-examples.asd
+cl-jpeg, ghcr.io/ocicl/cl-jpeg@sha256:e9ce492fa447ade358a54bb322a14d398665aad91c332841236cbbc5aad2bea4, cl-jpeg-20240503-bef2c3b/cl-jpeg.asd
 cl-json, ghcr.io/ocicl/cl-json@sha256:54c4d00901c2c5b0ea9da11eed8f0104fc5819e1ed9a29d1f3364503a720a868, cl-json-20240907-994dd38/cl-json.asd
 cl-opengl, ghcr.io/ocicl/cl-glut@sha256:7fb8c6d046f7f9e40a7aee62748670b2bf95a216f8ef6979972c85c81a047c33, cl-opengl-20260812-6a4b55d/cl-opengl.asd
 cl-opengl-examples, ghcr.io/ocicl/cl-glut@sha256:7fb8c6d046f7f9e40a7aee62748670b2bf95a216f8ef6979972c85c81a047c33, cl-opengl-20260812-6a4b55d/cl-opengl-examples.asd
@@ -80,6 +81,7 @@ rfc2388, ghcr.io/ocicl/rfc2388@sha256:4190f6eb36b3b2f53def6eff56b44e76edf4086ada
 sb-cga, ghcr.io/ocicl/sb-cga@sha256:883edf669979b4d02eee168c03c70316dab3ae8dff18854d02dfb6f45c3aa5ae, sb-cga-20250528-304924d/sb-cga.asd
 sha1, ghcr.io/ocicl/sha1@sha256:d332af205bf3b5db2bdf8ea6df9f5127627343ce19bc313d00cfa2d80a5fb404, sha1-20240503-be8b1b1/sha1.asd
 sha3, ghcr.io/ocicl/sha3@sha256:556fcc3d3fcba08185de62f7bb090fa233af4f8c68a4d7401992a32e03fb9a70, sha3-20240503-a4baa05/sha3.asd
+skippy, ghcr.io/ocicl/skippy@sha256:923f29159fd11965890d48db7af64c72ae6e9773679406c7f3a23d9f60c89e4b, skippy-20240503-e456210/skippy.asd
 slynk, ghcr.io/ocicl/slynk@sha256:062a9d7363823d7ccd8318a2f0d19a91f4e076ba3a280ce5eecb3ba1cd1ae1c5, sly-20261013-9b3477a/slynk/slynk.asd
 split-sequence, ghcr.io/ocicl/split-sequence@sha256:3a37662eedd99c42995587b9d443c4631f25c4c523091bcca31a27b880585b8e, split-sequence-2.0.1/split-sequence.asd
 swank, ghcr.io/ocicl/swank@sha256:07487b3404a149ac39619bd340f49cd8b953f76f6d8fa6198cfc1e91d8a3076b, slime-2.32/swank.asd

@@ -25,4 +25,5 @@
    #:graphics-decoder-pending-p
    #:graphics-decoder-abort
    #:graphics-command-pixel-data
-   #:graphics-command-rgba))
+   #:graphics-command-rgba
+   #:decode-png))

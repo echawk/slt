@@ -17,7 +17,6 @@
 (defconstant +cf-string-encoding-utf8+ #x08000100)
 (defconstant +cg-image-alpha-only+ 7)
 (defconstant +bits-per-component+ 8)
-(defconstant +rgba-octets+ 4)
 ;; kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big: R, G, B, A octets.
 (defconstant +cg-rgba-premultiplied+ (logior 1 (ash 4 12)))
 (defconstant +ct-font-color-glyphs-trait+ (ash 1 13))
