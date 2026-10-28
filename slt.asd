@@ -106,7 +106,7 @@ from slt/glyphs drawn with the RENDER extension."
 
 (asdf:defsystem #:slt/bench
   :description "Engine and image throughput benchmarks."
-  :depends-on (:slt/core :cl-base64)
+  :depends-on (:slt/core :simd-base64)
   :pathname "bench/"
   :components ((:file "throughput")
                (:file "images")))
@@ -137,7 +137,7 @@ from slt/glyphs drawn with the RENDER extension."
 
 (asdf:defsystem #:slt/web
   :description "Web frontend: serves web/slt-terminal.js and streams the grid over a WebSocket."
-  :depends-on (:slt/core :hunchentoot :hunchensocket :com.inuoe.jzon)
+  :depends-on (:slt/core :simd-base64 :hunchentoot :hunchensocket :com.inuoe.jzon)
   :pathname "src/web/"
   :components ((:file "web-frontend")))
 

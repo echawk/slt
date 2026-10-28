@@ -3,7 +3,7 @@
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.1.0"
-  :depends-on (:simd-base64 :cl-base64 :cffi :uiop (:feature :sbcl :sb-posix))
+  :depends-on (:simd-base64 :cffi :uiop (:feature :sbcl :sb-posix))
   :serial t
   :pathname "src/"
   :components ((:file "package")

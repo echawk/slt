@@ -127,7 +127,7 @@ Without DECODE-DATA only the controls are read."
     (format nil "~c_G~a~@[;~a~]~c\\"
             esc (encode-controls controls)
             (and data (plusp (length data))
-                 (cl-base64:usb8-array-to-base64-string data))
+                 (simd-base64:usb8-array-to-base64-string data))
             esc)))
 
 (defun encode-graphics-response (controls status &optional message)

@@ -14,7 +14,7 @@ and decoding PNG, JPEG and GIF files into RGBA frames."
   :in-order-to ((test-op (test-op "iterm2-images/tests"))))
 
 (asdf:defsystem #:iterm2-images/tests
-  :depends-on (:iterm2-images :cl-base64)
+  :depends-on (:iterm2-images)
   :pathname "t/"
   :components ((:file "tests"))
   :perform (test-op (operation component)

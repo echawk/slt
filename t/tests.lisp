@@ -666,7 +666,7 @@ replies sent to the child."
 
 (defun iterm-file (arguments octets)
   (format nil "~c]1337;File=~a:~a~c" (code-char 27) arguments
-          (cl-base64:usb8-array-to-base64-string octets) (code-char 7)))
+          (simd-base64:usb8-array-to-base64-string octets) (code-char 7)))
 
 (deftest iterm2-inline-images-are-shown-at-the-cursor ()
   (multiple-value-bind (engine store feed) (graphics-session :rows 6 :columns 20)
@@ -724,7 +724,7 @@ replies sent to the child."
 (deftest iterm2-files-may-come-in-parts-and-animate ()
   (multiple-value-bind (engine store feed) (graphics-session)
     (declare (ignore engine))
-    (let* ((base64 (cl-base64:usb8-array-to-base64-string
+    (let* ((base64 (simd-base64:usb8-array-to-base64-string
                     (gif-octets 2 2 '((255 0 0) (0 0 255)) :delay 5)))
            (half (floor (length base64) 2))
            (osc (lambda (text) (format nil "~c]1337;~a~c" (code-char 27) text (code-char 7)))))

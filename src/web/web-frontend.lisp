@@ -360,7 +360,7 @@ to this message's.  ENCODED caches base64 by image id across messages."
              (let ((id (terminal-image-id image)))
                (or (gethash id encoded)
                    (setf (gethash id encoded)
-                         (cl-base64:usb8-array-to-base64-string
+                         (simd-base64:usb8-array-to-base64-string
                           (terminal-image-rgba image)))))))
       (prog1
           (json-object

@@ -48,7 +48,7 @@
     (and start (decoder-feed decoder payload start (length payload)))))
 
 (defun base64 (octets)
-  (cl-base64:usb8-array-to-base64-string octets))
+  (simd-base64:usb8-array-to-base64-string octets))
 
 (defun test-commands ()
   (let ((payload (osc "File=inline=1:AAAA")))

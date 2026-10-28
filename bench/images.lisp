@@ -13,7 +13,7 @@
          (esc (code-char 27)))
     (dotimes (i (length rgb))
       (setf (aref rgb i) (logand #xff (+ seed (* i 7)))))
-    (let ((base64 (cl-base64:usb8-array-to-base64-string rgb)))
+    (let ((base64 (simd-base64:usb8-array-to-base64-string rgb)))
       (slt::string->octets
        (with-output-to-string (out)
          (format out "~c[1;1H~c_Ga=T,f=24,s=~d,v=~d,C=1,q=2,m=1;" esc esc width height)
