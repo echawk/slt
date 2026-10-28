@@ -16,6 +16,8 @@
 
 (defconstant +cf-string-encoding-utf8+ #x08000100)
 (defconstant +cg-image-alpha-only+ 7)
+(defconstant +bits-per-component+ 8)
+(defconstant +rgba-octets+ 4)
 ;; kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big: R, G, B, A octets.
 (defconstant +cg-rgba-premultiplied+ (logior 1 (ash 4 12)))
 (defconstant +ct-font-color-glyphs-trait+ (ash 1 13))
@@ -272,7 +274,8 @@ or a null pointer."
          (cell-height (max 1 (ceiling (+ ascent descent leading))))
          (bitmap (cffi:foreign-alloc :uint8 :count (* 2 cell-width cell-height)
                                             :initial-element 0))
-         (context (%cg-bitmap-context-create bitmap (* 2 cell-width) cell-height 8
+         (context (%cg-bitmap-context-create bitmap (* 2 cell-width) cell-height
+                                             +bits-per-component+
                                              (* 2 cell-width) (cffi:null-pointer)
                                              +cg-image-alpha-only+)))
     (%cg-context-set-should-smooth-fonts context nil)
@@ -354,47 +357,101 @@ or a null pointer."
   (when (cffi:null-pointer-p (coretext-font-color-context font))
     (let* ((width (* 2 (coretext-font-cell-width font)))
            (height (coretext-font-cell-height font))
-           (bitmap (cffi:foreign-alloc :uint8 :count (* 4 width height) :initial-element 0))
+           (bitmap (cffi:foreign-alloc :uint8 :count (* +rgba-octets+ width height)
+                                             :initial-element 0))
            (space (%cg-color-space-create-device-rgb)))
       (setf (coretext-font-color-bitmap font) bitmap
             (coretext-font-color-context font)
-            (%cg-bitmap-context-create bitmap width height 8 (* 4 width) space
+            (%cg-bitmap-context-create bitmap width height +bits-per-component+
+                                       (* +rgba-octets+ width) space
                                        +cg-rgba-premultiplied+))
       (%cg-color-space-release space)))
   (coretext-font-color-context font))
 
+(defparameter +ink-margin+ 1/4
+  "Room left around a color line when measuring its ink, as a fraction of
+its height: glyphs may reach beyond their typographic bounds.")
+
+(defun call-with-rgba-bitmap (width height function)
+  "Call FUNCTION with a cleared RGBA bitmap context of WIDTH x HEIGHT pixels
+and its pixels, both freed after."
+  (let* ((bitmap (cffi:foreign-alloc :uint8 :count (* +rgba-octets+ width height)
+                                            :initial-element 0))
+         (space (%cg-color-space-create-device-rgb))
+         (context (%cg-bitmap-context-create bitmap width height +bits-per-component+
+                                             (* +rgba-octets+ width)
+                                             space +cg-rgba-premultiplied+)))
+    (%cg-color-space-release space)
+    (unwind-protect (funcall function context bitmap)
+      (cg-context-release context)
+      (cffi:foreign-free bitmap))))
+
+(defun rgba-ink-box (bitmap width height)
+  "The box of BITMAP's pixels that are not transparent, as (values LEFT
+TOP RIGHT BOTTOM) with rows counted from the top, or NIL."
+  (let ((left width) (top height) (right 0) (bottom 0))
+    (dotimes (row height)
+      (dotimes (column width)
+        (when (plusp (cffi:mem-aref bitmap :uint8
+                                    (+ (1- +rgba-octets+)
+                                       (* +rgba-octets+ (+ column (* row width))))))
+          (setf left (min left column) right (max right (1+ column))
+                top (min top row) bottom (max bottom (1+ row))))))
+    (and (< left right) (values left top right bottom))))
+
+(defun ct-line-ink (line)
+  "Where LINE's ink lies relative to its pen position, in pixels with y
+up: (values LEFT BOTTOM WIDTH HEIGHT), or NIL when it draws nothing."
+  (cffi:with-foreign-objects ((ascent :double) (descent :double) (leading :double))
+    (let* ((line-width (%ct-line-typographic-bounds line ascent descent leading))
+           (line-height (+ (cffi:mem-ref ascent :double) (cffi:mem-ref descent :double)))
+           (margin (ceiling (* +ink-margin+ (max line-width line-height))))
+           (width (+ (ceiling line-width) (* 2 margin)))
+           (height (+ (ceiling line-height) (* 2 margin)))
+           (pen-x margin)
+           (pen-y (+ margin (cffi:mem-ref descent :double))))
+      (call-with-rgba-bitmap
+       width height
+       (lambda (context bitmap)
+         (%cg-context-set-text-position context (coerce pen-x 'double-float)
+                                        (coerce pen-y 'double-float))
+         (%ct-line-draw line context)
+         (multiple-value-bind (left top right bottom) (rgba-ink-box bitmap width height)
+           (and left
+                ;; Bitmap rows run top down; CoreGraphics' y runs up.
+                (values (- left pen-x) (- height bottom pen-y)
+                        (- right left) (- bottom top)))))))))
+
 (defun coretext-draw-color-line (font line width height)
-  "Draw LINE in color, scaled to fit WIDTH x HEIGHT pixels and centered;
-return the box's premultiplied RGBA pixels."
+  "Draw LINE in color with its ink scaled to fill WIDTH x HEIGHT pixels,
+keeping its proportions, and centered; return the box's premultiplied RGBA
+pixels."
   (let* ((context (coretext-color-context font))
          (bitmap (coretext-font-color-bitmap font))
          (bitmap-width (* 2 (coretext-font-cell-width font)))
          (bitmap-height (coretext-font-cell-height font))
-         (rgba (make-array (* 4 width height) :element-type '(unsigned-byte 8)
-                                              :initial-element 0)))
+         (rgba (make-array (* +rgba-octets+ width height) :element-type '(unsigned-byte 8)
+                                                         :initial-element 0)))
     (%cg-context-clear-rect context 0d0 0d0
                             (coerce bitmap-width 'double-float)
                             (coerce bitmap-height 'double-float))
-    (cffi:with-foreign-objects ((ascent :double) (descent :double) (leading :double))
-      (let* ((line-width (max 1d0 (%ct-line-typographic-bounds line ascent descent leading)))
-             (line-height (max 1d0 (+ (cffi:mem-ref ascent :double)
-                                      (cffi:mem-ref descent :double))))
-             (scale (min 1d0 (/ width line-width) (/ height line-height))))
-        (%cg-context-save-gstate context)
-        ;; CoreGraphics counts y up from the bottom.
-        (%cg-context-translate context
-                               (/ (- width (* line-width scale)) 2)
-                               (+ (/ (- height (* line-height scale)) 2)
-                                  (* (cffi:mem-ref descent :double) scale)))
-        (%cg-context-scale context scale scale)
-        (%cg-context-set-text-position context 0d0 0d0)
-        (%ct-line-draw line context)
-        (%cg-context-restore-gstate context)))
+    (multiple-value-bind (ink-x ink-y ink-width ink-height) (ct-line-ink line)
+      (when ink-x
+        (let ((scale (coerce (min (/ width ink-width) (/ height ink-height)) 'double-float)))
+          (%cg-context-save-gstate context)
+          ;; Put the scaled ink box in the middle of the cells.
+          (%cg-context-translate context
+                                 (- (/ (- width (* ink-width scale)) 2) (* ink-x scale))
+                                 (- (/ (- height (* ink-height scale)) 2) (* ink-y scale)))
+          (%cg-context-scale context scale scale)
+          (%cg-context-set-text-position context 0d0 0d0)
+          (%ct-line-draw line context)
+          (%cg-context-restore-gstate context))))
     ;; Bitmap rows are stored top to bottom, like the atlas.
     (dotimes (row (min height bitmap-height) rgba)
-      (dotimes (byte (* 4 (min width bitmap-width)))
-        (setf (aref rgba (+ byte (* 4 width row)))
-              (cffi:mem-aref bitmap :uint8 (+ byte (* 4 bitmap-width row))))))))
+      (dotimes (byte (* +rgba-octets+ (min width bitmap-width)))
+        (setf (aref rgba (+ byte (* +rgba-octets+ width row)))
+              (cffi:mem-aref bitmap :uint8 (+ byte (* +rgba-octets+ bitmap-width row))))))))
 
 (defun ct-line-last-resort-p (line)
   "True when CoreText found no font but LastResort for some of LINE."
