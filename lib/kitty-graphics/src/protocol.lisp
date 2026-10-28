@@ -2,6 +2,20 @@
 
 (deftype octets () '(simple-array (unsigned-byte 8) (*)))
 
+(defconstant +esc+ 27 "ESC, which opens and closes an APC sequence.")
+
+(defparameter +apc-introducer+ (vector +esc+ (char-code #\_) (char-code #\G))
+  "ESC _ G, which opens a Kitty graphics command.")
+
+(defparameter +string-terminator+ (vector +esc+ (char-code #\\))
+  "ESC \\, which closes it.")
+
+(defun octets-at-p (octets start expected)
+  "True when OCTETS hold the octets EXPECTED from START."
+  (loop for octet across expected
+        for index from start
+        always (= octet (aref octets index))))
+
 (define-condition graphics-protocol-error (error)
   ((message :initarg :message :reader graphics-protocol-error-message)
    ;; The errno-style name a terminal puts before the message in its response.
@@ -81,12 +95,15 @@ of (KEY-CHARACTER . VALUE-STRING)."
              string)))
     (if (= start end)
         '()
-        (loop for comma = (position 44 octets :start start :end end)
+        ;; A field is a one-character key, =, and a value of at least one.
+        (loop for comma = (position (char-code #\,) octets :start start :end end)
               for field-end of-type fixnum = (or comma end)
-              unless (and (< (+ start 2) field-end) (= 61 (aref octets (1+ start))))
+              for equals of-type fixnum = (1+ start)
+              for value of-type fixnum = (1+ equals)
+              unless (and (< value field-end) (= (char-code #\=) (aref octets equals)))
                 do (protocol-error "Malformed Kitty graphics control field: ~s"
                                    (text start field-end))
-              collect (cons (code-char (aref octets start)) (text (+ start 2) field-end))
+              collect (cons (code-char (aref octets start)) (text value field-end))
               while comma
               do (setf start (1+ comma))))))
 
@@ -106,7 +123,7 @@ Without DECODE-DATA only the controls are read."
 
 (defun encode-graphics-command (controls &optional data)
   "Encode CONTROLS and optional octet DATA as a complete Kitty APC sequence."
-  (let ((esc (code-char 27)))
+  (let ((esc (code-char +esc+)))
     (format nil "~c_G~a~@[;~a~]~c\\"
             esc (encode-controls controls)
             (and data (plusp (length data))
@@ -115,7 +132,7 @@ Without DECODE-DATA only the controls are read."
 
 (defun encode-graphics-response (controls status &optional message)
   "Encode a terminal acknowledgement such as i=1;OK or i=1;EINVAL:details."
-  (let ((esc (code-char 27)))
+  (let ((esc (code-char +esc+)))
     (format nil "~c_G~a;~a~@[:~a~]~c\\"
             esc (encode-controls controls) status message esc)))
 
@@ -166,11 +183,11 @@ place."
                   (values octets 0 (length octets)))))
     (let ((length (- end start)))
       (cond
-        ((and (>= length 5) (= (aref octets start) 27) (= (aref octets (+ start 1)) 95)
-              (= (aref octets (+ start 2)) 71)
-              (= (aref octets (- end 2)) 27) (= (aref octets (1- end)) 92))
-         (values octets (+ start 3) (- end 2)))
-        ((and (plusp length) (= (aref octets start) 71))
+        ((and (>= length (+ (length +apc-introducer+) (length +string-terminator+)))
+              (octets-at-p octets start +apc-introducer+)
+              (octets-at-p octets (- end (length +string-terminator+)) +string-terminator+))
+         (values octets (+ start (length +apc-introducer+)) (- end (length +string-terminator+))))
+        ((and (plusp length) (= (aref octets start) (char-code #\G)))
          (values octets (1+ start) end))
         (t (values octets start end))))))
 
@@ -178,7 +195,7 @@ place."
   "The controls of PAYLOAD, and where its base64 data lies: octets, start
 and end."
   (multiple-value-bind (octets start end) (payload-octets payload)
-    (let ((separator (position 59 octets :start start :end end)))
+    (let ((separator (position (char-code #\;) octets :start start :end end)))
       (values (parse-controls octets start (or separator end))
               octets
               (if separator (1+ separator) end)

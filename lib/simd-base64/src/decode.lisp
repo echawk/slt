@@ -1,16 +1,16 @@
 (in-package #:simd-base64)
 
 ;;;; Base64 decoding, incremental and into a vector the caller provides.
-;;;; Input may arrive in pieces split anywhere, even within a quartet of
+;;;; Input may arrive in pieces split anywhere, even within a group of
 ;;;; digits, and padding may be missing or appear between separately
 ;;;; padded pieces.  The output layout :RGBA decodes RGB pixels straight
-;;;; into RGBA, every third octet followed by an opaque alpha, which is
-;;;; how a terminal wants an image sent as base64 RGB.
+;;;; into RGBA, every pixel's three octets followed by an opaque alpha,
+;;;; which is how a terminal wants an image sent as base64 RGB.
 ;;;;
-;;;; Whole runs of 16 digits are decoded in one step with SIMD when SBCL
-;;;; has the sb-simd contrib: NEON on arm64 (both layouts) and SSE2 on
-;;;; x86-64 (RGBA only: packing 12 octets out of 16 needs a byte shuffle,
-;;;; which SSE2 lacks).  Everything else goes a quartet at a time.
+;;;; A block of groups is decoded in one step with SIMD when SBCL has the
+;;;; sb-simd contrib: NEON on arm64 (both layouts) and SSE2 on x86-64 (RGBA
+;;;; only: packing the octets of a block needs a byte shuffle, which SSE2
+;;;; lacks).  Everything else goes a group at a time.
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   #+(and sbcl arm64)
@@ -32,117 +32,185 @@
              (format stream "Invalid base64~@[ at octet ~d~]"
                      (base64-error-position condition)))))
 
+;;; The encoding: each digit holds BITS-PER-DIGIT bits, so a group of
+;;; DIGITS-PER-GROUP digits holds OCTETS-PER-GROUP octets.
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defconstant +octet-bits+ 8)
+  (defconstant +bits-per-digit+ 6)
+  (defconstant +digits-per-group+ 4)
+  (defconstant +octets-per-group+ (/ (* +bits-per-digit+ +digits-per-group+) +octet-bits+))
+  (defconstant +group-bits+ (* +bits-per-digit+ +digits-per-group+))
+  (defconstant +octet-mask+ (ldb (byte +octet-bits+ 0) -1))
+  (defconstant +digit-mask+ (ldb (byte +bits-per-digit+ 0) -1))
+
+  (defparameter +alphabet+
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    "The base64 digits, in order of value.")
+
+  (defconstant +padding+ (char-code #\=))
+
+  ;; The digits are five runs of consecutive octets, each mapped to its
+  ;; values by adding one offset (modulo 256): (FIRST LAST OFFSET).
+  (defparameter +digit-runs+
+    (loop for (first last) in '((#\A #\Z) (#\a #\z) (#\0 #\9) (#\+ #\+) (#\/ #\/))
+          collect (list (char-code first) (char-code last)
+                        (ldb (byte +octet-bits+ 0)
+                             (- (position first +alphabet+) (char-code first)))))))
+
+;;; :RGBA output: each pixel's RGB octets, then its alpha.
+
+(defconstant +rgb-octets+ 3)
+(defconstant +rgba-octets+ 4)
+(defconstant +opaque+ +octet-mask+ "The alpha of an opaque pixel.")
+
+(defconstant +not-a-digit+ -1)
+(defconstant +padding-value+ -2)
+
 (defparameter +digit-values+
-  (let ((table (make-array 256 :element-type '(signed-byte 8) :initial-element -1)))
-    (loop for char across "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  (let ((table (make-array (1+ +octet-mask+) :element-type '(signed-byte 8)
+                                             :initial-element +not-a-digit+)))
+    (loop for char across +alphabet+
           for value from 0
           do (setf (aref table (char-code char)) value))
-    (setf (aref table (char-code #\=)) -2)
+    (setf (aref table +padding+) +padding-value+)
     table)
-  "Each octet's digit value: -1 for an octet that is not a digit, -2 for
-the padding =.")
+  "Each octet's digit value, +NOT-A-DIGIT+ or +PADDING-VALUE+.")
 
 (defstruct (decoder (:constructor make-decoder (output &key (layout :octets))))
   "Decodes base64 into OUTPUT.  With LAYOUT :OCTETS the decoded octets go
 there in order; with :RGBA each three are a pixel's RGB, stored as its four
-RGBA octets with alpha 255.  Octets beyond OUTPUT are counted, not kept."
+RGBA octets with an opaque alpha.  Octets beyond OUTPUT are counted, not
+kept."
   (output nil :type octets)
   (layout :octets :type (member :octets :rgba))
   ;; Octets decoded so far, those past the output's end included.
   (fill 0 :type index)
-  ;; The digits (up to three) of an unfinished quartet, and their bits.
+  ;; The digits of an unfinished group, and their bits.
   (bits 0 :type fixnum)
   (digits 0 :type fixnum))
 
-(declaim (inline output-capacity))
+(declaim (inline output-capacity rgba-index))
 (defun output-capacity (output layout)
   "How many decoded octets OUTPUT holds in LAYOUT."
   (if (eq layout :rgba)
-      (* 3 (floor (length output) 4))
+      (* +rgb-octets+ (floor (length output) +rgba-octets+))
       (length output)))
 
-;;; 16 digits at a time.  Each 32-bit lane holds a quartet, its first digit
-;;; in the low octet; the sextets of digits a b c d make the octets
-;;;   a << 2 | b >> 4,  (b & 15) << 4 | c >> 2,  (c & 3) << 6 | d,
-;;; placed in the lane's low three octets (with alpha 255 above for RGBA).
-;;; A lane holds one RGBA pixel, so for :RGBA the lanes are stored as they
-;;; are; for :OCTETS their low three octets are packed into 12.
+(defun rgba-index (fill)
+  "Where the FILLth decoded octet goes in :RGBA output."
+  (multiple-value-bind (pixel channel) (floor fill +rgb-octets+)
+    (+ (* pixel +rgba-octets+) channel)))
+
+;;; A block at a time.  A 128-bit vector holds LANES 32-bit lanes, each a
+;;; group of digits, its first digit in the low octet.  The digits become
+;;; their values, which are joined into the group's bits and split into
+;;; its octets, placed in the lane's low octets (with an opaque alpha
+;;; above for RGBA).  A lane then holds one RGBA pixel, so for :RGBA the
+;;; lanes are stored as they are; for :OCTETS their octets are packed.
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defconstant +vector-octets+ 16)
+  ;; A lane holds a group, a digit in each of its octets.
+  (defconstant +lane-octets+ +digits-per-group+)
+  (defconstant +lanes+ (/ +vector-octets+ +lane-octets+))
+  (defconstant +block-digits+ (* +lanes+ +digits-per-group+))
+  (defconstant +block-octets+ (* +lanes+ +octets-per-group+))
+  ;; A shuffle index past the vector's end yields a zero octet.
+  (defconstant +shuffle-zero+ +octet-mask+))
 
 (defmacro define-block-decoder (name package &key all-true shuffle)
   "Define (NAME OCTETS INDEX END OUTPUT FILL CAPACITY RGBA-P), which decodes
-runs of 16 digits from INDEX while they and their output fit, and returns
-the index and fill after them.  It stops before a run holding anything but
-digits.  With no SHUFFLE it decodes only for RGBA."
+blocks from INDEX while they and their output fit, and returns the index
+and fill after them.  It stops before a block holding anything but digits.
+ALL-TRUE tests that a mask has every octet set; with no SHUFFLE it decodes
+only for RGBA."
   (flet ((op (name) (intern (string name) package)))
-    `(progn
-       (declaim (inline ,name))
-       (defun ,name (octets index end output fill capacity rgba-p)
-         (declare (type octets octets output)
-                  (type index index end fill capacity)
-                  (optimize speed (safety 0)))
-         (let ((output-length (length output)))
-           (declare (type index output-length))
-           (loop while (and (<= (+ index 16) end)
-                            (<= (+ fill 12) capacity)
-                            ,(if shuffle
-                                 `(or rgba-p (<= (+ fill 16) output-length))
-                                 'rgba-p))
-                 do (let* ((v (,(op "U8.16-AREF") octets index))
-                           (upper (,(op "U8.16-AND") (,(op "U8.16>=") v (,(op "U8.16") 65))
-                                   (,(op "U8.16<=") v (,(op "U8.16") 90))))
-                           (lower (,(op "U8.16-AND") (,(op "U8.16>=") v (,(op "U8.16") 97))
-                                   (,(op "U8.16<=") v (,(op "U8.16") 122))))
-                           (digit (,(op "U8.16-AND") (,(op "U8.16>=") v (,(op "U8.16") 48))
-                                   (,(op "U8.16<=") v (,(op "U8.16") 57))))
-                           (plus (,(op "U8.16=") v (,(op "U8.16") 43)))
-                           (slash (,(op "U8.16=") v (,(op "U8.16") 47)))
-                           (valid (,(op "U8.16-OR") (,(op "U8.16-OR") upper lower)
-                                   (,(op "U8.16-OR") digit (,(op "U8.16-OR") plus slash)))))
-                      (unless (,all-true valid)
-                        (return))
-                      ;; Each class's distance to its sextets, modulo 256.
-                      (let* ((sextets
-                               (,(op "U8.16+")
-                                v
-                                (,(op "U8.16-OR")
-                                 (,(op "U8.16-OR")
-                                  (,(op "U8.16-AND") upper (,(op "U8.16") 191))
-                                  (,(op "U8.16-AND") lower (,(op "U8.16") 185)))
-                                 (,(op "U8.16-OR")
-                                  (,(op "U8.16-AND") digit (,(op "U8.16") 4))
-                                  (,(op "U8.16-OR")
-                                   (,(op "U8.16-AND") plus (,(op "U8.16") 19))
-                                   (,(op "U8.16-AND") slash (,(op "U8.16") 16)))))))
-                             (w (,(op "U32.4!") sextets))
-                             (m6 (,(op "U32.4") #x3f))
-                             (a (,(op "U32.4-AND") w m6))
-                             (b (,(op "U32.4-AND") (,(op "U32.4-SHIFTR") w 8) m6))
-                             (c (,(op "U32.4-AND") (,(op "U32.4-SHIFTR") w 16) m6))
-                             (d (,(op "U32.4-SHIFTR") w 24))
-                             (rgb (,(op "U32.4-OR")
-                                   (,(op "U32.4-OR")
-                                    (,(op "U32.4-SHIFTL") a 2)
-                                    (,(op "U32.4-SHIFTR") b 4))
-                                   (,(op "U32.4-OR")
-                                    (,(op "U32.4-OR")
-                                     (,(op "U32.4-SHIFTL") (,(op "U32.4-AND") b (,(op "U32.4") 15)) 12)
-                                     (,(op "U32.4-SHIFTL") (,(op "U32.4-SHIFTR") c 2) 8))
-                                    (,(op "U32.4-OR")
-                                     (,(op "U32.4-SHIFTL") (,(op "U32.4-AND") c (,(op "U32.4") 3)) 22)
-                                     (,(op "U32.4-SHIFTL") d 16))))))
-                        (if rgba-p
-                            (setf (,(op "U8.16-AREF") output (* 4 (floor fill 3)))
-                                  (,(op "U8.16!") (,(op "U32.4-OR") rgb (,(op "U32.4") #xff000000))))
-                            ,(if shuffle
-                                 `(setf (,(op "U8.16-AREF") output fill)
-                                        (,(op "U8.16-SHUFFLE")
-                                         (,(op "U8.16!") rgb)
-                                         (,(op "MAKE-U8.16") 0 1 2 4 5 6 8 9 10 12 13 14
-                                          255 255 255 255)))
-                                 nil))
-                        (incf index 16)
-                        (incf fill 12))))
-           (values index fill))))))
+    (let* ((broadcast (op "U8.16"))
+           (word (op "U32.4"))
+           (runs (loop for (first last offset) in +digit-runs+
+                       collect (list (gensym "RUN")
+                                     (if (= first last)
+                                         `(,(op "U8.16=") v (,broadcast ,first))
+                                         `(,(op "U8.16-AND")
+                                           (,(op "U8.16>=") v (,broadcast ,first))
+                                           (,(op "U8.16<=") v (,broadcast ,last))))
+                                     offset)))
+           (any (lambda (forms)
+                  (reduce (lambda (a b) `(,(op "U8.16-OR") ,a ,b)) forms)))
+           (word-or (lambda (forms)
+                      (reduce (lambda (a b) `(,(op "U32.4-OR") ,a ,b)) forms)))
+           ;; NEON cannot encode a right shift by zero.
+           (shift (lambda (direction form count)
+                    (if (zerop count) form `(,(op direction) ,form ,count)))))
+      `(progn
+         (declaim (inline ,name))
+         (defun ,name (octets index end output fill capacity rgba-p)
+           (declare (type octets octets output)
+                    (type index index end fill capacity)
+                    (optimize speed (safety 0)))
+           (let ((output-length (length output)))
+             (declare (type index output-length))
+             (loop while (and (<= (+ index +block-digits+) end)
+                              (<= (+ fill +block-octets+) capacity)
+                              ,(if shuffle
+                                   `(or rgba-p (<= (+ fill +vector-octets+) output-length))
+                                   'rgba-p))
+                   do (let* ((v (,(op "U8.16-AREF") octets index))
+                             ,@(loop for (run test) in runs collect `(,run ,test)))
+                        (unless (,all-true ,(funcall any (mapcar #'first runs)))
+                          (return))
+                        (let* ((values
+                                 (,(op "U8.16+")
+                                  v ,(funcall any (loop for (run nil offset) in runs
+                                                        collect `(,(op "U8.16-AND") ,run
+                                                                  (,broadcast ,offset))))))
+                               (lanes (,(op "U32.4!") values))
+                               (group
+                                 ,(funcall
+                                   word-or
+                                   (loop for digit below +digits-per-group+
+                                         collect (funcall
+                                                  shift "U32.4-SHIFTL"
+                                                  `(,(op "U32.4-AND")
+                                                    ,(funcall shift "U32.4-SHIFTR" 'lanes
+                                                              (* digit +octet-bits+))
+                                                    (,word ,+digit-mask+))
+                                                  (* +bits-per-digit+
+                                                     (- +digits-per-group+ 1 digit))))))
+                               (decoded
+                                 ,(funcall
+                                   word-or
+                                   (loop for octet below +octets-per-group+
+                                         collect (funcall
+                                                  shift "U32.4-SHIFTL"
+                                                  `(,(op "U32.4-AND")
+                                                    ,(funcall shift "U32.4-SHIFTR" 'group
+                                                              (* +octet-bits+
+                                                                 (- +octets-per-group+ 1 octet)))
+                                                    (,word ,+octet-mask+))
+                                                  (* octet +octet-bits+))))))
+                          (if rgba-p
+                              (setf (,(op "U8.16-AREF") output (rgba-index fill))
+                                    (,(op "U8.16!")
+                                     (,(op "U32.4-OR") decoded
+                                      (,word ,(ash +opaque+ (* +octet-bits+ +rgb-octets+))))))
+                              ,(if shuffle
+                                   `(setf (,(op "U8.16-AREF") output fill)
+                                          (,(op "U8.16-SHUFFLE")
+                                           (,(op "U8.16!") decoded)
+                                           (,(op "MAKE-U8.16")
+                                            ,@(loop for i below +vector-octets+
+                                                    collect (multiple-value-bind (lane octet)
+                                                                (floor i +octets-per-group+)
+                                                              (if (< lane +lanes+)
+                                                                  (+ (* lane +lane-octets+)
+                                                                     octet)
+                                                                  +shuffle-zero+))))))
+                                   nil))
+                          (incf index +block-digits+)
+                          (incf fill +block-octets+))))
+             (values index fill)))))))
 
 #+simd-base64-neon
 (define-block-decoder decode-blocks "SB-SIMD-NEON"
@@ -151,7 +219,8 @@ digits.  With no SHUFFLE it decodes only for RGBA."
 
 #+simd-base64-sse2
 (define-block-decoder decode-blocks "SB-SIMD-SSE2"
-  :all-true (lambda (mask) (= #xffff (sb-simd-sse2:u8.16-movemask mask))))
+  :all-true (lambda (mask)
+              (= (ldb (byte +vector-octets+ 0) -1) (sb-simd-sse2:u8.16-movemask mask))))
 
 #-(or simd-base64-neon simd-base64-sse2)
 (progn
@@ -162,8 +231,8 @@ digits.  With no SHUFFLE it decodes only for RGBA."
 
 (defun decoder-feed (decoder octets &key (start 0) (end (length octets)))
   "Decode the base64 digits in OCTETS from START to END, continuing the
-quartet the last call ended in.  Signal BASE64-ERROR at an octet that is
-not a digit or padding; DECODER is then of no further use."
+group the last call ended in.  Signal BASE64-ERROR at an octet that is not
+a digit or padding; DECODER is then of no further use."
   (declare (type octets octets) (type index start end) (optimize speed))
   (let* ((output (decoder-output decoder))
          (rgba-p (eq (decoder-layout decoder) :rgba))
@@ -175,74 +244,77 @@ not a digit or padding; DECODER is then of no further use."
          (index start))
     (declare (type octets output) (type index capacity fill index)
              (type fixnum bits digits)
-             (type (simple-array (signed-byte 8) (256)) table))
+             (type (simple-array (signed-byte 8) (*)) table))
     (when (> end (length octets))
       (error "END ~d is beyond the ~d octets" end (length octets)))
     (labels ((emit (octet)
                (declare (type (unsigned-byte 8) octet))
                (when (< fill capacity)
                  (if rgba-p
-                     (let ((target (+ fill (floor fill 3))))
+                     (let ((target (rgba-index fill)))
                        (setf (aref output target) octet)
-                       (when (= 2 (mod fill 3))
-                         (setf (aref output (1+ target)) 255)))
+                       (when (= (1- +rgb-octets+) (mod fill +rgb-octets+))
+                         (setf (aref output (1+ target)) +opaque+)))
                      (setf (aref output fill) octet)))
                (incf fill))
+             (emit-group (group digits)
+               ;; The whole octets in the bits of DIGITS digits.
+               (let ((size (* digits +bits-per-digit+)))
+                 (loop for octet from 1 to (floor size +octet-bits+)
+                       do (emit (ldb (byte +octet-bits+ (- size (* octet +octet-bits+)))
+                                     group)))))
              (finish-group ()
-               ;; A lone digit holds nothing whole and is malformed.
-               (case digits
-                 (1 (error 'base64-error :position index))
-                 (2 (emit (ldb (byte 8 4) bits)))
-                 (3 (emit (ldb (byte 8 10) bits))
-                  (emit (ldb (byte 8 2) bits))))
+               ;; A group too short to hold an octet is malformed.
+               (when (plusp digits)
+                 (when (< (* digits +bits-per-digit+) +octet-bits+)
+                   (error 'base64-error :position index))
+                 (emit-group bits digits))
                (setf bits 0 digits 0)))
       (loop while (< index end)
-            do (when (and (zerop digits) (or (not rgba-p) (zerop (mod fill 3))))
+            do (when (and (zerop digits) (or (not rgba-p) (zerop (mod fill +rgb-octets+))))
                  (multiple-value-setq (index fill)
                    (decode-blocks octets index end output fill capacity rgba-p)))
-               (let ((a 0) (b 0) (c 0) (d 0))
-                 (declare (type (signed-byte 8) a b c d))
-                 (cond
-                   ((>= index end))
-                   ((and (zerop digits)
-                         (<= (+ index 4) end)
-                         (progn (setf a (aref table (aref octets index))
-                                      b (aref table (aref octets (+ index 1)))
-                                      c (aref table (aref octets (+ index 2)))
-                                      d (aref table (aref octets (+ index 3))))
-                                ;; Negative when any is not a digit.
-                                (>= (logior a b c d) 0)))
-                    (let ((group (logior (ash a 18) (ash b 12) (ash c 6) d)))
-                      (emit (ldb (byte 8 16) group))
-                      (emit (ldb (byte 8 8) group))
-                      (emit (ldb (byte 8 0) group))
-                      (incf index 4)))
-                   (t
-                    (let ((value (aref table (aref octets index))))
-                      (cond
-                        ((>= value 0)
-                         (setf bits (logior (ash (logand bits #x3ffff) 6) value))
-                         (incf digits)
-                         (when (= digits 4)
-                           (emit (ldb (byte 8 16) bits))
-                           (emit (ldb (byte 8 8) bits))
-                           (emit (ldb (byte 8 0) bits))
-                           (setf bits 0 digits 0)))
-                        ((= value -2) (finish-group))
-                        (t (error 'base64-error :position index)))
-                      (incf index)))))))
+               (cond
+                 ((>= index end))
+                 ;; A whole group of digits, the common case.
+                 ((and (zerop digits)
+                       (<= (+ index +digits-per-group+) end)
+                       (let ((group 0))
+                         (declare (type fixnum group))
+                         (loop for i of-type index from index
+                                 below (+ index +digits-per-group+)
+                               for value of-type fixnum = (aref table (aref octets i))
+                               always (>= value 0)
+                               do (setf group (logior (ash group +bits-per-digit+) value))
+                               finally (emit-group group +digits-per-group+)
+                                       (incf index +digits-per-group+)
+                                       (return t)))))
+                 (t
+                  (let ((value (aref table (aref octets index))))
+                    (cond
+                      ((>= value 0)
+                       (setf bits (logior (ash (ldb (byte (- +group-bits+ +bits-per-digit+) 0)
+                                                    bits)
+                                               +bits-per-digit+)
+                                          value))
+                       (when (= (incf digits) +digits-per-group+)
+                         (emit-group bits digits)
+                         (setf bits 0 digits 0)))
+                      ((= value +padding-value+) (finish-group))
+                      (t (error 'base64-error :position index)))
+                    (incf index))))))
     (setf (decoder-fill decoder) fill
           (decoder-bits decoder) bits
           (decoder-digits decoder) digits)
     decoder))
 
 (defun decoder-finish (decoder)
-  "Decode the digits of an unpadded last quartet; return how many octets
+  "Decode the digits of an unpadded last group; return how many octets
 were decoded in all, those that did not fit the output included."
   (unless (zerop (decoder-digits decoder))
     ;; The padding the input left out.
     (decoder-feed decoder (make-array 1 :element-type '(unsigned-byte 8)
-                                        :initial-element (char-code #\=))))
+                                        :initial-element +padding+)))
   (decoder-fill decoder))
 
 (defun decoded-length (parts)
@@ -251,22 +323,23 @@ decodes to at most: exactly, unless padding comes before its end."
   (let* ((parts (if (listp parts) parts (list parts)))
          (total (reduce #'+ parts :key #'length))
          (padding (loop for part in (reverse parts)
-                        for trailing = (or (position 61 part :from-end t :test #'/=) -1)
+                        for trailing = (or (position +padding+ part :from-end t :test #'/=) -1)
                         sum (- (length part) trailing 1)
                         while (minusp trailing))))
-    (floor (* 3 (- total padding)) 4)))
+    (floor (* +octets-per-group+ (- total padding)) +digits-per-group+)))
 
 (defun decode (parts &key (layout :octets))
   "Decode the base64 in PARTS, an octet vector or a list of them split
 anywhere, into a new octet vector in LAYOUT.  Signal BASE64-ERROR when it
 is malformed."
-  (let* ((parts (if (listp parts) parts (list parts)))
-         (length (decoded-length parts))
-         (output (make-array (if (eq layout :rgba) (* 4 (ceiling length 3)) length)
-                             :element-type '(unsigned-byte 8)))
-         (decoder (make-decoder output :layout layout)))
-    (dolist (part parts)
-      (decoder-feed decoder (coerce part 'octets)))
-    (let* ((fill (decoder-finish decoder))
-           (used (if (eq layout :rgba) (* 4 (ceiling fill 3)) fill)))
-      (if (= used (length output)) output (subseq output 0 used)))))
+  (flet ((size (octets)
+           (if (eq layout :rgba)
+               (* +rgba-octets+ (ceiling octets +rgb-octets+))
+               octets)))
+    (let* ((parts (if (listp parts) parts (list parts)))
+           (output (make-array (size (decoded-length parts)) :element-type '(unsigned-byte 8)))
+           (decoder (make-decoder output :layout layout)))
+      (dolist (part parts)
+        (decoder-feed decoder (coerce part 'octets)))
+      (let ((used (size (decoder-finish decoder))))
+        (if (= used (length output)) output (subseq output 0 used))))))
