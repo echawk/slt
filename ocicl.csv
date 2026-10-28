@@ -1,4 +1,6 @@
 alexandria, ghcr.io/ocicl/alexandria@sha256:407634b0781b2d8fc3e55a30432bcb5d0c042af2feb2d1d72de825940b0fb0df, alexandria-20260812-f283e25/alexandria.asd
+array-utils, ghcr.io/ocicl/array-utils@sha256:a74a7050591fc003ec9c35f1de8f41a5c8ac1a6157ced767ed6e5a73c2596cbf, array-utils-20260218-16e108a/array-utils.asd
+array-utils-test, ghcr.io/ocicl/array-utils@sha256:a74a7050591fc003ec9c35f1de8f41a5c8ac1a6157ced767ed6e5a73c2596cbf, array-utils-20260218-16e108a/array-utils-test.asd
 babel, ghcr.io/ocicl/babel@sha256:9d9fcde71acc2b5c39572de4f11756a08c1d8801caa86c581b85dabaa35928b3, babel-20250905-4eaf3f2/babel.asd
 babel-streams, ghcr.io/ocicl/babel@sha256:9d9fcde71acc2b5c39572de4f11756a08c1d8801caa86c581b85dabaa35928b3, babel-20250905-4eaf3f2/babel-streams.asd
 babel-tests, ghcr.io/ocicl/babel@sha256:9d9fcde71acc2b5c39572de4f11756a08c1d8801caa86c581b85dabaa35928b3, babel-20250905-4eaf3f2/babel-tests.asd
@@ -77,6 +79,10 @@ md5, ghcr.io/ocicl/md5@sha256:7d8a8d7af07a2bcbca05ad839555730a0e021c697bf13cc022
 multilang-documentation-utils, ghcr.io/ocicl/documentation-utils@sha256:b2a1b3f3bcd1a738af85ae2b0168d408c177661eab6d6bbebb254e394d983f54, documentation-utils-20230511-98630dd/multilang-documentation-utils.asd
 pathname-utils, ghcr.io/ocicl/pathname-utils@sha256:1f6f209c3d5286afdccf42ec7a46a5ae99d8f1dbcdf8b3ee4381a03c79dd44dc, pathname-utils-20260812-397216b/pathname-utils.asd
 pathname-utils-test, ghcr.io/ocicl/pathname-utils@sha256:1f6f209c3d5286afdccf42ec7a46a5ae99d8f1dbcdf8b3ee4381a03c79dd44dc, pathname-utils-20260812-397216b/pathname-utils-test.asd
+plump, ghcr.io/ocicl/plump@sha256:b1cc910915346bb6d7606ae37f1cb6dad3599efa9a6bd2f926d96c9d5c34cbc7, plump-20260417-45fb7ff/plump.asd
+plump-dom, ghcr.io/ocicl/plump@sha256:b1cc910915346bb6d7606ae37f1cb6dad3599efa9a6bd2f926d96c9d5c34cbc7, plump-20260417-45fb7ff/plump-dom.asd
+plump-lexer, ghcr.io/ocicl/plump@sha256:b1cc910915346bb6d7606ae37f1cb6dad3599efa9a6bd2f926d96c9d5c34cbc7, plump-20260417-45fb7ff/plump-lexer.asd
+plump-parser, ghcr.io/ocicl/plump@sha256:b1cc910915346bb6d7606ae37f1cb6dad3599efa9a6bd2f926d96c9d5c34cbc7, plump-20260417-45fb7ff/plump-parser.asd
 rfc2388, ghcr.io/ocicl/rfc2388@sha256:4190f6eb36b3b2f53def6eff56b44e76edf4086ada2feb6d88bb671a40fc9f70, rfc2388-20240503-591bcf7/rfc2388.asd
 sb-cga, ghcr.io/ocicl/sb-cga@sha256:883edf669979b4d02eee168c03c70316dab3ae8dff18854d02dfb6f45c3aa5ae, sb-cga-20250528-304924d/sb-cga.asd
 sha1, ghcr.io/ocicl/sha1@sha256:d332af205bf3b5db2bdf8ea6df9f5127627343ce19bc313d00cfa2d80a5fb404, sha1-20240503-be8b1b1/sha1.asd

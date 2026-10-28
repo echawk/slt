@@ -153,9 +153,12 @@ flows, the settings and the security choices. The reusable pieces live in
 
 - [`ecma48`](lib/ecma48/) scans control sequences;
 - [`terminal-osc`](lib/terminal-osc/) parses OSC payloads;
-- [`simd-base64`](lib/simd-base64/) decodes base64 into octets or RGBA;
+- [`simd-base64`](lib/simd-base64/) encodes base64 and decodes it into
+  octets or RGBA, in place of cl-base64;
 - [`iterm2-images`](lib/iterm2-images/) reads iTerm2's inline images;
-- [`kitty-keyboard`](lib/kitty-keyboard/) implements the keyboard protocol.
+- [`kitty-keyboard`](lib/kitty-keyboard/) implements the keyboard protocol;
+- [`vulkan-cffi`](lib/vulkan-cffi/) binds Vulkan, generated from its
+  registry.
 
 ## Terminal graphics
 
