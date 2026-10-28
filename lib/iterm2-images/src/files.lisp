@@ -1,17 +1,20 @@
-(in-package #:slt)
+(in-package #:iterm2-images)
 
 ;;;; Image files sent whole, as iTerm2's inline images are: PNG (through
-;;;; libpng, as Kitty's f=100), JPEG (cl-jpeg, which decodes baseline but
-;;;; not progressive JPEG) and GIF (skippy), decoded into RGBA frames.  The
-;;;; format is told by the file's signature.
+;;;; kitty-graphics' libpng binding), JPEG (cl-jpeg, which decodes baseline
+;;;; but not progressive JPEG) and GIF (skippy), decoded into RGBA frames.
+;;;; The format is told by the file's signature.
 
-(define-condition image-file-error (error)
-  ((message :initarg :message :reader image-file-error-message))
+(define-condition image-error (error)
+  ((message :initarg :message :reader image-error-message))
   (:report (lambda (condition stream)
-             (write-string (image-file-error-message condition) stream))))
+             (write-string (image-error-message condition) stream))))
 
-(defun image-file-error (control &rest arguments)
-  (error 'image-file-error :message (apply #'format nil control arguments)))
+(defun image-error (control &rest arguments)
+  (error 'image-error :message (apply #'format nil control arguments)))
+
+(defparameter *max-image-octets* (* 320 1024 1024)
+  "The largest image, in RGBA octets, decoded.")
 
 (defparameter +image-file-signatures+
   `((:png . #(#x89 ,(char-code #\P) ,(char-code #\N) ,(char-code #\G)))
@@ -32,22 +35,23 @@
 (defconstant +alpha-offset+ +rgb-octets+ "Where a pixel's alpha is among its RGBA octets.")
 (defconstant +opaque+ #xff)
 
-(defstruct (image-file-frame (:constructor make-image-file-frame (rgba delay-ms)))
+(defstruct (frame (:constructor make-frame (rgba delay-ms)))
+  "One picture of an image file, as RGBA octets."
   (rgba nil :type (simple-array (unsigned-byte 8) (*)))
   ;; How long the frame shows in an animation; NIL for a still image.
   (delay-ms nil))
 
-(defun check-image-file-size (width height)
+(defun check-image-size (width height)
   (unless (and (plusp width) (plusp height)
-               (<= (* width height +rgba-octets+) *terminal-image-storage-limit*))
-    (image-file-error "Refusing image dimensions ~dx~d" width height)))
+               (<= (* width height +rgba-octets+) *max-image-octets*))
+    (image-error "Refusing image dimensions ~dx~d" width height)))
 
 (defun decode-png-file (octets)
   (multiple-value-bind (rgba width height)
       (handler-case (kitty-graphics:decode-png octets)
         (kitty-graphics:graphics-protocol-error (condition)
-          (image-file-error "~a" condition)))
-    (values (list (make-image-file-frame rgba nil)) width height)))
+          (image-error "~a" condition)))
+    (values (list (make-frame rgba nil)) width height)))
 
 ;;; cl-jpeg gives the components of each pixel in reverse: B G R.
 (defconstant +jpeg-gray-components+ 1)
@@ -57,8 +61,8 @@
 (defun decode-jpeg-file (octets)
   (multiple-value-bind (buffer height width components)
       (handler-case (jpeg:decode-stream (flexi-streams:make-in-memory-input-stream octets))
-        (error (condition) (image-file-error "Invalid JPEG image: ~a" condition)))
-    (check-image-file-size width height)
+        (error (condition) (image-error "Invalid JPEG image: ~a" condition)))
+    (check-image-size width height)
     (when (= components +jpeg-cmyk-components+)
       (setf buffer (jpeg:convert-cmyk-to-rgb buffer height width)
             components +jpeg-color-components+))
@@ -72,7 +76,7 @@
                                    source
                                    (+ source (- +rgb-octets+ 1 channel))))))
           (setf (aref rgba (+ target +alpha-offset+)) +opaque+)))
-      (values (list (make-image-file-frame rgba nil)) width height))))
+      (values (list (make-frame rgba nil)) width height))))
 
 (defparameter +gif-centiseconds-ms+ 10
   "GIF delays count hundredths of a second.")
@@ -88,10 +92,10 @@ as browsers do: many GIFs rely on it.")
 as the images' disposal methods say."
   (let* ((stream (handler-case
                      (skippy:read-data-stream (flexi-streams:make-in-memory-input-stream octets))
-                   (error (condition) (image-file-error "Invalid GIF image: ~a" condition))))
+                   (error (condition) (image-error "Invalid GIF image: ~a" condition))))
          (width (skippy:width stream))
          (height (skippy:height stream))
-         (canvas (progn (check-image-file-size width height)
+         (canvas (progn (check-image-size width height)
                         (make-array (* +rgba-octets+ width height)
                                     :element-type '(unsigned-byte 8) :initial-element 0)))
          (frames '()))
@@ -106,7 +110,7 @@ as the images' disposal methods say."
           for previous = (and (eq (skippy:disposal-method image) :restore-previous)
                               (copy-seq canvas))
           do (unless table
-               (image-file-error "GIF image without a color table"))
+               (image-error "GIF image without a color table"))
              (dotimes (row image-height)
                (dotimes (column image-width)
                  (let ((index (aref data (+ column (* row image-width))))
@@ -118,7 +122,7 @@ as the images' disposal methods say."
                            (skippy:color-rgb (skippy:color-table-entry table index))
                          (replace canvas (list red green blue +opaque+) :start1 target)))))))
              (let ((delay (* +gif-centiseconds-ms+ (skippy:delay-time image))))
-               (push (make-image-file-frame (copy-seq canvas)
+               (push (make-frame (copy-seq canvas)
                                             (if (< delay +gif-minimum-delay-ms+)
                                                 +gif-default-delay-ms+
                                                 delay))
@@ -133,19 +137,19 @@ as the images' disposal methods say."
                                                               (* y width))))))))
                (:restore-previous (setf canvas previous))))
     (when (null frames)
-      (image-file-error "GIF without images"))
+      (image-error "GIF without images"))
     (setf frames (nreverse frames))
     ;; A single image is still.
     (when (null (rest frames))
-      (setf (image-file-frame-delay-ms (first frames)) nil))
+      (setf (frame-delay-ms (first frames)) nil))
     (values frames width height (skippy:loopingp stream))))
 
 (defun decode-image-file (octets)
-  "Decode the image file OCTETS.  Return its frames (IMAGE-FILE-FRAMEs),
+  "Decode the image file OCTETS.  Return its frames (FRAMEs),
 width and height, and for an animation whether it loops.  Signal
 IMAGE-FILE-ERROR for an unknown format or a malformed file."
   (case (image-file-format octets)
     (:png (decode-png-file octets))
     (:jpeg (decode-jpeg-file octets))
     (:gif (decode-gif-file octets))
-    (t (image-file-error "Unknown image format"))))
+    (t (image-error "Unknown image format"))))

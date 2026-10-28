@@ -76,7 +76,7 @@ See the README's *Terminal graphics* section for behavior.
 | 8 | hyperlinks | underlined under the pointer; Command-click (Super-click) opens them, while their text is still on screen; only `*hyperlink-schemes*` (http, https, mailto) |
 | 9, 777, 99 | desktop notifications (iTerm2, rxvt, kitty) | osascript on macOS, notify-send elsewhere; rate-limited; kitty's support query is answered |
 | 9;4 | progress (ConEmu) | `frontend-set-progress`: the Dock icon's badge on macOS (a percentage, `!` for an error, `…` while busy) |
-| 1337 `File`, `MultipartFile`, `FilePart`, `FileEnd` | iTerm2 inline images | PNG, baseline JPEG and GIF (animated); only `inline=1`; sizes in cells, `px`, `%` or `auto`, `preserveAspectRatio`, and WezTerm's `doNotMoveCursor`; `*iterm2-images*` |
+| 1337 `File`, `MultipartFile`, `FilePart`, `FileEnd` | iTerm2 inline images (`lib/iterm2-images`) | PNG, baseline JPEG and GIF (animated); only `inline=1`; sizes in cells, `px`, `%` or `auto`, `preserveAspectRatio`, and WezTerm's `doNotMoveCursor`; `*iterm2-images*` |
 | 52 | clipboard | writing by default; reading only when `*clipboard-access*` is `:read-write` |
 | 133 | shell-integration marks | prompts (A), output starts (C) and ends with exit status (D) are remembered; Super+Up/Down (Control+Shift+Up/Down) jumps between prompts, with Shift (Meta) between those of failed commands; Super+Shift+O (Control+Shift+O) copies the last command's output, read from the scrollback |
 

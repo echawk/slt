@@ -6,7 +6,7 @@
   :license "MIT"
   :version "0.2.0"
   :depends-on (:lispvt :ecma48 :kitty-graphics :cl-libsixel :kitty-keyboard :terminal-osc
-               :simd-base64 :cl-jpeg :skippy :flexi-streams
+               :iterm2-images
                :babel :bordeaux-threads :cffi (:feature :sbcl :sb-posix))
   :pathname "src/"
   :serial t
@@ -17,7 +17,6 @@
                (:file "core")
                (:file "frontend")
                (:file "engine")
-               (:file "image-files")
                (:file "images")
                (:file "sequences")
                (:file "engine-lispvt")
