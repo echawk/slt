@@ -149,6 +149,7 @@ login(1) does; otherwise -i asks for an interactive shell."
 
 (defun process-pty-stream (process)
   (typecase process
+    (repl-process (repl-process-stream process))
     #+darwin
     (forkpty-process
      (forkpty-process-stream process))
@@ -170,6 +171,7 @@ login(1) does; otherwise -i asks for an interactive shell."
 
 (defun process-alive-p (process)
   (typecase process
+    (repl-process (repl-process-alive-p process))
     #+darwin
     (forkpty-process
      (not (forkpty-process-reaped-p (reap-forkpty-process process))))
@@ -180,6 +182,7 @@ login(1) does; otherwise -i asks for an interactive shell."
 
 (defun terminate-process (process)
   (typecase process
+    (repl-process (terminate-repl-process process))
     #+darwin
     (forkpty-process
      (ignore-errors

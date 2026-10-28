@@ -902,6 +902,8 @@ button's menu."
                                     (standard "Quit slt" (selector "terminate:") "q")))
                 (make-ns-menu "Shell"
                               (list (command :new-window "New Window" "n")
+                                    (command :new-repl "New Lisp REPL" "n"
+                                             (logior cmd +ns-shift-key-mask+))
                                     (standard "Close Window" (selector "performClose:") "w")))
                 (make-ns-menu "Edit"
                               (list (command :copy "Copy" "c")

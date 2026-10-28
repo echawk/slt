@@ -225,6 +225,18 @@ draws glyph runs with RENDER, so text and colors match the other frontends.
 It scales with the `Xft.dpi` resource. Build it in with `FRONTENDS=clx`, or
 on its own with `make lean-clx`. `make clx-test` checks its drawing.
 
+## Lisp REPL
+
+slt can open a Lisp REPL in a window of its own, running in slt's image,
+without an editor: **Shell ▸ New Lisp REPL** (Command+Shift+N on macOS,
+Super+Shift+N or Control+Shift+N elsewhere), or `slt --lisp-repl` to start
+with one. The window is a terminal whose other end is a thread reading and
+evaluating forms, so the terminal's line editing works (erase, Control-U,
+Control-W); Control-C interrupts an evaluation into SBCL's debugger, and
+Control-D closes the window. It starts in `*repl-package*` (CL-USER);
+`(in-package :slt)` to work on slt itself. There is no history or completion
+yet; SLIME or SLY (below) offer more.
+
 ## Connecting from SLIME or SLY
 
 slt can start a Swank server (for SLIME and other clients of its protocol)

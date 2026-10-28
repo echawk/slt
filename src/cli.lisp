@@ -81,6 +81,10 @@
                            :key :repl-port
                            :long-name "repl-port"
                            :description "Port for the Swank or Slynk server (default 4005)."))
+    (clingon:make-option :flag
+                         :key :lisp-repl
+                         :long-name "lisp-repl"
+                         :description "Open a Lisp REPL in slt's image instead of a shell.")
     (clingon:make-option :filepath
                          :key :config
                          :short-name #\c
@@ -167,6 +171,8 @@
                                               (clingon:getopt command :directory nil)))
     (when (clingon:getopt command :login nil)
       (setf arguments (append arguments (list :login-shell t))))
+    (when (clingon:getopt command :lisp-repl nil)
+      (setf arguments (append arguments (list :repl t))))
     (when (clingon:getopt command :no-config nil)
       (setf arguments (append arguments (list :load-config nil))))
     arguments))

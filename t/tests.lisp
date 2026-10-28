@@ -740,6 +740,44 @@ replies sent to the child."
         (is-equal :running (slt::terminal-image-animation image))
         (is-equal 50 (slt::terminal-image-frame-gap (aref (slt::terminal-image-frames image) 0)))))))
 
+(deftest the-lisp-repl-evaluates-through-its-pty ()
+  (let* ((process (slt::launch-repl-process :rows 24 :columns 80))
+         (fd (slt::set-fd-nonblocking (slt::process-fd process)))
+         (buffer (make-array 4096 :element-type '(unsigned-byte 8)))
+         (output (make-string-output-stream)))
+    (flet ((send (text) (slt::write-octets fd (slt::string->octets text)))
+           (await (text)
+             (loop repeat 300
+                   do (let ((count (slt::read-available-octets fd buffer)))
+                        (when (and (integerp count) (plusp count))
+                          (write-string (babel:octets-to-string buffer :end count) output)))
+                      (when (search text (get-output-stream-string-preview output))
+                        (return t))
+                      (sleep 0.01))))
+      (unwind-protect
+           (progn
+             (send (format nil "(* 6 7)~%"))
+             (is (await "42") "a form's value is printed")
+             (send (format nil "(car 5)~%"))
+             (is (await "debugger invoked") "errors enter the debugger")
+             (send (format nil "0~%(list :back)~%"))
+             (is (await "(:BACK)") "the abort restart returns to the REPL")
+             ;; Control-D at the start of a line ends it.
+             (send (string (code-char 4)))
+             (is (loop repeat 300
+                       unless (slt::process-alive-p process)
+                         return t
+                       do (sleep 0.01))
+                 "end of file ends the REPL"))
+        (slt::terminate-process process)
+        (ignore-errors (close (slt::process-pty-stream process)))))))
+
+(defun get-output-stream-string-preview (stream)
+  "The text written to STREAM so far, which stays in it."
+  (let ((text (get-output-stream-string stream)))
+    (write-string text stream)
+    text))
+
 (defun session-row-text (engine row)
   (let ((grid (make-grid (engine-rows engine) (engine-columns engine))))
     (engine-update-grid engine grid :force t)

@@ -61,6 +61,8 @@ program asks for it (DECSCUSR 1, 3 or 5, or mode 12).")
   (columns 80 :type fixnum)
   process
   (fd nil :type (or null fixnum))
+  ;; Opens a Lisp REPL window (see LAUNCH-TERMINAL), or NIL.
+  new-repl-function
   (read-buffer (make-array *read-buffer-size* :element-type '(unsigned-byte 8))
    :type octets)
   resize-after-id
@@ -300,6 +302,12 @@ NAME.")
     (and directory (uiop:native-namestring directory))))
 
 (defun send-to-process (emulator string)
+  ;; A REPL thread has no process group for the PTY to signal: Control-C
+  ;; interrupts it directly.
+  (let ((process (terminal-emulator-process emulator)))
+    (when (and (repl-process-p process) string (find +interrupt-character+ string))
+      (interrupt-repl-process process)
+      (setf string (remove +interrupt-character+ string))))
   (let ((fd (terminal-emulator-fd emulator)))
     (when (and fd string (plusp (length string)))
       (bt:with-lock-held ((terminal-emulator-write-lock emulator))
@@ -988,6 +996,8 @@ change what that menu item does.  Read when the window is created.")
   "*COMMANDS* in the form FRONTEND-BIND-COMMANDS takes."
   (append (and new-window-function
                (list (cons :new-window new-window-function)))
+          (and emulator (terminal-emulator-new-repl-function emulator)
+               (list (cons :new-repl (terminal-emulator-new-repl-function emulator))))
           (loop for (name . function) in *commands*
                 collect (cons name (let ((function function))
                                      (lambda () (funcall function emulator)))))))
@@ -998,7 +1008,8 @@ macOS), Super+Shift+R or Control+Shift+R to reload the init file, and
 Super+Up/Down or Control+Shift+Up/Down to jump between shell prompts, with
 Shift (Meta for Control+Shift) to the prompts of failed commands, and
 Super+Shift+O or Control+Shift+O to copy the last command's output (with
-shell integration, OSC 133).  On *KEY-HOOK*; remove it to rebind.  (The
+shell integration, OSC 133), and Super+Shift+N or Control+Shift+N to open a
+Lisp REPL window.  On *KEY-HOOK*; remove it to rebind.  (The
 cocoa frontend's menus take these keys first.)"
   (let ((super (member :super modifiers))
         (control-shift (and (member :control modifiers) (member :shift modifiers))))
@@ -1011,6 +1022,10 @@ cocoa frontend's menus take these keys first.)"
       (return-from command-key-handler t))
     (when (and (eql key #\O) (or super control-shift))
       (copy-last-command-output emulator)
+      (return-from command-key-handler t))
+    (when (and (eql key #\N) (or super control-shift)
+               (terminal-emulator-new-repl-function emulator))
+      (funcall (terminal-emulator-new-repl-function emulator))
       (return-from command-key-handler t)))
   (when (characterp key)
     (let ((super (member :super modifiers)))
@@ -1365,14 +1380,17 @@ and notice a child that exited without closing the PTY."
                           (title "slt")
                           (login-shell *login-shell*)
                           (directory *working-directory*)
-                          (load-config *load-user-config*))
+                          (load-config *load-user-config*)
+                          repl)
+  "Open a terminal window running SHELL, or with REPL a Lisp REPL in this
+image (see OPEN-REPL), and run the frontend's event loop."
   (when load-config
     (load-user-config))
   (let ((frontend-instance (make-frontend frontend)))
     (frontend-call-with-event-loop
      frontend-instance
      (lambda ()
-       (labels ((create-terminal (&optional from-directory)
+       (labels ((create-terminal (&key from-directory repl)
                   (let* ((emulator-cell (list nil))
                          (resolved-font-family
                            (resolve-font-family
@@ -1394,6 +1412,13 @@ and notice a child that exited without closing the PTY."
                          (emulator nil))
                     (handler-case
                         (setf process
+                              (if repl
+                                  (launch-repl-process
+                                   :rows rows :columns columns
+                                   :pixel-width (* columns (frontend-view-cell-width
+                                                            frontend-instance view))
+                                   :pixel-height (* rows (frontend-view-cell-height
+                                                          frontend-instance view)))
                               (launch-shell-process
                                shell
                                :term-name term-name
@@ -1409,7 +1434,7 @@ and notice a child that exited without closing the PTY."
                                                 frontend-instance view))
                                :pixel-height (* rows
                                                 (frontend-view-cell-height
-                                                 frontend-instance view))))
+                                                 frontend-instance view)))))
                       (error (condition)
                         (engine-feed-string
                          engine-instance
@@ -1430,7 +1455,9 @@ and notice a child that exited without closing the PTY."
                                     :title title
                                     :font-size (abs resolved-font-size)
                                     :initial-font-size (abs resolved-font-size))
-                          (car emulator-cell) emulator)
+                          (car emulator-cell) emulator
+                          (terminal-emulator-new-repl-function emulator)
+                          (lambda () (create-terminal :repl t)))
                     (when (and load-config *config-error*)
                       (report-message emulator "~a" *config-error*))
                     (render-emulator emulator :force t)
@@ -1475,6 +1502,7 @@ and notice a child that exited without closing the PTY."
                       ;; New windows start where this one's shell is (OSC 7).
                       (lambda ()
                         (create-terminal
+                         :from-directory
                          (let* ((directory (terminal-emulator-working-directory emulator))
                                 (pathname (and directory
                                                (ignore-errors
@@ -1495,4 +1523,4 @@ and notice a child that exited without closing the PTY."
                       (start-reader-thread emulator))
                     (schedule-poll emulator)
                     emulator)))
-         (create-terminal))))))
+         (create-terminal :repl repl))))))

@@ -21,6 +21,7 @@
                (:file "images")
                (:file "sequences")
                (:file "engine-lispvt")
+               (:file "repl")
                (:file "transport")
                (:file "gpu")
                (:file "emulator")
