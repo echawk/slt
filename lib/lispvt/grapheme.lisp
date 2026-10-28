@@ -34,20 +34,9 @@
 (defconstant +text-presentation+ #xFE0E)
 (defconstant +emoji-presentation+ #xFE0F)
 
-(defun extended-pictographic-p (code)
-  (declare (type (unsigned-byte 32) code))
-  (let ((ranges *extended-pictographic-ranges*))
-    (declare (type simple-vector ranges))
-    ;; Binary search over the start of each pair.
-    (let ((low 0) (high (1- (floor (length ranges) 2))))
-      (declare (type fixnum low high))
-      (loop while (<= low high)
-            do (let* ((middle (floor (+ low high) 2))
-                      (start (svref ranges (* 2 middle)))
-                      (end (svref ranges (1+ (* 2 middle)))))
-                 (cond ((< code start) (setf high (1- middle)))
-                       ((> code end) (setf low (1+ middle)))
-                       (t (return t))))))))
+(defun compute-extended-pictographic-p (code)
+  "From the ranges; EXTENDED-PICTOGRAPHIC-P looks it up in a table."
+  (range-member-p code *extended-pictographic-ranges*))
 
 (defun regional-indicator-p (code)
   "A regional indicator letter: two of them make a flag."

@@ -105,6 +105,24 @@ lispvt window, before and after playing the capture three times:
   be allocated between collections. bin/slt sets 64 MB, which costs no
   throughput in either benchmark.
 
+- **Non-ASCII text in lispvt.** Each character's width and whether it is
+  Extended_Pictographic were found by binary search over ranges, with
+  generic arithmetic, and multi-octet UTF-8 went through the parser's
+  state machine an octet at a time. A two-stage table built from the same
+  ranges (`lib/lispvt/properties.lisp`) now answers both in two array
+  reads, and whole UTF-8 sequences are decoded in a loop of their own
+  (`print-utf8`). 30 characters per line, 40,000 lines, lispvt:
+
+  |       | before   | after     |
+  |-------|----------|-----------|
+  | é     | 18 MB/s  | 46 MB/s   |
+  | 中    | 24 MB/s  | 69 MB/s   |
+  | 😀    | 26 MB/s  | 100 MB/s  |
+  | ASCII | 205 MB/s | 186-205 MB/s |
+
+  What remains is mostly the per-cell work every character needs and, in
+  this benchmark, filling a new terminal's scrollback.
+
 ## Measured and left alone
 
 - **Upload off the main thread.** The upload is 0.3 ms of a 720p frame;

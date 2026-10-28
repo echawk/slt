@@ -1098,6 +1098,19 @@ margins, \" q\" the cursor style.  NIL for others."
 
 ;;; The state machine
 
+(defconstant +replacement-character+ #xFFFD)
+(defconstant +surrogate-start+ #xD800)
+(defconstant +surrogate-end+ #xDFFF)
+(defconstant +codepoint-maximum+ (1- +codepoint-limit+))
+
+(declaim (inline decoded-codepoint))
+(defun decoded-codepoint (code)
+  "CODE as decoded from UTF-8, or the replacement character when UTF-8
+may not encode it (surrogates, beyond Unicode)."
+  (if (or (<= +surrogate-start+ code +surrogate-end+) (> code +codepoint-maximum+))
+      +replacement-character+
+      code))
+
 (defun process-byte (term byte)
   (declare (type terminal term)
            (type (unsigned-byte 8) byte)
@@ -1110,12 +1123,10 @@ margins, \" q\" the cursor style.  NIL for others."
             (setf (terminal-utf8-code term) code
                   (terminal-utf8-remaining term) (1- remaining))
             (when (= remaining 1)
-              (print-char term (if (or (<= #xD800 code #xDFFF) (> code #x10FFFF))
-                                   #xFFFD
-                                   code)))
+              (print-char term (decoded-codepoint code)))
             (return-from process-byte))
           (progn (setf (terminal-utf8-remaining term) 0)
-                 (print-char term #xFFFD)))))
+                 (print-char term +replacement-character+)))))
   (let ((state (terminal-state term)))
     (declare (type fixnum state))
     ;; Controls valid in every state.
@@ -1146,7 +1157,7 @@ margins, \" q\" the cursor style.  NIL for others."
              ((<= #xF0 byte #xF4)
               (setf (terminal-utf8-code term) (logand byte #x07)
                     (terminal-utf8-remaining term) 3))
-             (t (print-char term #xFFFD))))
+             (t (print-char term +replacement-character+))))
       ((or (= state +escape+) (= state +escape-intermediate+))
        (cond ((<= #x20 byte #x2F)
               (when (zerop (terminal-intermediate-count term))
@@ -1191,6 +1202,47 @@ margins, \" q\" the cursor style.  NIL for others."
            (vector-push-extend byte data))))))
   (values))
 
+(defconstant +utf8-continuation-mask+ #xC0)
+(defconstant +utf8-continuation-tag+ #x80)
+(defconstant +utf8-payload-bits+ 6)
+(defconstant +octet-bits+ 8)
+
+(declaim (inline utf8-lead-length))
+(defun utf8-lead-length (byte)
+  "How many octets the UTF-8 sequence BYTE starts takes, or NIL when BYTE
+starts none."
+  (declare (type (unsigned-byte 8) byte))
+  (cond ((<= #xC2 byte #xDF) 2)
+        ((<= #xE0 byte #xEF) 3)
+        ((<= #xF0 byte #xF4) 4)))
+
+(defun print-utf8 (term octets start end)
+  "Print the whole, well-formed multi-octet UTF-8 sequences in OCTETS from
+START, and return where they stop: at ASCII, a control, the end, or
+anything PROCESS-BYTE must see octet by octet (a sequence cut by END or
+malformed)."
+  (declare (type terminal term) (type octets octets) (type index start end)
+           (optimize speed (safety 0)))
+  (let ((i start))
+    (declare (type index i))
+    (loop
+      (when (>= i end) (return i))
+      (let* ((lead (aref octets i))
+             (length (utf8-lead-length lead)))
+        (unless (and length (<= (+ i length) end))
+          (return i))
+        ;; The lead octet keeps one bit for each octet, and a zero.
+        (let ((code (ldb (byte (- +octet-bits+ 1 length) 0) lead)))
+          (declare (type (unsigned-byte 32) code))
+          (loop for k from (1+ i) below (+ i length)
+                for byte = (aref octets k)
+                do (unless (= (logand byte +utf8-continuation-mask+) +utf8-continuation-tag+)
+                     (return-from print-utf8 i))
+                   (setf code (logior (ash code +utf8-payload-bits+)
+                                      (ldb (byte +utf8-payload-bits+ 0) byte))))
+          (print-char term (decoded-codepoint code))
+          (incf i length))))))
+
 (defun terminal-feed (term octets &key (start 0) (end (length octets)))
   "Process OCTETS[START, END), output from the application."
   (declare (type terminal term))
@@ -1210,8 +1262,12 @@ margins, \" q\" the cursor style.  NIL for others."
                    (if (< i run)
                        (progn (print-ascii term octets i run)
                               (setf i run))
-                       (progn (process-byte term (aref octets i))
-                              (incf i))))
+                       (let ((next (print-utf8 term octets i end)))
+                         (declare (type index next))
+                         (if (< i next)
+                             (setf i next)
+                             (progn (process-byte term (aref octets i))
+                                    (incf i))))))
                  (progn (process-byte term (aref octets i))
                         (incf i)))))
   term)

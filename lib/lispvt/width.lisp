@@ -2,8 +2,8 @@
 
 ;;;; Display width of codepoints: 0 for combining and zero-width
 ;;;; characters, 2 for East Asian wide/fullwidth and emoji presentation
-;;;; characters, 1 otherwise.  The BMP is looked up in a table built at
-;;;; load time; the rest is a binary search over ranges.
+;;;; characters, 1 otherwise.  These ranges are the source; CHAR-WIDTH looks
+;;;; widths up in the table properties.lisp builds from them.
 
 (defparameter *zero-width-ranges*
   #(#x0300 #x036F  #x0483 #x0489  #x0591 #x05BD  #x05BF #x05BF  #x05C1 #x05C2
@@ -108,16 +108,4 @@
         ((range-member-p code *wide-ranges*) 2)
         (t 1)))
 
-(declaim (type (simple-array (unsigned-byte 8) (#x10000)) *bmp-widths*))
-(defparameter *bmp-widths*
-  (let ((table (make-array #x10000 :element-type '(unsigned-byte 8))))
-    (dotimes (code #x10000 table)
-      (setf (aref table code) (compute-char-width code)))))
 
-(declaim (inline char-width))
-(defun char-width (code)
-  "Cells occupied by codepoint CODE: 0, 1 or 2."
-  (declare (type (unsigned-byte 32) code))
-  (if (< code #x10000)
-      (aref *bmp-widths* code)
-      (compute-char-width code)))

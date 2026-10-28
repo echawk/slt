@@ -61,6 +61,30 @@
     (check (= (palette-color 1) (aref (line-fg (terminal-line term 0)) 0)))
     (check (= 0 (aref (line-fg (terminal-line term 0)) 1)))))
 
+(defun test-utf8-runs ()
+  ;; Every split of mixed text, wide characters and emoji reads the same.
+  (let* ((text (format nil "a~cé~c~cz" (code-char #x4E2D) (code-char #x1F600) (code-char #x1F44D)))
+         (bytes (octets text))
+         (whole (terminal-row-text (term 1 20 text) 0)))
+    (dotimes (cut (length bytes))
+      (let ((term (make-terminal :rows 1 :columns 20)))
+        (terminal-feed term bytes :end cut)
+        (terminal-feed term bytes :start cut)
+        (check (string= whole (terminal-row-text term 0))))))
+  ;; Malformed sequences become U+FFFD and the octets after them are kept.
+  (let ((term (make-terminal :rows 1 :columns 10)))
+    (terminal-feed term (coerce '(#xC3 #x28 #xE2 #x82 #x41 #xED #xA0 #x80) 'lispvt::octets))
+    (check (equal (list lispvt::+replacement-character+ (char-code #\() lispvt::+replacement-character+
+                        (char-code #\A) lispvt::+replacement-character+)
+                  (coerce (subseq (line-codes (terminal-line term 0)) 0 5) 'list)))))
+
+(defun test-property-table ()
+  ;; The table agrees with the ranges it is built from.
+  (loop for code from 0 below lispvt::+codepoint-limit+ by 7
+        do (check (= (char-width code) (lispvt::compute-char-width code)))
+           (check (eq (lispvt::extended-pictographic-p code)
+                      (lispvt::compute-extended-pictographic-p code)))))
+
 (defun test-scrollback ()
   (let ((term (term 2 5 (format nil "1~c~c2~c~c3~c~c4" #\Return #\Linefeed
                                 #\Return #\Linefeed #\Return #\Linefeed))))
@@ -302,6 +326,8 @@ trailing blanks and blank lines at the end dropped."
     (test-scanners)
     (test-widths)
     (test-split-reads)
+    (test-utf8-runs)
+    (test-property-table)
     (test-scrollback)
     (test-scrollback-limit)
     (test-alternate-screen-has-no-scrollback)

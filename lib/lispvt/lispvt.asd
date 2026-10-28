@@ -9,6 +9,7 @@
                (:file "scan")
                (:file "width")
                (:file "grapheme")
+               (:file "properties")
                (:file "screen")
                (:file "terminal"))
   :in-order-to ((test-op (test-op "lispvt/tests"))))
