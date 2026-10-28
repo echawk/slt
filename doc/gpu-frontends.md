@@ -126,10 +126,14 @@ shares:
   mark follows the base's advance. A mark with its own advance (as in Menlo)
   is drawn at the base's origin.
 
-- Color emoji are not drawn yet: the color atlas is filled only by CoreText.
-  Noto Color Emoji is a bitmap font (FreeType's BGRA strikes, scaled to the
-  cell), and its emoji sequences and flags are ligatures, which need
-  HarfBuzz.
+- Fonts with color glyphs (Noto Color Emoji's bitmaps, or color layers)
+  are loaded in color, and their glyphs scaled into the cells, averaging
+  the pixels under each, for the color atlas. The fallback search takes
+  them although they are not scalable. Emoji sequences and flags are
+  ligatures in these fonts and need shaping (HarfBuzz); until then a
+  cluster is drawn with its first character's glyph.
+- The fonts slt ships (`fonts/`) are found by family name before fontconfig
+  is asked, so Symbols Nerd Font Mono needs no installing.
 
 On macOS the `gl` frontend uses the CoreText rasterizer instead. CoreText
 shapes each cluster, and draws those it sets in a color font (Apple Color

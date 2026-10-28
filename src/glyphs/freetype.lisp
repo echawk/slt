@@ -44,8 +44,16 @@
 (cffi:defcfun ("FT_Render_Glyph" %ft-render-glyph) :int (slot :pointer) (mode :int))
 (cffi:defcfun ("FT_GlyphSlot_Embolden" %ft-glyph-slot-embolden) :void (slot :pointer))
 (cffi:defcfun ("FT_GlyphSlot_Oblique" %ft-glyph-slot-oblique) :void (slot :pointer))
+(cffi:defcfun ("FT_Select_Size" %ft-select-size) :int (face :pointer) (strike :int))
 
 (defconstant +ft-face-flag-scalable+ 1)
+(defconstant +ft-face-flag-fixed-sizes+ (ash 1 1))
+(defconstant +ft-face-flag-color+ (ash 1 14))
+(defconstant +ft-load-color+ (ash 1 20))
+(defconstant +ft-pixel-mode-bgra+ 7)
+;; Color bitmap fonts (Noto Color Emoji) hold their glyphs at fixed sizes;
+;; the first is used, scaled to the cells.
+(defconstant +ft-first-strike+ 0)
 (defconstant +ft-style-flag-italic+ 1)
 (defconstant +ft-style-flag-bold+ 2)
 (defconstant +ft-load-target-light+ #x10000)
@@ -108,12 +116,26 @@
     (or (gethash key (ft-font-open-faces font))
         (let ((pointer (or (ft-new-face font file index)
                            (error "FreeType could not open ~a." file))))
-          (when (ft-scalable-p pointer)
-            (%ft-set-pixel-sizes pointer 0 (ft-font-pixel-size font)))
+          (cond ((ft-scalable-p pointer)
+                 (%ft-set-pixel-sizes pointer 0 (ft-font-pixel-size font)))
+                ((ft-face-flag-p pointer +ft-face-flag-fixed-sizes+)
+                 (%ft-select-size pointer +ft-first-strike+)))
           (setf (gethash key (ft-font-open-faces font)) pointer)))))
 
+(defun ft-face-flag-p (pointer flag)
+  (logtest (cffi:mem-ref pointer :long +ft-face-flags-offset+) flag))
+
 (defun ft-scalable-p (pointer)
-  (logtest (cffi:mem-ref pointer :long +ft-face-flags-offset+) +ft-face-flag-scalable+))
+  (ft-face-flag-p pointer +ft-face-flag-scalable+))
+
+(defun ft-color-p (pointer)
+  "True for a face with color glyphs (color bitmaps or layers)."
+  (ft-face-flag-p pointer +ft-face-flag-color+))
+
+(defun ft-drawable-p (pointer)
+  "True for a face slt can draw at any size: scalable, or color bitmaps it
+scales itself."
+  (or (ft-scalable-p pointer) (ft-color-p pointer)))
 
 (defun ft-style-flags (pointer)
   (cffi:mem-ref pointer :long +ft-face-style-flags-offset+))
@@ -175,6 +197,18 @@ FAMILY and STYLE."
 (defun ft-has-char-p (face code)
   (plusp (%ft-get-char-index (ft-face-pointer face) code)))
 
+(defun bundled-font-file (font family)
+  "The file of the fonts slt ships (BUNDLED-FONT-FILES) whose family is
+FAMILY, or NIL."
+  (loop for file in (bundled-font-files)
+        for path = (uiop:native-namestring file)
+        for face = (ft-new-face font path 0)
+        when face
+          do (let ((name (ft-family-name face)))
+               (%ft-done-face face)
+               (when (string-equal name family)
+                 (return path)))))
+
 (defun ft-fallback-files (font)
   "Font files to search for missing characters: the preferred fallback
 families first, then every other installed font."
@@ -182,7 +216,8 @@ families first, then every other installed font."
       (setf (ft-font-fallback-files font)
             (remove-duplicates
              (append (loop for family in *font-fallback-families*
-                           for file = (find-font-file :family family)
+                           for file = (or (bundled-font-file font family)
+                                          (find-font-file :family family))
                            when file collect (cons file family))
                      (loop for font in (ignore-errors (font-discovery:list-fonts))
                            for file = (font-discovery:file font)
@@ -196,7 +231,7 @@ families first, then every other installed font."
 without keeping the face open."
   (let ((face (ft-new-face font file 0)))
     (when face
-      (prog1 (and (ft-scalable-p face) (plusp (%ft-get-char-index face code)))
+      (prog1 (and (ft-drawable-p face) (plusp (%ft-get-char-index face code)))
         (%ft-done-face face)))))
 
 (defun ft-find-fallback (font code style)
@@ -218,13 +253,16 @@ without keeping the face open."
           (if (eq fallback :none) face fallback)))))
 
 (defun ft-load-glyph (face code)
-  "Load and render CODE in FACE; return the glyph slot, or NIL."
+  "Load and render CODE in FACE, in color when the face has color glyphs;
+return the glyph slot, or NIL."
   (let* ((pointer (ft-face-pointer face))
-         (index (%ft-get-char-index pointer code)))
-    (when (zerop (%ft-load-glyph pointer index +ft-load-target-light+))
+         (index (%ft-get-char-index pointer code))
+         (color (ft-color-p pointer)))
+    (when (zerop (%ft-load-glyph pointer index (if color +ft-load-color+ +ft-load-target-light+)))
       (let ((slot (cffi:mem-ref pointer :pointer +ft-face-glyph-offset+)))
-        (when (ft-face-synthetic-bold face) (%ft-glyph-slot-embolden slot))
-        (when (ft-face-synthetic-italic face) (%ft-glyph-slot-oblique slot))
+        (unless color
+          (when (ft-face-synthetic-bold face) (%ft-glyph-slot-embolden slot))
+          (when (ft-face-synthetic-italic face) (%ft-glyph-slot-oblique slot)))
         (when (zerop (%ft-render-glyph slot +ft-render-mode-light+))
           slot)))))
 
@@ -290,27 +328,89 @@ X, Y (WIDTH x HEIGHT), into PIXELS."
                      for target = (+ target-row x left column)
                      do (setf (aref pixels target) (max (aref pixels target) value)))))))
 
+(defconstant +bgra-octets+ 4)
+;; Where each RGBA channel lies among a BGRA pixel's octets.
+(defparameter +bgra-channel-offsets+ '(2 1 0 3))
+
+(defun ft-color-rgba (slot width height)
+  "SLOT's color bitmap (premultiplied BGRA) scaled to fit WIDTH x HEIGHT
+pixels, keeping its proportions, and centered, as premultiplied RGBA.  Each
+pixel averages the bitmap pixels under it."
+  (let* ((rows (cffi:mem-ref slot :uint +ft-slot-bitmap-rows-offset+))
+         (columns (cffi:mem-ref slot :uint +ft-slot-bitmap-width-offset+))
+         (pitch (cffi:mem-ref slot :int +ft-slot-bitmap-pitch-offset+))
+         (buffer (cffi:mem-ref slot :pointer +ft-slot-bitmap-buffer-offset+))
+         (rgba (make-array (* +bgra-octets+ width height) :element-type '(unsigned-byte 8)
+                                                          :initial-element 0)))
+    (when (and (plusp rows) (plusp columns) (not (cffi:null-pointer-p buffer)))
+      (let* ((scale (min (/ width columns) (/ height rows)))
+             (shown-width (max 1 (round (* columns scale))))
+             (shown-height (max 1 (round (* rows scale))))
+             (left (floor (- width shown-width) 2))
+             (top (floor (- height shown-height) 2)))
+        (dotimes (y shown-height)
+          (let ((row-start (floor (* y rows) shown-height))
+                (row-end (max (1+ (floor (* y rows) shown-height))
+                              (floor (* (1+ y) rows) shown-height))))
+            (dotimes (x shown-width)
+              (let* ((column-start (floor (* x columns) shown-width))
+                     (column-end (max (1+ column-start)
+                                      (floor (* (1+ x) columns) shown-width)))
+                     (count (* (- row-end row-start) (- column-end column-start)))
+                     (target (* +bgra-octets+ (+ left x (* width (+ top y))))))
+                (loop for channel from 0
+                      for offset in +bgra-channel-offsets+
+                      do (setf (aref rgba (+ target channel))
+                               (round (loop for row from row-start below row-end
+                                            sum (loop for column from column-start
+                                                        below column-end
+                                                      sum (cffi:mem-aref
+                                                           buffer :uint8
+                                                           (+ (* row pitch)
+                                                              (* +bgra-octets+ column)
+                                                              offset))))
+                                      count)))))))))
+    rgba))
+
+(defun ft-color-glyph (font string style width height)
+  "The color glyph of STRING's first character, as RGBA for the
+rasterizer, when the font drawing it has color glyphs; otherwise NIL."
+  (let* ((code (char-code (char string 0)))
+         (face (ft-face-for font code style)))
+    (when (ft-color-p (ft-face-pointer face))
+      (let ((slot (ft-load-glyph face code)))
+        (when (and slot (= +ft-pixel-mode-bgra+
+                           (cffi:mem-ref slot :uint8 +ft-slot-bitmap-pixel-mode-offset+)))
+          (ft-color-rgba slot width height))))))
+
+(defun freetype-rasterize (font string style pixels stride x y width height)
+  "Draw STRING into the box at X, Y of PIXELS; or return its color glyph
+as RGBA."
+  (declare (type u8-vector pixels))
+  ;; Clear the box: slots are reused after the atlas is cleared.
+  (dotimes (row height)
+    (fill pixels 0 :start (+ x (* stride (+ y row))) :end (+ x width (* stride (+ y row)))))
+  (or (ft-color-glyph font string style width height)
+      ;; Without shaping, a non-spacing mark is placed by its advance: a
+      ;; zero-advance mark is designed to follow its base, while one with an
+      ;; advance (as in Menlo) is drawn over the base's origin.
+      (let ((pen 0)
+            (base-pen 0))
+        (loop for char across string
+              for code = (char-code char)
+              for mark = (member (sb-unicode:general-category char) '(:mn :me))
+              for face = (ft-face-for font code style)
+              for slot = (ft-load-glyph face code)
+              when slot
+                do (let ((advance (cffi:mem-ref slot :long +ft-slot-advance-x-offset+)))
+                     (ft-blit slot (round (if (and mark (plusp advance)) base-pen pen) 64)
+                              pixels stride x y width height (ft-font-baseline font))
+                     (unless mark
+                       (setf base-pen pen)
+                       (incf pen advance))))
+        nil)))
+
 (defun freetype-rasterizer (font)
   "A GLYPH-ATLAS rasterizer drawing with FONT."
   (lambda (string style pixels stride x y width height)
-    (declare (type u8-vector pixels))
-    ;; Clear the box: slots are reused after the atlas is cleared.
-    (dotimes (row height)
-      (fill pixels 0 :start (+ x (* stride (+ y row))) :end (+ x width (* stride (+ y row)))))
-    ;; Without shaping, a non-spacing mark is placed by its advance: a
-    ;; zero-advance mark is designed to follow its base, while one with an
-    ;; advance (as in Menlo) is drawn over the base's origin.
-    (let ((pen 0)
-          (base-pen 0))
-      (loop for char across string
-            for code = (char-code char)
-            for mark = (member (sb-unicode:general-category char) '(:mn :me))
-            for face = (ft-face-for font code style)
-            for slot = (ft-load-glyph face code)
-            when slot
-              do (let ((advance (cffi:mem-ref slot :long +ft-slot-advance-x-offset+)))
-                   (ft-blit slot (round (if (and mark (plusp advance)) base-pen pen) 64)
-                            pixels stride x y width height (ft-font-baseline font))
-                   (unless mark
-                     (setf base-pen pen)
-                     (incf pen advance)))))))
+    (freetype-rasterize font string style pixels stride x y width height)))
