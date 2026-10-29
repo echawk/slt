@@ -213,8 +213,9 @@ The `gl` frontend uses [cl-glfw3](https://github.com/AlexCharlton/cl-glfw3)
 with the system's GLFW (3.3 or later; Homebrew's `glfw` on macOS), and
 cl-opengl. GLFW chooses X11 or Wayland when it starts.
 `make gl-test` renders styled text in a hidden window and checks the pixels.
-[doc/gpu-frontends.md](doc/gpu-frontends.md) describes the design and what
-Vulkan would add.
+With `(setf *gl-api* :vulkan)` the window is drawn with Vulkan instead (on
+macOS through MoltenVK). `make vulkan-test` checks that renderer offscreen.
+[doc/gpu-frontends.md](doc/gpu-frontends.md) describes the design.
 
 The `gtk` frontend uses the system's GTK 3 (on macOS, Homebrew's `gtk+3`).
 Build it in with `FRONTENDS=gtk`, or on its own with `make lean-gtk`.

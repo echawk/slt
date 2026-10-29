@@ -7,10 +7,11 @@
 ;;;; sizes the emulator sees are framebuffer pixels.
 
 (defvar *gl-api* :auto
-  "Which API to ask GLFW for: :GL (OpenGL 3.3 core), :GLES (OpenGL ES 3.0),
-or :AUTO for OpenGL with a fallback to OpenGL ES.  Contexts are created
-through EGL except on macOS, also on X11: GLX does not start on some
-systems (musl Linux under Xorg), and Mesa ships EGL wherever it ships GLX.")
+  "Which API to draw the window with: :GL (OpenGL 3.3 core), :GLES (OpenGL
+ES 3.0), :AUTO for OpenGL with a fallback to OpenGL ES, or :VULKAN (with
+slt/glfw-vulkan loaded).  Contexts are created through EGL except on
+macOS, also on X11: GLX does not start on some systems (musl Linux under
+Xorg), and Mesa ships EGL wherever it ships GLX.")
 
 (defvar *gl-vsync* t
   "When true, buffer swaps wait for the display's refresh.")
@@ -393,12 +394,21 @@ callback."
       (%glfw-wait-events-timeout (coerce timeout 'double-float))
       (%glfw:poll-events)))
 
+(defgeneric prepare-glfw (api)
+  (:documentation "Prepare GLFW, before it is initialized, for windows drawn
+with API.")
+  (:method (api) (declare (ignore api))))
+
 (defun call-with-glfw (thunk)
   "Run THUNK with GLFW initialized and cl-opengl resolving entry points
 through GLFW.  Masks float traps, which platform code (AppKit in
 particular) trips over."
   (float-features:with-float-traps-masked t
     (%glfw:set-error-callback (cffi:callback gl-glfw-error))
+    (when (eq *gl-api* :vulkan)
+      ;; Vulkan lives in its own system, loaded when built in or found.
+      (load-frontend-system "glfw-vulkan"))
+    (prepare-glfw *gl-api*)
     (glfw:initialize)
     (let ((cl-opengl-bindings:*gl-get-proc-address* #'%glfw:get-proc-address))
       (unwind-protect (funcall thunk)
@@ -423,57 +433,81 @@ particular) trips over."
 (defun gl-view-pixel-size (view)
   (values-list (glfw:get-framebuffer-size (gl-view-pointer view))))
 
-(defun redraw-gl-view (view &optional (palette (view-palette view)))
+;;; Renderers.  A view's renderer draws with its API: OpenGL, in the
+;;; window's context, here; slt/glfw-vulkan adds Vulkan.  A frame is the
+;;; packed cells, their layout, the atlas, the palette and the images.
+
+(defgeneric api-window-hints (api)
+  (:documentation "CREATE-WINDOW's arguments for a window drawn with API.")
+  (:method ((api (eql :gl)))
+    '(:client-api :opengl-api :context-version-major 3 :context-version-minor 3
+      :opengl-profile :opengl-core-profile :opengl-forward-compat t))
+  (:method ((api (eql :gles)))
+    '(:client-api :opengl-es-api :context-version-major 3 :context-version-minor 0)))
+
+(defgeneric make-api-renderer (api view)
+  (:documentation "A renderer drawing VIEW's window with API.")
+  (:method ((api symbol) view)
+    (glfw:make-context-current (gl-view-pointer view))
+    (%glfw:swap-interval (if *gl-vsync* 1 0))
+    (make-gl-renderer api)))
+
+(defgeneric renderer-present (renderer view frame)
+  (:documentation "Draw FRAME (GL-DRAW's arguments after the renderer) into
+VIEW's window and show it.")
+  (:method ((renderer gl-renderer) view frame)
+    (glfw:make-context-current (gl-view-pointer view))
+    (apply #'gl-draw renderer frame)
+    (glfw:swap-buffers (gl-view-pointer view))))
+
+(defgeneric renderer-snapshot (renderer view frame)
+  (:documentation "Render FRAME offscreen; return its RGB octets.")
+  (:method ((renderer gl-renderer) view frame)
+    (glfw:make-context-current (gl-view-pointer view))
+    (apply #'gl-snapshot renderer frame)))
+
+(defgeneric free-renderer (renderer view)
+  (:method ((renderer gl-renderer) view)
+    (glfw:make-context-current (gl-view-pointer view))
+    (free-gl-renderer renderer)))
+
+(defun gl-view-frame (view palette)
+  "VIEW's grid packed, as a frame to draw: GL-DRAW's arguments after the
+renderer."
   (let ((grid (gl-view-grid view)))
-    (when (and grid (not (gl-view-closed-p view)))
-      (glfw:make-context-current (gl-view-pointer view))
-      (setf (gl-view-instances view)
-            (pack-grid grid (gl-view-atlas view) palette (gl-view-instances view)))
-      (multiple-value-bind (width height) (gl-view-pixel-size view)
-        (gl-draw (gl-view-renderer view)
-                 (gl-view-instances view)
-                 (grid-columns grid)
-                 (* (grid-rows grid) (grid-columns grid))
-                 (gl-view-cell-width view)
-                 (gl-view-cell-height view)
-                 width height
-                 (gl-view-atlas view)
-                 palette
-                 (and (gl-view-image-store view)
-                      (terminal-image-render-list
-                       (gl-view-image-store view)
-                       (gl-view-cell-width view) (gl-view-cell-height view)))))
-      (glfw:swap-buffers (gl-view-pointer view)))))
+    (setf (gl-view-instances view)
+          (pack-grid grid (gl-view-atlas view) palette (gl-view-instances view)))
+    (multiple-value-bind (width height) (gl-view-pixel-size view)
+      (list (gl-view-instances view)
+            (grid-columns grid)
+            (* (grid-rows grid) (grid-columns grid))
+            (gl-view-cell-width view)
+            (gl-view-cell-height view)
+            width height
+            (gl-view-atlas view)
+            palette
+            (and (gl-view-image-store view)
+                 (terminal-image-render-list
+                  (gl-view-image-store view)
+                  (gl-view-cell-width view) (gl-view-cell-height view)))))))
+
+(defun redraw-gl-view (view &optional (palette (view-palette view)))
+  (when (and (gl-view-grid view) (not (gl-view-closed-p view)))
+    (renderer-present (gl-view-renderer view) view (gl-view-frame view palette))))
 
 (defun snapshot-gl-view (view &optional pathname (palette (view-palette view)))
   "Render VIEW's current grid offscreen.  Return the RGB octets, width and
 height, after writing them to PATHNAME as a PPM when given."
-  (let ((grid (gl-view-grid view)))
-    (glfw:make-context-current (gl-view-pointer view))
+  (let* ((frame (gl-view-frame view palette))
+         (rgb (renderer-snapshot (gl-view-renderer view) view frame)))
     (multiple-value-bind (width height) (gl-view-pixel-size view)
-      (setf (gl-view-instances view)
-            (pack-grid grid (gl-view-atlas view) palette (gl-view-instances view)))
-      (let ((rgb (gl-snapshot (gl-view-renderer view) (gl-view-instances view)
-                              (grid-columns grid) (* (grid-rows grid) (grid-columns grid))
-                              (gl-view-cell-width view) (gl-view-cell-height view)
-                              width height (gl-view-atlas view) palette
-                              (and (gl-view-image-store view)
-                                   (terminal-image-render-list
-                                    (gl-view-image-store view)
-                                    (gl-view-cell-width view)
-                                    (gl-view-cell-height view))))))
-        (when pathname
-          (write-ppm pathname rgb width height))
-        (values rgb width height)))))
-
-(defun gl-api-hints (api)
-  (ecase api
-    (:gl '(:client-api :opengl-api :context-version-major 3 :context-version-minor 3
-           :opengl-profile :opengl-core-profile :opengl-forward-compat t))
-    (:gles '(:client-api :opengl-es-api :context-version-major 3 :context-version-minor 0))))
+      (when pathname
+        (write-ppm pathname rgb width height))
+      (values rgb width height))))
 
 (defun create-gl-window (width height title api)
-  "Create a GLFW window with an API context, current on this thread."
+  "Create a GLFW window for API: with its context, current on this thread,
+for OpenGL."
   ;; Hints cl-glfw3's CREATE-WINDOW does not know stay set for it.  Window
   ;; sizes are in screen coordinates; let GLFW scale them and the
   ;; framebuffer.  macOS has only NSGL; everywhere else, EGL rather than GLX.
@@ -482,18 +516,19 @@ height, after writing them to PATHNAME as a PPM when given."
     (%glfw-window-hint +glfw-context-creation-api+ +glfw-egl-context-api+))
   (apply #'glfw:create-window :width width :height height :title title
                               :visible *gl-window-visible*
-                              (gl-api-hints api)))
+                              (api-window-hints api)))
 
 (defun make-gl-view (frontend width height title font-options scale)
   "Create the window with the first API in *GL-API* that works."
   (dolist (api (ecase *gl-api*
                  (:auto (if (uiop:os-macosx-p) '(:gl) '(:gl :gles)))
                  (:gl '(:gl))
-                 (:gles '(:gles)))
-               (error "No OpenGL 3.3 or OpenGL ES 3.0 context could be created."))
+                 (:gles '(:gles))
+                 (:vulkan '(:vulkan)))
+               (error "No window for ~a could be created." *gl-api*))
     (let ((window (handler-case (create-gl-window width height title api)
                     (error (condition)
-                      (format *error-output* "~&slt: no ~a context: ~a~%" api condition)
+                      (format *error-output* "~&slt: no ~a window: ~a~%" api condition)
                       nil))))
       (when window
         (let ((view (make-instance 'gl-view :frontend frontend :api api
@@ -529,19 +564,18 @@ height, after writing them to PATHNAME as a PPM when given."
                              (max 1 (round (* rows ch) scale))
                              (or title "slt") options scale)))
     (close-glyph-font font)
-    (glfw:make-context-current (gl-view-pointer view))
-    (%glfw:swap-interval (if *gl-vsync* 1 0))
-    (setf (gl-view-renderer view) (make-gl-renderer (gl-view-api view))
+    (setf (gl-view-renderer view) (make-api-renderer (gl-view-api view) view)
           (gl-frontend-view frontend) view)
     ;; The window may have opened on a display with another scale.
     (gl-view-set-font view (gl-view-content-scale view))
     view))
 
 (defun destroy-gl-view (view)
+  ;; The renderer goes first, while its window is there.
+  (when (and (gl-view-pointer view) (gl-view-renderer view))
+    (ignore-errors (free-renderer (gl-view-renderer view) view)))
   (let ((window (shiftf (gl-view-pointer view) nil)))
     (when window
-      (glfw:make-context-current window)
-      (ignore-errors (free-gl-renderer (gl-view-renderer view)))
       (remhash (cffi:pointer-address window) *gl-views*)
       (glfw:destroy-window window)))
   (when (gl-view-font view)

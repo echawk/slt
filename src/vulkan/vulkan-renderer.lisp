@@ -12,7 +12,7 @@
 ;;;; surface only offscreen, for snapshots.  Calls go through vulkan-cffi,
 ;;;; generated from the Vulkan registry.
 
-(defmacro define-shader (name file)
+(defmacro vulkan-define-shader (name file)
   "Define NAME as the SPIR-V in src/vulkan/shaders/FILE, read when this is
 compiled.  The .spv files are compiled from their GLSL with glslc (make
 shaders)."
@@ -24,10 +24,10 @@ shaders)."
             (read-sequence octets in)
             octets)))))
 
-(define-shader *vulkan-cells-vertex-shader* "cells.vert.spv")
-(define-shader *vulkan-cells-fragment-shader* "cells.frag.spv")
-(define-shader *vulkan-image-vertex-shader* "image.vert.spv")
-(define-shader *vulkan-image-fragment-shader* "image.frag.spv")
+(vulkan-define-shader *vulkan-cells-vertex-shader* "cells.vert.spv")
+(vulkan-define-shader *vulkan-cells-fragment-shader* "cells.frag.spv")
+(vulkan-define-shader *vulkan-image-vertex-shader* "image.vert.spv")
+(vulkan-define-shader *vulkan-image-fragment-shader* "image.frag.spv")
 
 (defvar *vulkan-validation* nil
   "When true, enable the Khronos validation layer, if installed.")
@@ -67,17 +67,17 @@ matches the other renderers, which do not convert to sRGB.")
 
 ;;; Calling Vulkan
 
-(defmacro vk-call (form)
+(defmacro vulkan-call (form)
   "Run the Vulkan call FORM, signalling VULKAN-ERROR for an error result."
   `(vk:check-result ,form ',(first form)))
 
-(defmacro receive ((var type) &body body)
+(defmacro vulkan-receive ((var type) &body body)
   "Run BODY with VAR pointing to room for a TYPE, and return what it holds."
   `(cffi:with-foreign-object (,var ',type)
      ,@body
      (cffi:mem-ref ,var ',type)))
 
-(defun call-with-string-array (strings function)
+(defun vulkan-call-with-string-array (strings function)
   "Call FUNCTION with a foreign array of STRINGS as C strings."
   (let ((pointers (mapcar #'cffi:foreign-string-alloc strings)))
     (unwind-protect
@@ -88,39 +88,39 @@ matches the other renderers, which do not convert to sRGB.")
            (funcall function array))
       (mapc #'cffi:foreign-string-free pointers))))
 
-(defun foreign-name (pointer type slot)
+(defun vulkan-foreign-name (pointer type slot)
   "The C string in the array SLOT of the TYPE structure at POINTER."
   (cffi:foreign-string-to-lisp (cffi:foreign-slot-pointer pointer type slot)))
 
-(defmacro enumerate-into ((pointer type count) call &body body)
+(defmacro vulkan-enumerate-into ((pointer type count) call &body body)
   "Run the Vulkan enumeration CALL twice, as its count and as its items: it
 refers to COUNT (a pointer to the count) and POINTER (the items, null the
 first time); then run BODY with POINTER to the COUNT items, COUNT now
 their number."
   `(cffi:with-foreign-object (,count :uint32)
      (let ((,pointer (cffi:null-pointer)))
-       (vk-call ,call))
+       (vulkan-call ,call))
      (let ((items (cffi:mem-ref ,count :uint32)))
        (cffi:with-foreign-object (,pointer ',type (max 1 items))
-         (vk-call ,call)
+         (vulkan-call ,call)
          (let ((,count (cffi:mem-ref ,count :uint32)))
            (declare (ignorable ,count))
            ,@body)))))
 
-(defun extension-names (enumerate)
+(defun vulkan-extension-names (enumerate)
   "The extension names ENUMERATE lists: called with the count's pointer and
 the properties' pointer, as vkEnumerate*ExtensionProperties is."
-  (enumerate-into (properties (:struct vk:extension-properties) count)
+  (vulkan-enumerate-into (properties (:struct vk:extension-properties) count)
       (funcall enumerate count properties)
     (loop for i below count
-          collect (foreign-name (cffi:mem-aptr properties '(:struct vk:extension-properties) i)
+          collect (vulkan-foreign-name (cffi:mem-aptr properties '(:struct vk:extension-properties) i)
                                 '(:struct vk:extension-properties) 'vk:extension-name))))
 
-(defun layer-names ()
-  (enumerate-into (properties (:struct vk:layer-properties) count)
+(defun vulkan-layer-names ()
+  (vulkan-enumerate-into (properties (:struct vk:layer-properties) count)
       (vk:enumerate-instance-layer-properties count properties)
     (loop for i below count
-          collect (foreign-name (cffi:mem-aptr properties '(:struct vk:layer-properties) i)
+          collect (vulkan-foreign-name (cffi:mem-aptr properties '(:struct vk:layer-properties) i)
                                 '(:struct vk:layer-properties) 'vk:layer-name))))
 
 ;;; The renderer's state
@@ -172,6 +172,9 @@ the properties' pointer, as vkEnumerate*ExtensionProperties is."
   (image-vertices nil)
   ;; Image id to (RGBA TEXTURE): the texture holds RGBA.
   (image-textures (make-hash-table))
+  ;; Textures of images no longer shown, newest first, kept for new images
+  ;; of the same size: a video sends a new image per frame.
+  (spare-textures '())
   ;; The swapchain, its images' views, framebuffers and semaphores, and
   ;; its size; rebuilt when the window's size changes.
   (swapchain +vulkan-null-handle+)
@@ -180,7 +183,9 @@ the properties' pointer, as vkEnumerate*ExtensionProperties is."
   (finished (vector))
   (swapchain-width 0)
   (swapchain-height 0)
-  (present-mode vk:+present-mode-fifo-khr+)
+  ;; Whether frames wait for the display's refresh (FIFO, which every
+  ;; driver has) or are shown at once when it can (mailbox, immediate).
+  (vsync-p t)
   ;; The offscreen target snapshots draw into, and its read-back buffer.
   (target nil)
   (target-framebuffer +vulkan-null-handle+)
@@ -188,10 +193,10 @@ the properties' pointer, as vkEnumerate*ExtensionProperties is."
 
 ;;; Instance and device
 
-(defun create-vulkan-instance (extensions)
+(defun vulkan-create-instance (extensions)
   "An instance with EXTENSIONS, enumerating portability drivers (MoltenVK)
 where the loader offers them."
-  (let* ((available (extension-names (lambda (count properties)
+  (let* ((available (vulkan-extension-names (lambda (count properties)
                                        (vk:enumerate-instance-extension-properties
                                         (cffi:null-pointer) count properties))))
          (portability-p (member vk:+khr-portability-enumeration-extension-name+ available
@@ -202,12 +207,12 @@ where the loader offers them."
                                    (list vk:+khr-portability-enumeration-extension-name+)))
                       :test #'string=))
          (layers (and *vulkan-validation*
-                      (member +vulkan-validation-layer+ (layer-names) :test #'string=)
+                      (member +vulkan-validation-layer+ (vulkan-layer-names) :test #'string=)
                       (list +vulkan-validation-layer+))))
-    (call-with-string-array
+    (vulkan-call-with-string-array
      extensions
      (lambda (extension-array)
-       (call-with-string-array
+       (vulkan-call-with-string-array
         layers
         (lambda (layer-array)
           (cffi:with-foreign-string (name "slt")
@@ -224,18 +229,18 @@ where the loader offers them."
                                     :pp-enabled-layer-names layer-array
                                     :enabled-extension-count (length extensions)
                                     :pp-enabled-extension-names extension-array))
-              (receive (instance vk:instance)
-                (vk-call (vk:create-instance info (cffi:null-pointer) instance)))))))))))
+              (vulkan-receive (instance vk:instance)
+                (vulkan-call (vk:create-instance info (cffi:null-pointer) instance)))))))))))
 
-(defun physical-devices (instance)
-  (enumerate-into (devices vk:physical-device count)
+(defun vulkan-physical-devices (instance)
+  (vulkan-enumerate-into (devices vk:physical-device count)
       (vk:enumerate-physical-devices instance count devices)
     (loop for i below count collect (cffi:mem-aref devices 'vk:physical-device i))))
 
-(defun graphics-queue-family (physical-device surface)
+(defun vulkan-graphics-queue-family (physical-device surface)
   "A queue family of PHYSICAL-DEVICE that draws and, given a SURFACE,
 presents to it; or NIL."
-  (enumerate-into (families (:struct vk:queue-family-properties) count)
+  (vulkan-enumerate-into (families (:struct vk:queue-family-properties) count)
       (progn (vk:get-physical-device-queue-family-properties physical-device count families)
              vk:+success+)
     (loop for i below count
@@ -245,23 +250,23 @@ presents to it; or NIL."
                               '(:struct vk:queue-family-properties) 'vk:queue-flags))
                     (or (eql surface +vulkan-null-handle+)
                         (= vk:+true+
-                           (receive (supported vk:bool32)
-                             (vk-call (vk:get-physical-device-surface-support-khr
+                           (vulkan-receive (supported vk:bool32)
+                             (vulkan-call (vk:get-physical-device-surface-support-khr
                                        physical-device i surface supported))))))
             return i)))
 
-(defun create-vulkan-device (renderer)
+(defun vulkan-create-device (renderer)
   "Pick the first device that can draw (and present), and create it with
 one queue."
   (let ((instance (vulkan-renderer-instance renderer))
         (surface (vulkan-renderer-surface renderer)))
     (destructuring-bind (physical-device family)
-        (or (loop for device in (physical-devices instance)
-                  for family = (graphics-queue-family device surface)
+        (or (loop for device in (vulkan-physical-devices instance)
+                  for family = (vulkan-graphics-queue-family device surface)
                   when family return (list device family))
             (error "No Vulkan device can draw~:[~; to this window~]"
                    (/= surface +vulkan-null-handle+)))
-      (let* ((available (extension-names (lambda (count properties)
+      (let* ((available (vulkan-extension-names (lambda (count properties)
                                            (vk:enumerate-device-extension-properties
                                             physical-device (cffi:null-pointer) count properties))))
              (extensions (append (and (/= surface +vulkan-null-handle+)
@@ -272,7 +277,7 @@ one queue."
                                       (list vk:+khr-portability-subset-extension-name+)))))
         (cffi:with-foreign-object (priority :float)
           (setf (cffi:mem-ref priority :float) 1.0)
-          (call-with-string-array
+          (vulkan-call-with-string-array
            extensions
            (lambda (extension-array)
              (vk:with-structs ((queue-info vk:device-queue-create-info
@@ -284,20 +289,20 @@ one queue."
                                      :p-queue-create-infos queue-info
                                      :enabled-extension-count (length extensions)
                                      :pp-enabled-extension-names extension-array))
-               (let ((device (receive (device vk:device)
-                               (vk-call (vk:create-device physical-device info
+               (let ((device (vulkan-receive (device vk:device)
+                               (vulkan-call (vk:create-device physical-device info
                                                           (cffi:null-pointer) device)))))
                  (vk:load-device-commands device)
                  (setf (vulkan-renderer-physical-device renderer) physical-device
                        (vulkan-renderer-queue-family renderer) family
                        (vulkan-renderer-device renderer) device
                        (vulkan-renderer-queue renderer)
-                       (receive (queue vk:queue)
+                       (vulkan-receive (queue vk:queue)
                          (vk:get-device-queue device family 0 queue))))))))))))
 
 ;;; Memory
 
-(defun memory-type (renderer type-bits properties)
+(defun vulkan-memory-type (renderer type-bits properties)
   "The index of a memory type among TYPE-BITS with all of PROPERTIES."
   (cffi:with-foreign-object (memory '(:struct vk:physical-device-memory-properties))
     (vk:get-physical-device-memory-properties (vulkan-renderer-physical-device renderer) memory)
@@ -311,56 +316,56 @@ one queue."
             return i
           finally (error "No Vulkan memory type has properties ~b" properties))))
 
-(defun allocate-memory (renderer requirements properties)
+(defun vulkan-allocate-memory (renderer requirements properties)
   "Memory for REQUIREMENTS (a VkMemoryRequirements) with PROPERTIES."
   (vk:with-struct (info vk:memory-allocate-info
                         :allocation-size (cffi:foreign-slot-value
                                           requirements '(:struct vk:memory-requirements) 'vk:size)
-                        :memory-type-index (memory-type
+                        :memory-type-index (vulkan-memory-type
                                             renderer
                                             (cffi:foreign-slot-value
                                              requirements '(:struct vk:memory-requirements)
                                              'vk:memory-type-bits)
                                             properties))
-    (receive (memory vk:device-memory)
-      (vk-call (vk:allocate-memory (vulkan-renderer-device renderer) info
+    (vulkan-receive (memory vk:device-memory)
+      (vulkan-call (vk:allocate-memory (vulkan-renderer-device renderer) info
                                    (cffi:null-pointer) memory)))))
 
-(defun create-host-buffer (renderer size usage)
+(defun vulkan-create-host-buffer (renderer size usage)
   "A buffer of SIZE octets for USAGE in memory the host writes and reads,
 mapped."
   (let ((device (vulkan-renderer-device renderer)))
     (vk:with-struct (info vk:buffer-create-info
                           :size size :usage usage :sharing-mode vk:+sharing-mode-exclusive+)
-      (let ((buffer (receive (buffer vk:buffer)
-                      (vk-call (vk:create-buffer device info (cffi:null-pointer) buffer)))))
+      (let ((buffer (vulkan-receive (buffer vk:buffer)
+                      (vulkan-call (vk:create-buffer device info (cffi:null-pointer) buffer)))))
         (cffi:with-foreign-object (requirements '(:struct vk:memory-requirements))
           (vk:get-buffer-memory-requirements device buffer requirements)
-          (let ((memory (allocate-memory renderer requirements
+          (let ((memory (vulkan-allocate-memory renderer requirements
                                          (logior vk:+memory-property-host-visible-bit+
                                                  vk:+memory-property-host-coherent-bit+))))
-            (vk-call (vk:bind-buffer-memory device buffer memory 0))
+            (vulkan-call (vk:bind-buffer-memory device buffer memory 0))
             (make-vulkan-buffer
              :handle buffer :memory memory :size size
-             :pointer (receive (pointer :pointer)
-                        (vk-call (vk:map-memory device memory 0 vk:+whole-size+ 0 pointer))))))))))
+             :pointer (vulkan-receive (pointer :pointer)
+                        (vulkan-call (vk:map-memory device memory 0 vk:+whole-size+ 0 pointer))))))))))
 
-(defun free-buffer (renderer buffer)
+(defun vulkan-free-buffer (renderer buffer)
   (when buffer
     (let ((device (vulkan-renderer-device renderer)))
       (vk:destroy-buffer device (vulkan-buffer-handle buffer) (cffi:null-pointer))
       (vk:free-memory device (vulkan-buffer-memory buffer) (cffi:null-pointer)))))
 
-(defun ensure-host-buffer (renderer buffer size usage)
+(defun vulkan-ensure-host-buffer (renderer buffer size usage)
   "BUFFER if it holds SIZE octets, else a new one, BUFFER freed."
   (if (and buffer (<= size (vulkan-buffer-size buffer)))
       buffer
-      (progn (free-buffer renderer buffer)
+      (progn (vulkan-free-buffer renderer buffer)
              ;; Grow by half again, so a growing grid does not reallocate
              ;; every frame.
-             (create-host-buffer renderer (max size (floor (* 3 size) 2)) usage))))
+             (vulkan-create-host-buffer renderer (max size (floor (* 3 size) 2)) usage))))
 
-(defun copy-into-buffer (buffer octets count &key (offset 0))
+(defun vulkan-copy-into-buffer (buffer octets count &key (offset 0))
   "Copy COUNT octets of the Lisp vector OCTETS (any element type, its data
 contiguous) into BUFFER's memory at OFFSET."
   (sb-sys:with-pinned-objects (octets)
@@ -372,7 +377,7 @@ contiguous) into BUFFER's memory at OFFSET."
 
 ;;; Images
 
-(defun set-color-range (range)
+(defun vulkan-set-color-range (range)
   "Make the VkImageSubresourceRange at RANGE the whole of a color image."
   (cffi:with-foreign-slots ((vk:aspect-mask vk:base-mip-level vk:level-count
                              vk:base-array-layer vk:layer-count)
@@ -381,7 +386,7 @@ contiguous) into BUFFER's memory at OFFSET."
           vk:base-mip-level 0 vk:level-count 1
           vk:base-array-layer 0 vk:layer-count 1)))
 
-(defun create-image (renderer width height format usage)
+(defun vulkan-create-image (renderer width height format usage)
   "A device-local 2D image, its memory and a view of it."
   (let ((device (vulkan-renderer-device renderer)))
     (vk:with-struct (info vk:image-create-info
@@ -395,25 +400,25 @@ contiguous) into BUFFER's memory at OFFSET."
                                                            'vk:extent)
                                 (:struct vk:extent3d))
         (setf vk:width width vk:height height vk:depth 1))
-      (let ((image (receive (image vk:image)
-                     (vk-call (vk:create-image device info (cffi:null-pointer) image)))))
+      (let ((image (vulkan-receive (image vk:image)
+                     (vulkan-call (vk:create-image device info (cffi:null-pointer) image)))))
         (cffi:with-foreign-object (requirements '(:struct vk:memory-requirements))
           (vk:get-image-memory-requirements device image requirements)
-          (let ((memory (allocate-memory renderer requirements
+          (let ((memory (vulkan-allocate-memory renderer requirements
                                          vk:+memory-property-device-local-bit+)))
-            (vk-call (vk:bind-image-memory device image memory 0))
-            (values image memory (create-image-view renderer image format))))))))
+            (vulkan-call (vk:bind-image-memory device image memory 0))
+            (values image memory (vulkan-create-image-view renderer image format))))))))
 
-(defun create-image-view (renderer image format)
+(defun vulkan-create-image-view (renderer image format)
   (vk:with-struct (info vk:image-view-create-info
                         :image image :view-type vk:+image-view-type-2d+ :format format)
-    (set-color-range (cffi:foreign-slot-pointer info '(:struct vk:image-view-create-info)
+    (vulkan-set-color-range (cffi:foreign-slot-pointer info '(:struct vk:image-view-create-info)
                                                 'vk:subresource-range))
-    (receive (view vk:image-view)
-      (vk-call (vk:create-image-view (vulkan-renderer-device renderer) info
+    (vulkan-receive (view vk:image-view)
+      (vulkan-call (vk:create-image-view (vulkan-renderer-device renderer) info
                                      (cffi:null-pointer) view)))))
 
-(defun image-barrier (command-buffer image old-layout new-layout
+(defun vulkan-image-barrier (command-buffer image old-layout new-layout
                       source-access target-access source-stage target-stage)
   "Record moving IMAGE from OLD-LAYOUT to NEW-LAYOUT after SOURCE-ACCESS in
 SOURCE-STAGE, before TARGET-ACCESS in TARGET-STAGE."
@@ -423,41 +428,41 @@ SOURCE-STAGE, before TARGET-ACCESS in TARGET-STAGE."
                            :src-queue-family-index vk:+queue-family-ignored+
                            :dst-queue-family-index vk:+queue-family-ignored+
                            :image image)
-    (set-color-range (cffi:foreign-slot-pointer barrier '(:struct vk:image-memory-barrier)
+    (vulkan-set-color-range (cffi:foreign-slot-pointer barrier '(:struct vk:image-memory-barrier)
                                                 'vk:subresource-range))
     (vk:cmd-pipeline-barrier command-buffer source-stage target-stage 0
                              0 (cffi:null-pointer) 0 (cffi:null-pointer) 1 barrier)))
 
-(defun format-octets (format)
+(defun vulkan-format-octets (format)
   (if (= format vk:+format-r8-unorm+) 1 +rgba-channels+))
 
-(defun create-texture (renderer width height format)
+(defun vulkan-create-texture (renderer width height format)
   (multiple-value-bind (image memory view)
-      (create-image renderer width height format
+      (vulkan-create-image renderer width height format
                     (logior vk:+image-usage-sampled-bit+ vk:+image-usage-transfer-dst-bit+))
     (make-vulkan-texture :image image :memory memory :view view :format format
                          :width width :height height)))
 
-(defun free-texture (renderer texture)
+(defun vulkan-free-texture (renderer texture)
   (when texture
     (let ((device (vulkan-renderer-device renderer)))
       (vk:destroy-image-view device (vulkan-texture-view texture) (cffi:null-pointer))
       (vk:destroy-image device (vulkan-texture-image texture) (cffi:null-pointer))
       (vk:free-memory device (vulkan-texture-memory texture) (cffi:null-pointer))
-      (free-buffer renderer (vulkan-texture-staging texture))
+      (vulkan-free-buffer renderer (vulkan-texture-staging texture))
       (unless (eql +vulkan-null-handle+ (vulkan-texture-descriptor-set texture))
         (cffi:with-foreign-object (set 'vk:descriptor-set)
           (setf (cffi:mem-ref set 'vk:descriptor-set) (vulkan-texture-descriptor-set texture))
           (vk:free-descriptor-sets device (vulkan-renderer-descriptor-pool renderer) 1 set))))))
 
-(defun upload-texture-rows (renderer texture pixels start end)
+(defun vulkan-upload-texture-rows (renderer texture pixels start end)
   "Record copying rows START to END of PIXELS (the whole image's, row
 after row) into TEXTURE, through its staging buffer."
   (let* ((command-buffer (vulkan-renderer-command-buffer renderer))
-         (row-octets (* (vulkan-texture-width texture) (format-octets (vulkan-texture-format texture))))
+         (row-octets (* (vulkan-texture-width texture) (vulkan-format-octets (vulkan-texture-format texture))))
          (count (* row-octets (- end start))))
     (setf (vulkan-texture-staging texture)
-          (ensure-host-buffer renderer (vulkan-texture-staging texture)
+          (vulkan-ensure-host-buffer renderer (vulkan-texture-staging texture)
                               (* row-octets (vulkan-texture-height texture))
                               vk:+buffer-usage-transfer-src-bit+))
     (sb-sys:with-pinned-objects (pixels)
@@ -465,7 +470,7 @@ after row) into TEXTURE, through its staging buffer."
                             :pointer (vulkan-buffer-pointer (vulkan-texture-staging texture))
                             :pointer (sb-sys:sap+ (sb-sys:vector-sap pixels) (* start row-octets))
                             :size count :pointer))
-    (image-barrier command-buffer (vulkan-texture-image texture)
+    (vulkan-image-barrier command-buffer (vulkan-texture-image texture)
                    (if (vulkan-texture-ready-p texture)
                        vk:+image-layout-shader-read-only-optimal+
                        vk:+image-layout-undefined+)
@@ -497,7 +502,7 @@ after row) into TEXTURE, through its staging buffer."
                                    (vulkan-buffer-handle (vulkan-texture-staging texture))
                                    (vulkan-texture-image texture)
                                    vk:+image-layout-transfer-dst-optimal+ 1 region))
-    (image-barrier command-buffer (vulkan-texture-image texture)
+    (vulkan-image-barrier command-buffer (vulkan-texture-image texture)
                    vk:+image-layout-transfer-dst-optimal+
                    vk:+image-layout-shader-read-only-optimal+
                    vk:+access-transfer-write-bit+ vk:+access-shader-read-bit+
@@ -506,7 +511,7 @@ after row) into TEXTURE, through its staging buffer."
 
 ;;; Descriptors
 
-(defun write-texture-descriptor (renderer set binding texture sampler)
+(defun vulkan-write-texture-descriptor (renderer set binding texture sampler)
   (vk:with-struct (image-info vk:descriptor-image-info
                               :sampler sampler
                               :image-view (vulkan-texture-view texture)
@@ -517,7 +522,7 @@ after row) into TEXTURE, through its staging buffer."
                            :p-image-info image-info)
       (vk:update-descriptor-sets (vulkan-renderer-device renderer) 1 write 0 (cffi:null-pointer)))))
 
-(defun create-set-layout (renderer bindings)
+(defun vulkan-create-set-layout (renderer bindings)
   "A descriptor set layout of BINDINGS sampled images for the fragment
 shader."
   (cffi:with-foreign-object (layout-bindings '(:struct vk:descriptor-set-layout-binding) bindings)
@@ -533,20 +538,20 @@ shader."
                 vk:stage-flags vk:+shader-stage-fragment-bit+))))
     (vk:with-struct (info vk:descriptor-set-layout-create-info
                           :binding-count bindings :p-bindings layout-bindings)
-      (receive (layout vk:descriptor-set-layout)
-        (vk-call (vk:create-descriptor-set-layout (vulkan-renderer-device renderer) info
+      (vulkan-receive (layout vk:descriptor-set-layout)
+        (vulkan-call (vk:create-descriptor-set-layout (vulkan-renderer-device renderer) info
                                                   (cffi:null-pointer) layout))))))
 
-(defun allocate-descriptor-set (renderer layout)
+(defun vulkan-allocate-descriptor-set (renderer layout)
   (cffi:with-foreign-object (layouts 'vk:descriptor-set-layout)
     (setf (cffi:mem-ref layouts 'vk:descriptor-set-layout) layout)
     (vk:with-struct (info vk:descriptor-set-allocate-info
                           :descriptor-pool (vulkan-renderer-descriptor-pool renderer)
                           :descriptor-set-count 1 :p-set-layouts layouts)
-      (receive (set vk:descriptor-set)
-        (vk-call (vk:allocate-descriptor-sets (vulkan-renderer-device renderer) info set))))))
+      (vulkan-receive (set vk:descriptor-set)
+        (vulkan-call (vk:allocate-descriptor-sets (vulkan-renderer-device renderer) info set))))))
 
-(defun create-descriptor-pool (renderer)
+(defun vulkan-create-descriptor-pool (renderer)
   (vk:with-struct (size vk:descriptor-pool-size
                         :type vk:+descriptor-type-combined-image-sampler+
                         ;; The cells' two atlases, and an image each.
@@ -555,24 +560,24 @@ shader."
                           :flags vk:+descriptor-pool-create-free-descriptor-set-bit+
                           :max-sets (1+ +vulkan-max-images+)
                           :pool-size-count 1 :p-pool-sizes size)
-      (receive (pool vk:descriptor-pool)
-        (vk-call (vk:create-descriptor-pool (vulkan-renderer-device renderer) info
+      (vulkan-receive (pool vk:descriptor-pool)
+        (vulkan-call (vk:create-descriptor-pool (vulkan-renderer-device renderer) info
                                             (cffi:null-pointer) pool))))))
 
-(defun create-sampler (renderer filter)
+(defun vulkan-create-sampler (renderer filter)
   (vk:with-struct (info vk:sampler-create-info
                         :mag-filter filter :min-filter filter
                         :mipmap-mode vk:+sampler-mipmap-mode-nearest+
                         :address-mode-u vk:+sampler-address-mode-clamp-to-edge+
                         :address-mode-v vk:+sampler-address-mode-clamp-to-edge+
                         :address-mode-w vk:+sampler-address-mode-clamp-to-edge+)
-    (receive (sampler vk:sampler)
-      (vk-call (vk:create-sampler (vulkan-renderer-device renderer) info
+    (vulkan-receive (sampler vk:sampler)
+      (vulkan-call (vk:create-sampler (vulkan-renderer-device renderer) info
                                   (cffi:null-pointer) sampler)))))
 
 ;;; Render passes and pipelines
 
-(defun create-render-pass (renderer final-layout)
+(defun vulkan-create-render-pass (renderer final-layout)
   "A render pass clearing one color attachment and leaving it in
 FINAL-LAYOUT."
   (vk:with-structs ((attachment vk:attachment-description
@@ -601,20 +606,20 @@ FINAL-LAYOUT."
                           :attachment-count 1 :p-attachments attachment
                           :subpass-count 1 :p-subpasses subpass
                           :dependency-count 1 :p-dependencies dependency))
-    (receive (pass vk:render-pass)
-      (vk-call (vk:create-render-pass (vulkan-renderer-device renderer) info
+    (vulkan-receive (pass vk:render-pass)
+      (vulkan-call (vk:create-render-pass (vulkan-renderer-device renderer) info
                                       (cffi:null-pointer) pass)))))
 
-(defun create-shader-module (renderer code)
+(defun vulkan-create-shader-module (renderer code)
   (cffi:with-foreign-object (words :uint8 (length code))
     (dotimes (i (length code))
       (setf (cffi:mem-aref words :uint8 i) (aref code i)))
     (vk:with-struct (info vk:shader-module-create-info :code-size (length code) :p-code words)
-      (receive (module vk:shader-module)
-        (vk-call (vk:create-shader-module (vulkan-renderer-device renderer) info
+      (vulkan-receive (module vk:shader-module)
+        (vulkan-call (vk:create-shader-module (vulkan-renderer-device renderer) info
                                           (cffi:null-pointer) module))))))
 
-(defun create-pipeline-layout (renderer set-layout push-constant-size)
+(defun vulkan-create-pipeline-layout (renderer set-layout push-constant-size)
   (cffi:with-foreign-object (layouts 'vk:descriptor-set-layout)
     (setf (cffi:mem-ref layouts 'vk:descriptor-set-layout) set-layout)
     (vk:with-structs ((range vk:push-constant-range
@@ -625,17 +630,17 @@ FINAL-LAYOUT."
                             :set-layout-count 1 :p-set-layouts layouts
                             :push-constant-range-count (if (plusp push-constant-size) 1 0)
                             :p-push-constant-ranges range))
-      (receive (layout vk:pipeline-layout)
-        (vk-call (vk:create-pipeline-layout (vulkan-renderer-device renderer) info
+      (vulkan-receive (layout vk:pipeline-layout)
+        (vulkan-call (vk:create-pipeline-layout (vulkan-renderer-device renderer) info
                                             (cffi:null-pointer) layout))))))
 
-(defun create-pipeline (renderer layout vertex-code fragment-code
+(defun vulkan-create-pipeline (renderer layout vertex-code fragment-code
                         &key blend-p stride input-rate format)
   "A pipeline drawing triangle lists with LAYOUT, one vertex attribute of
 FORMAT per STRIDE octets at INPUT-RATE, alpha blended when BLEND-P."
   (let ((device (vulkan-renderer-device renderer))
-        (vertex (create-shader-module renderer vertex-code))
-        (fragment (create-shader-module renderer fragment-code)))
+        (vertex (vulkan-create-shader-module renderer vertex-code))
+        (fragment (vulkan-create-shader-module renderer fragment-code)))
     (unwind-protect
          (cffi:with-foreign-string (entry +vulkan-shader-entry+)
            (cffi:with-foreign-objects ((stages '(:struct vk:pipeline-shader-stage-create-info) 2)
@@ -699,51 +704,52 @@ FORMAT per STRIDE octets at INPUT-RATE, alpha blended when BLEND-P."
                                      ;; Compatible with the snapshot pass too.
                                      :render-pass (vulkan-renderer-present-pass renderer)
                                      :subpass 0))
-               (receive (pipeline vk:pipeline)
-                 (vk-call (vk:create-graphics-pipelines device +vulkan-null-handle+ 1 info
+               (vulkan-receive (pipeline vk:pipeline)
+                 (vulkan-call (vk:create-graphics-pipelines device +vulkan-null-handle+ 1 info
                                                         (cffi:null-pointer) pipeline))))))
       (vk:destroy-shader-module device vertex (cffi:null-pointer))
       (vk:destroy-shader-module device fragment (cffi:null-pointer)))))
 
 ;;; Creating and freeing
 
-(defun make-vulkan-renderer (&key instance-extensions surface-function)
+(defun make-vulkan-renderer (&key instance-extensions surface-function (vsync t))
   "Create a renderer.  INSTANCE-EXTENSIONS are those its host needs for
 its surface; SURFACE-FUNCTION, called with the instance, makes the
-surface to present to.  With neither, the renderer draws only offscreen."
+surface to present to.  With neither, the renderer draws only offscreen.
+VSYNC presents in step with the display's refresh."
   (vk:load-vulkan)
-  (let ((renderer (%make-vulkan-renderer)))
+  (let ((renderer (%make-vulkan-renderer :vsync-p vsync)))
     (handler-bind ((error (lambda (condition)
                             (declare (ignore condition))
                             (free-vulkan-renderer renderer))))
-      (let ((instance (create-vulkan-instance
+      (let ((instance (vulkan-create-instance
                        (append instance-extensions
                                (and surface-function (list vk:+khr-surface-extension-name+))))))
         (setf (vulkan-renderer-instance renderer) instance)
         (vk:load-instance-commands instance)
         (when surface-function
           (setf (vulkan-renderer-surface renderer) (funcall surface-function instance))))
-      (create-vulkan-device renderer)
+      (vulkan-create-device renderer)
       (let ((device (vulkan-renderer-device renderer)))
         (setf (vulkan-renderer-present-pass renderer)
-              (create-render-pass renderer (if (eql (vulkan-renderer-surface renderer)
+              (vulkan-create-render-pass renderer (if (eql (vulkan-renderer-surface renderer)
                                                     +vulkan-null-handle+)
                                                vk:+image-layout-transfer-src-optimal+
                                                vk:+image-layout-present-src-khr+))
               (vulkan-renderer-snapshot-pass renderer)
-              (create-render-pass renderer vk:+image-layout-transfer-src-optimal+)
-              (vulkan-renderer-sampler renderer) (create-sampler renderer vk:+filter-nearest+)
-              (vulkan-renderer-image-sampler renderer) (create-sampler renderer vk:+filter-linear+)
-              (vulkan-renderer-cells-set-layout renderer) (create-set-layout renderer 2)
-              (vulkan-renderer-image-set-layout renderer) (create-set-layout renderer 1)
+              (vulkan-create-render-pass renderer vk:+image-layout-transfer-src-optimal+)
+              (vulkan-renderer-sampler renderer) (vulkan-create-sampler renderer vk:+filter-nearest+)
+              (vulkan-renderer-image-sampler renderer) (vulkan-create-sampler renderer vk:+filter-linear+)
+              (vulkan-renderer-cells-set-layout renderer) (vulkan-create-set-layout renderer 2)
+              (vulkan-renderer-image-set-layout renderer) (vulkan-create-set-layout renderer 1)
               (vulkan-renderer-cells-layout renderer)
-              (create-pipeline-layout renderer (vulkan-renderer-cells-set-layout renderer)
+              (vulkan-create-pipeline-layout renderer (vulkan-renderer-cells-set-layout renderer)
                                       (cffi:foreign-type-size
                                        '(:struct vulkan-frame-constants)))
               (vulkan-renderer-image-layout renderer)
-              (create-pipeline-layout renderer (vulkan-renderer-image-set-layout renderer) 0))
+              (vulkan-create-pipeline-layout renderer (vulkan-renderer-image-set-layout renderer) 0))
         (flet ((cells-pipeline (blend-p)
-                 (create-pipeline renderer (vulkan-renderer-cells-layout renderer)
+                 (vulkan-create-pipeline renderer (vulkan-renderer-cells-layout renderer)
                                   *vulkan-cells-vertex-shader* *vulkan-cells-fragment-shader*
                                   :blend-p blend-p :stride +vulkan-cell-octets+
                                   :input-rate vk:+vertex-input-rate-instance+
@@ -751,43 +757,43 @@ surface to present to.  With neither, the renderer draws only offscreen."
           (setf (vulkan-renderer-cells-pipeline renderer) (cells-pipeline nil)
                 (vulkan-renderer-layer-pipeline renderer) (cells-pipeline t)
                 (vulkan-renderer-image-pipeline renderer)
-                (create-pipeline renderer (vulkan-renderer-image-layout renderer)
+                (vulkan-create-pipeline renderer (vulkan-renderer-image-layout renderer)
                                  *vulkan-image-vertex-shader* *vulkan-image-fragment-shader*
                                  :blend-p t
                                  :stride (* +vulkan-image-vertex-floats+
                                             (cffi:foreign-type-size :float))
                                  :input-rate vk:+vertex-input-rate-vertex+
                                  :format vk:+format-r32g32b32a32-sfloat+)))
-        (setf (vulkan-renderer-descriptor-pool renderer) (create-descriptor-pool renderer)
+        (setf (vulkan-renderer-descriptor-pool renderer) (vulkan-create-descriptor-pool renderer)
               (vulkan-renderer-cells-set renderer)
-              (allocate-descriptor-set renderer (vulkan-renderer-cells-set-layout renderer)))
+              (vulkan-allocate-descriptor-set renderer (vulkan-renderer-cells-set-layout renderer)))
         (vk:with-struct (info vk:command-pool-create-info
                               :flags vk:+command-pool-create-reset-command-buffer-bit+
                               :queue-family-index (vulkan-renderer-queue-family renderer))
           (setf (vulkan-renderer-command-pool renderer)
-                (receive (pool vk:command-pool)
-                  (vk-call (vk:create-command-pool device info (cffi:null-pointer) pool)))))
+                (vulkan-receive (pool vk:command-pool)
+                  (vulkan-call (vk:create-command-pool device info (cffi:null-pointer) pool)))))
         (vk:with-struct (info vk:command-buffer-allocate-info
                               :command-pool (vulkan-renderer-command-pool renderer)
                               :level vk:+command-buffer-level-primary+
                               :command-buffer-count 1)
           (setf (vulkan-renderer-command-buffer renderer)
-                (receive (buffer vk:command-buffer)
-                  (vk-call (vk:allocate-command-buffers device info buffer)))))
+                (vulkan-receive (buffer vk:command-buffer)
+                  (vulkan-call (vk:allocate-command-buffers device info buffer)))))
         (vk:with-struct (info vk:fence-create-info :flags vk:+fence-create-signaled-bit+)
           (setf (vulkan-renderer-fence renderer)
-                (receive (fence vk:fence)
-                  (vk-call (vk:create-fence device info (cffi:null-pointer) fence)))))
-        (setf (vulkan-renderer-acquired renderer) (create-semaphore renderer))
+                (vulkan-receive (fence vk:fence)
+                  (vulkan-call (vk:create-fence device info (cffi:null-pointer) fence)))))
+        (setf (vulkan-renderer-acquired renderer) (vulkan-create-semaphore renderer))
         ;; Without color glyphs the shader never reads it; give it a pixel.
         (setf (vulkan-renderer-color-atlas renderer)
-              (create-texture renderer 1 1 vk:+format-r8g8b8a8-unorm+))))
+              (vulkan-create-texture renderer 1 1 vk:+format-r8g8b8a8-unorm+))))
     renderer))
 
-(defun create-semaphore (renderer)
+(defun vulkan-create-semaphore (renderer)
   (vk:with-struct (info vk:semaphore-create-info)
-    (receive (semaphore vk:semaphore)
-      (vk-call (vk:create-semaphore (vulkan-renderer-device renderer) info
+    (vulkan-receive (semaphore vk:semaphore)
+      (vulkan-call (vk:create-semaphore (vulkan-renderer-device renderer) info
                                     (cffi:null-pointer) semaphore)))))
 
 (defun free-vulkan-renderer (renderer)
@@ -795,15 +801,18 @@ surface to present to.  With neither, the renderer draws only offscreen."
         (null (cffi:null-pointer)))
     (unless (cffi:null-pointer-p device)
       (vk:device-wait-idle device)
-      (free-swapchain renderer)
-      (free-snapshot-target renderer)
-      (maphash (lambda (id entry) (declare (ignore id)) (free-texture renderer (second entry)))
+      (vulkan-free-swapchain renderer)
+      (vulkan-free-snapshot-target renderer)
+      (maphash (lambda (id entry) (declare (ignore id)) (vulkan-free-texture renderer (second entry)))
                (vulkan-renderer-image-textures renderer))
       (clrhash (vulkan-renderer-image-textures renderer))
-      (free-texture renderer (vulkan-renderer-atlas renderer))
-      (free-texture renderer (vulkan-renderer-color-atlas renderer))
-      (free-buffer renderer (vulkan-renderer-instances renderer))
-      (free-buffer renderer (vulkan-renderer-image-vertices renderer))
+      (mapc (lambda (texture) (vulkan-free-texture renderer texture))
+            (vulkan-renderer-spare-textures renderer))
+      (setf (vulkan-renderer-spare-textures renderer) '())
+      (vulkan-free-texture renderer (vulkan-renderer-atlas renderer))
+      (vulkan-free-texture renderer (vulkan-renderer-color-atlas renderer))
+      (vulkan-free-buffer renderer (vulkan-renderer-instances renderer))
+      (vulkan-free-buffer renderer (vulkan-renderer-image-vertices renderer))
       (vk:destroy-semaphore device (vulkan-renderer-acquired renderer) null)
       (vk:destroy-fence device (vulkan-renderer-fence renderer) null)
       (vk:destroy-command-pool device (vulkan-renderer-command-pool renderer) null)
@@ -831,17 +840,17 @@ surface to present to.  With neither, the renderer draws only offscreen."
 
 ;;; Targets: the swapchain, or an offscreen image
 
-(defun create-framebuffer (renderer pass view width height)
+(defun vulkan-create-framebuffer (renderer pass view width height)
   (cffi:with-foreign-object (views 'vk:image-view)
     (setf (cffi:mem-ref views 'vk:image-view) view)
     (vk:with-struct (info vk:framebuffer-create-info
                           :render-pass pass :attachment-count 1 :p-attachments views
                           :width width :height height :layers 1)
-      (receive (framebuffer vk:framebuffer)
-        (vk-call (vk:create-framebuffer (vulkan-renderer-device renderer) info
+      (vulkan-receive (framebuffer vk:framebuffer)
+        (vulkan-call (vk:create-framebuffer (vulkan-renderer-device renderer) info
                                         (cffi:null-pointer) framebuffer))))))
 
-(defun free-swapchain (renderer)
+(defun vulkan-free-swapchain (renderer)
   (let ((device (vulkan-renderer-device renderer))
         (null (cffi:null-pointer)))
     (loop for framebuffer across (vulkan-renderer-framebuffers renderer)
@@ -857,18 +866,34 @@ surface to present to.  With neither, the renderer draws only offscreen."
           (vulkan-renderer-swapchain-views renderer) '()
           (vulkan-renderer-swapchain renderer) +vulkan-null-handle+)))
 
-(defun surface-capabilities (renderer capabilities)
-  (vk-call (vk:get-physical-device-surface-capabilities-khr
+(defparameter +vulkan-unsynchronized-present-modes+
+  (list vk:+present-mode-mailbox-khr+ vk:+present-mode-immediate-khr+)
+  "The present modes that do not wait for the refresh, preferred first.")
+
+(defun vulkan-present-mode (renderer)
+  (if (vulkan-renderer-vsync-p renderer)
+      vk:+present-mode-fifo-khr+
+      (let ((available (vulkan-enumerate-into (modes vk:present-mode-khr count)
+                           (vk:get-physical-device-surface-present-modes-khr
+                            (vulkan-renderer-physical-device renderer)
+                            (vulkan-renderer-surface renderer) count modes)
+                         (loop for i below count
+                               collect (cffi:mem-aref modes 'vk:present-mode-khr i)))))
+        (or (find-if (lambda (mode) (member mode available)) +vulkan-unsynchronized-present-modes+)
+            vk:+present-mode-fifo-khr+))))
+
+(defun vulkan-surface-capabilities (renderer capabilities)
+  (vulkan-call (vk:get-physical-device-surface-capabilities-khr
             (vulkan-renderer-physical-device renderer) (vulkan-renderer-surface renderer)
             capabilities)))
 
-(defun create-swapchain (renderer width height)
+(defun vulkan-create-swapchain (renderer width height)
   "Make the swapchain WIDTH x HEIGHT, or the surface's own size."
   (let ((device (vulkan-renderer-device renderer)))
     (vk:device-wait-idle device)
-    (free-swapchain renderer)
+    (vulkan-free-swapchain renderer)
     (cffi:with-foreign-object (capabilities '(:struct vk:surface-capabilities-khr))
-      (surface-capabilities renderer capabilities)
+      (vulkan-surface-capabilities renderer capabilities)
       (cffi:with-foreign-slots ((vk:min-image-count vk:max-image-count vk:current-transform)
                                 capabilities (:struct vk:surface-capabilities-khr))
         (let* ((current (cffi:foreign-slot-pointer
@@ -894,65 +919,65 @@ surface to present to.  With neither, the renderer draws only offscreen."
                                 :image-sharing-mode vk:+sharing-mode-exclusive+
                                 :pre-transform vk:current-transform
                                 :composite-alpha vk:+composite-alpha-opaque-bit-khr+
-                                :present-mode (vulkan-renderer-present-mode renderer)
+                                :present-mode (vulkan-present-mode renderer)
                                 :clipped vk:+true+)
             (cffi:with-foreign-slots ((vk:width vk:height)
                                       (cffi:foreign-slot-pointer
                                        info '(:struct vk:swapchain-create-info-khr) 'vk:image-extent)
                                       (:struct vk:extent2d))
               (setf vk:width width vk:height height))
-            (let ((swapchain (receive (swapchain vk:swapchain-khr)
-                               (vk-call (vk:create-swapchain-khr device info (cffi:null-pointer)
+            (let ((swapchain (vulkan-receive (swapchain vk:swapchain-khr)
+                               (vulkan-call (vk:create-swapchain-khr device info (cffi:null-pointer)
                                                                  swapchain)))))
               (setf (vulkan-renderer-swapchain renderer) swapchain
                     (vulkan-renderer-swapchain-width renderer) width
                     (vulkan-renderer-swapchain-height renderer) height)
-              (let ((images (enumerate-into (images vk:image count)
+              (let ((images (vulkan-enumerate-into (images vk:image count)
                                 (vk:get-swapchain-images-khr device swapchain count images)
                               (loop for i below count collect (cffi:mem-aref images 'vk:image i)))))
                 (setf (vulkan-renderer-swapchain-views renderer)
-                      (mapcar (lambda (image) (create-image-view renderer image +vulkan-target-format+))
+                      (mapcar (lambda (image) (vulkan-create-image-view renderer image +vulkan-target-format+))
                               images)
                       (vulkan-renderer-framebuffers renderer)
                       (map 'vector (lambda (view)
-                                     (create-framebuffer renderer (vulkan-renderer-present-pass renderer)
+                                     (vulkan-create-framebuffer renderer (vulkan-renderer-present-pass renderer)
                                                          view width height))
                            (vulkan-renderer-swapchain-views renderer))
                       (vulkan-renderer-finished renderer)
-                      (map 'vector (lambda (image) (declare (ignore image)) (create-semaphore renderer))
+                      (map 'vector (lambda (image) (declare (ignore image)) (vulkan-create-semaphore renderer))
                            images))))))))))
 
-(defun free-snapshot-target (renderer)
+(defun vulkan-free-snapshot-target (renderer)
   (let ((target (vulkan-renderer-target renderer)))
     (when target
       (vk:destroy-framebuffer (vulkan-renderer-device renderer)
                               (vulkan-renderer-target-framebuffer renderer) (cffi:null-pointer))
-      (free-texture renderer target)
-      (free-buffer renderer (vulkan-renderer-readback renderer))
+      (vulkan-free-texture renderer target)
+      (vulkan-free-buffer renderer (vulkan-renderer-readback renderer))
       (setf (vulkan-renderer-target renderer) nil (vulkan-renderer-readback renderer) nil))))
 
-(defun ensure-snapshot-target (renderer width height)
+(defun vulkan-ensure-snapshot-target (renderer width height)
   (let ((target (vulkan-renderer-target renderer)))
     (unless (and target (= width (vulkan-texture-width target))
                  (= height (vulkan-texture-height target)))
-      (free-snapshot-target renderer)
+      (vulkan-free-snapshot-target renderer)
       (multiple-value-bind (image memory view)
-          (create-image renderer width height +vulkan-target-format+
+          (vulkan-create-image renderer width height +vulkan-target-format+
                         (logior vk:+image-usage-color-attachment-bit+
                                 vk:+image-usage-transfer-src-bit+))
         (setf (vulkan-renderer-target renderer)
               (make-vulkan-texture :image image :memory memory :view view
                                    :format +vulkan-target-format+ :width width :height height)
               (vulkan-renderer-target-framebuffer renderer)
-              (create-framebuffer renderer (vulkan-renderer-snapshot-pass renderer)
+              (vulkan-create-framebuffer renderer (vulkan-renderer-snapshot-pass renderer)
                                   view width height)
               (vulkan-renderer-readback renderer)
-              (create-host-buffer renderer (* +rgba-channels+ width height)
+              (vulkan-create-host-buffer renderer (* +rgba-channels+ width height)
                                   vk:+buffer-usage-transfer-dst-bit+))))))
 
 ;;; Uploading
 
-(defun upload-atlas (renderer atlas)
+(defun vulkan-upload-atlas (renderer atlas)
   "Bring the atlas images up to date with ATLAS, recording the copies."
   (let ((width (glyph-atlas-width atlas))
         (height (glyph-atlas-height atlas)))
@@ -962,8 +987,8 @@ surface to present to.  With neither, the renderer draws only offscreen."
                       (= (vulkan-texture-height texture) height)
                       (= (vulkan-texture-width texture) width))
                  (values texture nil)
-                 (progn (free-texture renderer texture)
-                        (let ((texture (create-texture renderer width height format)))
+                 (progn (vulkan-free-texture renderer texture)
+                        (let ((texture (vulkan-create-texture renderer width height format)))
                           (setf (vulkan-texture-generation texture) generation)
                           (values texture t))))))
       (multiple-value-bind (texture new-p)
@@ -971,10 +996,10 @@ surface to present to.  With neither, the renderer draws only offscreen."
                   (glyph-atlas-generation atlas))
         (setf (vulkan-renderer-atlas renderer) texture)
         (multiple-value-bind (start end) (glyph-atlas-take-dirty atlas)
-          (cond (new-p (upload-texture-rows renderer texture (glyph-atlas-pixels atlas) 0 height))
-                (start (upload-texture-rows renderer texture (glyph-atlas-pixels atlas) start end))))
+          (cond (new-p (vulkan-upload-texture-rows renderer texture (glyph-atlas-pixels atlas) 0 height))
+                (start (vulkan-upload-texture-rows renderer texture (glyph-atlas-pixels atlas) start end))))
         (when new-p
-          (write-texture-descriptor renderer (vulkan-renderer-cells-set renderer) 0 texture
+          (vulkan-write-texture-descriptor renderer (vulkan-renderer-cells-set renderer) 0 texture
                                     (vulkan-renderer-sampler renderer))))
       (let ((pixels (glyph-atlas-color-pixels atlas))
             (color (vulkan-renderer-color-atlas renderer)))
@@ -983,70 +1008,86 @@ surface to present to.  With neither, the renderer draws only offscreen."
                 (ensure (and (> (vulkan-texture-width color) 1) color)
                         vk:+format-r8g8b8a8-unorm+ (glyph-atlas-generation atlas))
               (when (and new-p (not (eq texture color)))
-                (free-texture renderer color))
+                (vulkan-free-texture renderer color))
               (setf (vulkan-renderer-color-atlas renderer) texture)
               (multiple-value-bind (start end) (glyph-atlas-take-color-dirty atlas)
-                (cond (new-p (upload-texture-rows renderer texture pixels 0 height))
-                      (start (upload-texture-rows renderer texture pixels start end))))
+                (cond (new-p (vulkan-upload-texture-rows renderer texture pixels 0 height))
+                      (start (vulkan-upload-texture-rows renderer texture pixels start end))))
               (when new-p
-                (write-texture-descriptor renderer (vulkan-renderer-cells-set renderer) 1 texture
+                (vulkan-write-texture-descriptor renderer (vulkan-renderer-cells-set renderer) 1 texture
                                           (vulkan-renderer-sampler renderer))))
             (unless (vulkan-texture-ready-p color)
               ;; The placeholder pixel, made readable once.
-              (upload-texture-rows renderer color
+              (vulkan-upload-texture-rows renderer color
                                    (make-array +rgba-channels+ :element-type '(unsigned-byte 8)
                                                                :initial-element 0)
                                    0 1)
-              (write-texture-descriptor renderer (vulkan-renderer-cells-set renderer) 1 color
+              (vulkan-write-texture-descriptor renderer (vulkan-renderer-cells-set renderer) 1 color
                                         (vulkan-renderer-sampler renderer))))))))
 
-(defun upload-instances (renderer instances)
+(defun vulkan-upload-instances (renderer instances)
   (declare (type u32-vector instances))
   (let ((octets (* 4 (length instances))))
     (setf (vulkan-renderer-instances renderer)
-          (ensure-host-buffer renderer (vulkan-renderer-instances renderer)
+          (vulkan-ensure-host-buffer renderer (vulkan-renderer-instances renderer)
                               (max +vulkan-cell-octets+ octets)
                               vk:+buffer-usage-vertex-buffer-bit+))
-    (copy-into-buffer (vulkan-renderer-instances renderer) instances octets)))
+    (vulkan-copy-into-buffer (vulkan-renderer-instances renderer) instances octets)))
 
-(defun image-texture (renderer image)
+(defun vulkan-retire-texture (renderer texture)
+  "Keep TEXTURE for a new image of its size, freeing the oldest spare past
++GL-SPARE-TEXTURES+."
+  (push texture (vulkan-renderer-spare-textures renderer))
+  (let ((extra (nthcdr +gl-spare-textures+ (vulkan-renderer-spare-textures renderer))))
+    (when extra
+      (mapc (lambda (spare) (vulkan-free-texture renderer spare)) extra)
+      (setf (vulkan-renderer-spare-textures renderer)
+            (ldiff (vulkan-renderer-spare-textures renderer) extra)))))
+
+(defun vulkan-create-image-texture (renderer width height)
+  (let ((texture (vulkan-create-texture renderer width height vk:+format-r8g8b8a8-unorm+)))
+    (setf (vulkan-texture-descriptor-set texture)
+          (vulkan-allocate-descriptor-set renderer (vulkan-renderer-image-set-layout renderer)))
+    (vulkan-write-texture-descriptor renderer (vulkan-texture-descriptor-set texture) 0 texture
+                              (vulkan-renderer-image-sampler renderer))
+    texture))
+
+(defun vulkan-image-texture (renderer image)
   "The texture holding IMAGE's pixels, uploading them when new or changed."
   (let* ((id (terminal-image-id image))
          (entry (gethash id (vulkan-renderer-image-textures renderer)))
-         (rgba (terminal-image-rgba image)))
-    (if (and entry (eq rgba (first entry)))
-        (second entry)
-        (let ((texture (if (and entry
-                                (= (vulkan-texture-width (second entry)) (terminal-image-width image))
-                                (= (vulkan-texture-height (second entry)) (terminal-image-height image)))
-                           ;; A new frame of the same size reuses the image.
-                           (second entry)
-                           (progn
-                             (when entry (free-texture renderer (second entry)))
-                             (let ((texture (create-texture renderer (terminal-image-width image)
-                                                            (terminal-image-height image)
-                                                            vk:+format-r8g8b8a8-unorm+)))
-                               (setf (vulkan-texture-descriptor-set texture)
-                                     (allocate-descriptor-set
-                                      renderer (vulkan-renderer-image-set-layout renderer)))
-                               (write-texture-descriptor renderer (vulkan-texture-descriptor-set texture)
-                                                         0 texture
-                                                         (vulkan-renderer-image-sampler renderer))
-                               texture)))))
-          (upload-texture-rows renderer texture rgba 0 (terminal-image-height image))
-          (setf (gethash id (vulkan-renderer-image-textures renderer)) (list rgba texture))
-          texture))))
+         (rgba (terminal-image-rgba image))
+         (width (terminal-image-width image))
+         (height (terminal-image-height image)))
+    (flet ((fits-p (texture)
+             (and (= width (vulkan-texture-width texture))
+                  (= height (vulkan-texture-height texture)))))
+      (if (and entry (eq rgba (first entry)))
+          (second entry)
+          (let* ((spare (find-if #'fits-p (vulkan-renderer-spare-textures renderer)))
+                 (texture (cond ((and entry (fits-p (second entry))) (second entry))
+                                (spare
+                                 (setf (vulkan-renderer-spare-textures renderer)
+                                       (delete spare (vulkan-renderer-spare-textures renderer)))
+                                 spare)
+                                (t (vulkan-create-image-texture renderer width height)))))
+            ;; Retired only now, so trimming the spares cannot free SPARE.
+            (when (and entry (not (eq texture (second entry))))
+              (vulkan-retire-texture renderer (second entry)))
+            (vulkan-upload-texture-rows renderer texture rgba 0 height)
+            (setf (gethash id (vulkan-renderer-image-textures renderer)) (list rgba texture))
+            texture)))))
 
-(defun prune-image-textures (renderer records)
-  "Free the textures of images RECORDS no longer draw."
+(defun vulkan-prune-image-textures (renderer records)
+  "Retire the textures of images RECORDS no longer draw."
   (let ((live (mapcar (lambda (record) (terminal-image-id (second record))) records)))
     (maphash (lambda (id entry)
                (unless (member id live)
-                 (free-texture renderer (second entry))
+                 (vulkan-retire-texture renderer (second entry))
                  (remhash id (vulkan-renderer-image-textures renderer))))
              (vulkan-renderer-image-textures renderer))))
 
-(defun image-quads (records width height)
+(defun vulkan-image-quads (records width height)
   "The vertices of RECORDS' quads, six of four floats each, in normalized
 device coordinates (y down) and texture coordinates."
   (let ((vertices (make-array (* (length records) +vulkan-image-vertices+
@@ -1071,26 +1112,30 @@ device coordinates (y down) and texture coordinates."
 
 ;;; Drawing
 
-(defun record-frame (renderer framebuffer pass instances columns cell-count cell-width cell-height
+(defun vulkan-record-frame (renderer framebuffer pass instances columns cell-count cell-width cell-height
                      width height atlas palette image-records)
   "Record drawing a frame into FRAMEBUFFER, through PASS."
   (let ((command-buffer (vulkan-renderer-command-buffer renderer))
         (background (palette-background palette))
         (cursor (palette-cursor palette)))
     (flet ((channel (color shift) (/ (ldb (byte 8 shift) color) +channel-maximum+)))
-      (prune-image-textures renderer image-records)
+      (vulkan-prune-image-textures renderer image-records)
       (when (plusp cell-count)
-        (upload-atlas renderer atlas)
-        (upload-instances renderer instances))
-      (let* ((textures (mapcar (lambda (record) (image-texture renderer (second record)))
-                               image-records))
-             (quads (image-quads image-records width height))
-             (quad-octets (* (length quads) (cffi:foreign-type-size :float))))
-        (when image-records
+        (vulkan-upload-atlas renderer atlas)
+        (vulkan-upload-instances renderer instances))
+      (multiple-value-bind (below-backgrounds below-text above) (image-layers image-records)
+      (let* ((drawn (append below-backgrounds below-text above))
+             (textures (mapcar (lambda (record) (vulkan-image-texture renderer (second record))) drawn))
+             (quads (vulkan-image-quads drawn width height))
+             (quad-octets (* (length quads) (cffi:foreign-type-size :float)))
+             ;; The quads and textures are in DRAWN's order, the order the
+             ;; layers below draw the images in.
+             (next-image 0))
+        (when drawn
           (setf (vulkan-renderer-image-vertices renderer)
-                (ensure-host-buffer renderer (vulkan-renderer-image-vertices renderer) quad-octets
+                (vulkan-ensure-host-buffer renderer (vulkan-renderer-image-vertices renderer) quad-octets
                                     vk:+buffer-usage-vertex-buffer-bit+))
-          (copy-into-buffer (vulkan-renderer-image-vertices renderer) quads quad-octets))
+          (vulkan-copy-into-buffer (vulkan-renderer-image-vertices renderer) quads quad-octets))
         (cffi:with-foreign-object (clear '(:union vk:clear-value))
          (vk:zero-struct clear '(:union vk:clear-value))
          (vk:with-structs ((begin vk:render-pass-begin-info
@@ -1117,14 +1162,15 @@ device coordinates (y down) and texture coordinates."
           (vk:cmd-begin-render-pass command-buffer begin vk:+subpass-contents-inline+)
           (vk:cmd-set-viewport command-buffer 0 1 viewport)
           (vk:cmd-set-scissor command-buffer 0 1 scissor)
-          (multiple-value-bind (below-backgrounds below-text above) (image-layers image-records)
+          (progn
             (labels ((images (records)
                        (dolist (record records)
-                         (let ((index (position record image-records)))
+                         (declare (ignore record))
+                         (let ((index (shiftf next-image (1+ next-image))))
                            (vk:cmd-bind-pipeline command-buffer vk:+pipeline-bind-point-graphics+
                                                  (vulkan-renderer-image-pipeline renderer))
-                           (bind-vertex-buffer command-buffer (vulkan-renderer-image-vertices renderer))
-                           (bind-set command-buffer (vulkan-renderer-image-layout renderer)
+                           (vulkan-bind-vertex-buffer command-buffer (vulkan-renderer-image-vertices renderer))
+                           (vulkan-bind-set command-buffer (vulkan-renderer-image-layout renderer)
                                      (vulkan-texture-descriptor-set (nth index textures)))
                            (vk:cmd-draw command-buffer +vulkan-image-vertices+ 1
                                         (* index +vulkan-image-vertices+) 0))))
@@ -1134,8 +1180,8 @@ device coordinates (y down) and texture coordinates."
                                                (if (= layer 2)
                                                    (vulkan-renderer-cells-pipeline renderer)
                                                    (vulkan-renderer-layer-pipeline renderer)))
-                         (bind-vertex-buffer command-buffer (vulkan-renderer-instances renderer))
-                         (bind-set command-buffer (vulkan-renderer-cells-layout renderer)
+                         (vulkan-bind-vertex-buffer command-buffer (vulkan-renderer-instances renderer))
+                         (vulkan-bind-set command-buffer (vulkan-renderer-cells-layout renderer)
                                    (vulkan-renderer-cells-set renderer))
                          (cffi:with-foreign-object (constants '(:struct vulkan-frame-constants))
                            (setf (cffi:foreign-slot-value
@@ -1170,38 +1216,38 @@ device coordinates (y down) and texture coordinates."
                   (progn (cells 0) (images below-text) (cells 1))
                   (cells 2))
               (images above)))
-          (vk:cmd-end-render-pass command-buffer)))))))
+          (vk:cmd-end-render-pass command-buffer))))))))
 
-(defun bind-vertex-buffer (command-buffer buffer)
+(defun vulkan-bind-vertex-buffer (command-buffer buffer)
   (cffi:with-foreign-objects ((buffers 'vk:buffer) (offsets 'vk:device-size))
     (setf (cffi:mem-ref buffers 'vk:buffer) (vulkan-buffer-handle buffer)
           (cffi:mem-ref offsets 'vk:device-size) 0)
     (vk:cmd-bind-vertex-buffers command-buffer 0 1 buffers offsets)))
 
-(defun bind-set (command-buffer layout set)
+(defun vulkan-bind-set (command-buffer layout set)
   (cffi:with-foreign-object (sets 'vk:descriptor-set)
     (setf (cffi:mem-ref sets 'vk:descriptor-set) set)
     (vk:cmd-bind-descriptor-sets command-buffer vk:+pipeline-bind-point-graphics+ layout
                                  0 1 sets 0 (cffi:null-pointer))))
 
-(defun begin-frame (renderer)
+(defun vulkan-begin-frame (renderer)
   "Wait for the last frame, and start recording the next."
   (let ((device (vulkan-renderer-device renderer))
         (command-buffer (vulkan-renderer-command-buffer renderer)))
     (cffi:with-foreign-object (fences 'vk:fence)
       (setf (cffi:mem-ref fences 'vk:fence) (vulkan-renderer-fence renderer))
-      (vk-call (vk:wait-for-fences device 1 fences vk:+true+ +vulkan-no-timeout+)))
-    (vk-call (vk:reset-command-buffer command-buffer 0))
+      (vulkan-call (vk:wait-for-fences device 1 fences vk:+true+ +vulkan-no-timeout+)))
+    (vulkan-call (vk:reset-command-buffer command-buffer 0))
     (vk:with-struct (info vk:command-buffer-begin-info
                           :flags vk:+command-buffer-usage-one-time-submit-bit+)
-      (vk-call (vk:begin-command-buffer command-buffer info)))))
+      (vulkan-call (vk:begin-command-buffer command-buffer info)))))
 
-(defun submit-frame (renderer &key wait signal)
+(defun vulkan-submit-frame (renderer &key wait signal)
   "Submit the recorded frame, after the semaphore WAIT and signalling
 SIGNAL when given."
   (let ((device (vulkan-renderer-device renderer))
         (command-buffer (vulkan-renderer-command-buffer renderer)))
-    (vk-call (vk:end-command-buffer command-buffer))
+    (vulkan-call (vk:end-command-buffer command-buffer))
     (cffi:with-foreign-objects ((fences 'vk:fence) (buffers 'vk:command-buffer)
                                 (waits 'vk:semaphore) (stages 'vk:pipeline-stage-flags)
                                 (signals 'vk:semaphore))
@@ -1211,13 +1257,13 @@ SIGNAL when given."
             (cffi:mem-ref stages 'vk:pipeline-stage-flags)
             vk:+pipeline-stage-color-attachment-output-bit+
             (cffi:mem-ref signals 'vk:semaphore) (or signal +vulkan-null-handle+))
-      (vk-call (vk:reset-fences device 1 fences))
+      (vulkan-call (vk:reset-fences device 1 fences))
       (vk:with-struct (info vk:submit-info
                             :wait-semaphore-count (if wait 1 0)
                             :p-wait-semaphores waits :p-wait-dst-stage-mask stages
                             :command-buffer-count 1 :p-command-buffers buffers
                             :signal-semaphore-count (if signal 1 0) :p-signal-semaphores signals)
-        (vk-call (vk:queue-submit (vulkan-renderer-queue renderer) 1 info
+        (vulkan-call (vk:queue-submit (vulkan-renderer-queue renderer) 1 info
                                   (vulkan-renderer-fence renderer)))))))
 
 (defun vulkan-draw (renderer instances columns cell-count cell-width cell-height
@@ -1227,9 +1273,9 @@ present them."
   (when (or (eql (vulkan-renderer-swapchain renderer) +vulkan-null-handle+)
             (/= width (vulkan-renderer-swapchain-width renderer))
             (/= height (vulkan-renderer-swapchain-height renderer)))
-    (create-swapchain renderer width height))
+    (vulkan-create-swapchain renderer width height))
   (let ((device (vulkan-renderer-device renderer)))
-    (begin-frame renderer)
+    (vulkan-begin-frame renderer)
     (let ((index nil))
       (cffi:with-foreign-object (image-index :uint32)
         (let ((result (vk:acquire-next-image-khr device (vulkan-renderer-swapchain renderer)
@@ -1244,13 +1290,13 @@ present them."
       (if (null index)
           (vk:end-command-buffer (vulkan-renderer-command-buffer renderer))
           (let ((finished (aref (vulkan-renderer-finished renderer) index)))
-            (record-frame renderer (aref (vulkan-renderer-framebuffers renderer) index)
+            (vulkan-record-frame renderer (aref (vulkan-renderer-framebuffers renderer) index)
                           (vulkan-renderer-present-pass renderer)
                           instances columns cell-count cell-width cell-height
                           (vulkan-renderer-swapchain-width renderer)
                           (vulkan-renderer-swapchain-height renderer)
                           atlas palette image-records)
-            (submit-frame renderer :wait (vulkan-renderer-acquired renderer) :signal finished)
+            (vulkan-submit-frame renderer :wait (vulkan-renderer-acquired renderer) :signal finished)
             (cffi:with-foreign-objects ((waits 'vk:semaphore) (swapchains 'vk:swapchain-khr)
                                         (indices :uint32))
               (setf (cffi:mem-ref waits 'vk:semaphore) finished
@@ -1269,9 +1315,9 @@ present them."
                         width height atlas palette &optional image-records)
   "Render offscreen and return the frame as WIDTH x HEIGHT RGB octets,
 top row first, like GL-SNAPSHOT."
-  (ensure-snapshot-target renderer width height)
-  (begin-frame renderer)
-  (record-frame renderer (vulkan-renderer-target-framebuffer renderer)
+  (vulkan-ensure-snapshot-target renderer width height)
+  (vulkan-begin-frame renderer)
+  (vulkan-record-frame renderer (vulkan-renderer-target-framebuffer renderer)
                 (vulkan-renderer-snapshot-pass renderer)
                 instances columns cell-count cell-width cell-height width height
                 atlas palette image-records)
@@ -1291,8 +1337,8 @@ top row first, like GL-SNAPSHOT."
                                  vk:+image-layout-transfer-src-optimal+
                                  (vulkan-buffer-handle (vulkan-renderer-readback renderer))
                                  1 region))
-  (submit-frame renderer)
-  (vk-call (vk:queue-wait-idle (vulkan-renderer-queue renderer)))
+  (vulkan-submit-frame renderer)
+  (vulkan-call (vk:queue-wait-idle (vulkan-renderer-queue renderer)))
   (let ((pixels (vulkan-buffer-pointer (vulkan-renderer-readback renderer)))
         (rgb (make-array (* +rgb-channels+ width height) :element-type '(unsigned-byte 8))))
     ;; BGRA, rows top to bottom.

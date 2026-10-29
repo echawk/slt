@@ -109,6 +109,45 @@ uses are missing from cl-glfw3 (`glfwWaitEventsTimeout`, `glfwGetKeyName`,
 the drop and content-scale callbacks, EGL context creation, scaling to the
 monitor); `src/gl/gl-frontend.lisp` defines them itself.
 
+## Vulkan
+
+`slt/vulkan` (`src/vulkan/vulkan-renderer.lisp`) draws the same frames as
+the OpenGL renderer, from the same packed cells and atlases:
+
+- **Bindings.** It uses [`lib/vulkan-cffi`](../lib/vulkan-cffi/), which is
+  generated when compiled from the Vulkan registry (`vk.xml`). The renderer
+  needs only Vulkan 1.0 plus surfaces and swapchains.
+- **Drawing.** Each cell is six vertices of one instanced draw, as in GL.
+  The instance array is a vertex buffer read per instance, and push
+  constants take the place of the uniforms. The cells' shaders have the
+  GL fragment shader's logic, with Vulkan's y axis pointing down.
+- **Shaders.** They live in `src/vulkan/shaders/` and are compiled to
+  SPIR-V with `make shaders` (glslc). The `.spv` files are committed and
+  read in when the renderer is compiled.
+- **Frames.** One frame is in flight at a time. Each waits for the last on
+  a fence, so atlas staging, the instance buffer and image uploads reuse
+  their memory without further synchronization. Glyph atlas rows are copied
+  in as GL's are, only the dirty ones. Images of the same size reuse a
+  retired texture, as in GL.
+- **Targets.** The renderer presents to a swapchain on a surface its host
+  makes. It renders offscreen (`vulkan-snapshot`) with or without one. The
+  target format is `B8G8R8A8_UNORM` for both, so blending matches the other
+  renderers.
+
+**Hosts.** `slt/glfw-vulkan` draws the `gl` frontend's GLFW window with
+Vulkan when `*gl-api*` is `:vulkan`:
+
+- GLFW makes a window without a context and names the instance extensions
+  its surfaces need (Xlib or xcb, Wayland, Metal), and makes the surface.
+- GLFW is handed slt's Vulkan loader (`glfwInitVulkanLoader`, GLFW 3.4+),
+  because it does not find Homebrew's on its own.
+- On macOS this runs on MoltenVK, with portability enumeration.
+
+The renderer knows nothing of GLFW, so other hosts can follow:
+
+- the Cocoa frontend's `CAMetalLayer`, through `VK_EXT_metal_surface`;
+- or a window slt makes itself on Wayland or X11, without GLFW.
+
 ## Glyphs on Linux and the BSDs
 
 `src/glyphs/freetype.lisp`, in the `slt/glyphs` system the `clx` frontend
@@ -163,6 +202,11 @@ as a string.
   `build/gl-test/snapshot.ppm`.
 - On Linux CI, run it under `xvfb-run` for X11, or with `weston
   --frontend=headless` and `WAYLAND_DISPLAY` set for Wayland.
+- `SLT_GL_API=vulkan make gl-test` runs the same checks with the window
+  drawn by Vulkan.
+- `make vulkan-test` (`t/vulkan-snapshot.lisp`) renders styled text, an
+  emoji and an image with Vulkan offscreen. It needs no window, only a
+  Vulkan driver: MoltenVK on macOS, Mesa's lavapipe on Linux CI.
 
 ## Still to do
 
@@ -173,7 +217,7 @@ as a string.
    positioning, and ligatures if wanted.
 3. Check the Linux build (`make` includes `slt/gl` there): GLFW, FreeType
    and fontconfig stay system libraries.
-4. Vulkan, if profiling or MoltenVK parity justifies it. It adds a lot of
-   setup (instance, device, swapchain, recreation on resize) for little gain
-   on a workload this small. The same GLSL compiles to SPIR-V, and the
-   instance array would bind as a storage buffer.
+4. Vulkan: a host for the Cocoa frontend's layer, and one for Wayland or
+   X11 without GLFW; frames in flight beyond one, if profiling shows the
+   wait; and running it on Linux drivers (Mesa, NVIDIA) and in CI with
+   lavapipe.

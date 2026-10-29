@@ -49,9 +49,13 @@ returns for its name, a null pointer when it is not available."
                      (funcall lookup c-name)))))
 
 (defun load-vulkan ()
-  "Open the Vulkan loader and load the global commands: those that
-enumerate the instance's layers and extensions, and CREATE-INSTANCE."
-  (cffi:load-foreign-library 'vulkan-loader)
+  "Open the Vulkan loader, unless it is open, and load the global
+commands: those that enumerate the instance's layers and extensions, and
+CREATE-INSTANCE."
+  ;; Loading it again would reopen it, moving entry points others (GLFW)
+  ;; may hold.
+  (unless (cffi:foreign-library-loaded-p 'vulkan-loader)
+    (cffi:load-foreign-library 'vulkan-loader))
   (setf (svref *command-pointers* (command-index +get-instance-proc-addr+))
         (or (cffi:foreign-symbol-pointer +get-instance-proc-addr+)
             (error "The Vulkan loader has no ~a" +get-instance-proc-addr+)))

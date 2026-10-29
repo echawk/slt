@@ -149,6 +149,12 @@ macOS)."
                (:static-file "shaders/image.vert")
                (:static-file "shaders/image.frag")))
 
+(asdf:defsystem #:slt/glfw-vulkan
+  :description "The gl frontend's GLFW window drawn with Vulkan: *gl-api* :vulkan."
+  :depends-on (:slt/gl :slt/vulkan)
+  :pathname "src/vulkan/"
+  :components ((:file "glfw-host")))
+
 (asdf:defsystem #:slt/web
   :description "Web frontend: serves web/slt-terminal.js and streams the grid over a WebSocket."
   :depends-on (:slt/core :simd-base64 :hunchentoot :hunchensocket :com.inuoe.jzon)

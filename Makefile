@@ -39,12 +39,13 @@ export SBCL
 # ghostty downloads Zig and Ghostty to build; libvterm needs only a C compiler.
 ENGINES ?= ghostty libvterm
 
-# Frontends outside the slt system: on Linux and the BSDs the GLFW/OpenGL one.
-# (macOS always has cocoa, plus ltk, web and headless everywhere.)
+# Frontends outside the slt system: on Linux and the BSDs the GLFW one,
+# drawing with OpenGL or, with *gl-api* :vulkan, Vulkan.  (macOS always has
+# cocoa, plus ltk, web and headless everywhere.)
 ifeq ($(shell uname -s),Darwin)
 FRONTENDS ?=
 else
-FRONTENDS ?= gl
+FRONTENDS ?= gl glfw-vulkan
 endif
 
 # The slt system: the ltk and web frontends and the REPL servers.  bin/slt
