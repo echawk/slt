@@ -104,9 +104,12 @@ stack, its sType set and the members SLOTS (:P-NEXT pointer ...) stored."
   (let ((foreign-type `(:struct ,type)))
     `(cffi:with-foreign-object (,var ',foreign-type)
        (zero-struct ,var ',foreign-type)
-       (let ((structure-type (load-time-value (structure-type-of ',type))))
-         (when structure-type
-           (setf (cffi:foreign-slot-value ,var ',foreign-type 'vulkan-cffi::s-type) structure-type)))
+       ;; The bindings are loaded by the time this expands, and with them
+       ;; which structures have an sType.
+       ,@(let ((structure-type (structure-type-of type)))
+           (when structure-type
+             `((setf (cffi:foreign-slot-value ,var ',foreign-type 'vulkan-cffi::s-type)
+                     ,structure-type))))
        ,@(loop for (slot value) on slots by #'cddr
                collect `(setf (cffi:foreign-slot-value ,var ',foreign-type ',(slot-symbol slot))
                               ,value))

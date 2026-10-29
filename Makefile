@@ -104,7 +104,7 @@ $(shell mkdir -p build/stamp && \
         (echo '$(CONFIG)' | cmp -s - build/stamp/config || \
          { echo '$(CONFIG)' > build/stamp/config; rm -rf bin; }))
 
-.PHONY: all lean tiny $(LEAN_FRONTENDS:%=lean-%) deps run check test conformance web-test gl-test gtk-test clx-test install uninstall app install-app uninstall-app icon clean distclean
+.PHONY: all lean tiny $(LEAN_FRONTENDS:%=lean-%) deps run check test conformance web-test gl-test vulkan-test gtk-test clx-test install uninstall app install-app uninstall-app icon shaders clean distclean
 
 all: bin/slt
 
@@ -155,6 +155,11 @@ web-test: ocicl/.stamp
 gl-test: ocicl/.stamp
 	scripts/gl-test
 
+# Vulkan renderer smoke test, offscreen; needs a Vulkan driver (on Linux CI,
+# Mesa's lavapipe) but no display.
+vulkan-test: ocicl/.stamp
+	scripts/vulkan-test
+
 # gtk frontend smoke test; needs a display and GTK 3 (on Linux CI: xvfb-run).
 gtk-test: ocicl/.stamp
 	scripts/gtk-test
@@ -191,6 +196,20 @@ uninstall-app:
 # Regenerate macos/slt.icns from macos/slt.svg (needs rsvg-convert).
 icon:
 	scripts/make-icon
+
+# Recompile the Vulkan renderer's SPIR-V from its GLSL (needs glslc, from
+# shaderc).  The .spv files are committed, so building does not need it.
+VULKAN_SHADERS := $(wildcard src/vulkan/shaders/*.vert src/vulkan/shaders/*.frag)
+GLSLC ?= glslc
+GLSLC_TARGET ?= vulkan1.0
+
+shaders: $(VULKAN_SHADERS:%=%.spv)
+
+%.vert.spv: %.vert
+	$(GLSLC) -O --target-env=$(GLSLC_TARGET) -o $@ $<
+
+%.frag.spv: %.frag
+	$(GLSLC) -O --target-env=$(GLSLC_TARGET) -o $@ $<
 
 clean:
 	rm -rf bin build

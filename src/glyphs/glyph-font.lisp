@@ -36,5 +36,5 @@
 
 (defun glyph-libraries-available-p ()
   "True when the rasterizer's libraries load."
-  #+darwin t
+  #+darwin (progn (ensure-objc) t)
   #-darwin (ignore-errors (load-freetype) t))

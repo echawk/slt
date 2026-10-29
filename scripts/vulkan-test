@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+# Smoke-test the Vulkan renderer offscreen (t/vulkan-snapshot.lisp).  Needs
+# a Vulkan loader and driver but no display: MoltenVK on macOS, lavapipe
+# (Mesa's software Vulkan) on Linux CI.
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+exec "$root/scripts/lisp" --non-interactive --load "$root/t/vulkan-snapshot.lisp"

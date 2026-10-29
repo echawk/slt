@@ -135,6 +135,20 @@ from slt/glyphs drawn with the RENDER extension."
   :components ((:file "gl-renderer")
                (:file "gl-frontend")))
 
+(asdf:defsystem #:slt/vulkan
+  :description "Vulkan renderer, drawing into a window its host makes a
+surface of, or offscreen.  Needs a Vulkan loader at run time (MoltenVK on
+macOS)."
+  :depends-on (:slt/core :vulkan-cffi)
+  :pathname "src/vulkan/"
+  :serial t
+  :components ((:file "package")
+               (:file "vulkan-renderer")
+               (:static-file "shaders/cells.vert")
+               (:static-file "shaders/cells.frag")
+               (:static-file "shaders/image.vert")
+               (:static-file "shaders/image.frag")))
+
 (asdf:defsystem #:slt/web
   :description "Web frontend: serves web/slt-terminal.js and streams the grid over a WebSocket."
   :depends-on (:slt/core :simd-base64 :hunchentoot :hunchensocket :com.inuoe.jzon)
