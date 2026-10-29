@@ -436,6 +436,22 @@ Color glyphs (slots with +GLYPH-COLOR+) are in runs of their own."
                          (setf column end)))))))
     (values (nreverse backgrounds) (nreverse glyphs) (nreverse decorations))))
 
+;;; Renderers and their hosts.  A renderer (OpenGL, Vulkan) draws into a
+;;; window its host (a GLFW window, an EGL surface on X11 or Wayland) keeps.
+;;; A frame is the arguments the renderers' draw functions take after the
+;;; renderer: the packed cells, their layout, the atlas, the palette and
+;;; the image records.
+
+(defgeneric renderer-present (renderer host frame)
+  (:documentation "Draw FRAME into HOST's window and show it."))
+
+(defgeneric renderer-snapshot (renderer host frame)
+  (:documentation "Render FRAME offscreen; return its RGB octets, top row
+first."))
+
+(defgeneric free-renderer (renderer host)
+  (:documentation "Free RENDERER, while HOST's window still exists."))
+
 (defun write-ppm (pathname rgb width height)
   (with-open-file (out pathname :direction :output :if-exists :supersede
                                 :element-type '(unsigned-byte 8))

@@ -452,24 +452,20 @@ particular) trips over."
     (%glfw:swap-interval (if *gl-vsync* 1 0))
     (make-gl-renderer api)))
 
-(defgeneric renderer-present (renderer view frame)
-  (:documentation "Draw FRAME (GL-DRAW's arguments after the renderer) into
-VIEW's window and show it.")
-  (:method ((renderer gl-renderer) view frame)
-    (glfw:make-context-current (gl-view-pointer view))
-    (apply #'gl-draw renderer frame)
-    (glfw:swap-buffers (gl-view-pointer view))))
+;; OpenGL in a GLFW window's context.
 
-(defgeneric renderer-snapshot (renderer view frame)
-  (:documentation "Render FRAME offscreen; return its RGB octets.")
-  (:method ((renderer gl-renderer) view frame)
-    (glfw:make-context-current (gl-view-pointer view))
-    (apply #'gl-snapshot renderer frame)))
+(defmethod renderer-present ((renderer gl-renderer) (view gl-view) frame)
+  (glfw:make-context-current (gl-view-pointer view))
+  (apply #'gl-draw renderer frame)
+  (glfw:swap-buffers (gl-view-pointer view)))
 
-(defgeneric free-renderer (renderer view)
-  (:method ((renderer gl-renderer) view)
-    (glfw:make-context-current (gl-view-pointer view))
-    (free-gl-renderer renderer)))
+(defmethod renderer-snapshot ((renderer gl-renderer) (view gl-view) frame)
+  (glfw:make-context-current (gl-view-pointer view))
+  (apply #'gl-snapshot renderer frame))
+
+(defmethod free-renderer ((renderer gl-renderer) (view gl-view))
+  (glfw:make-context-current (gl-view-pointer view))
+  (free-gl-renderer renderer))
 
 (defun gl-view-frame (view palette)
   "VIEW's grid packed, as a frame to draw: GL-DRAW's arguments after the

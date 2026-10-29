@@ -1348,3 +1348,18 @@ top row first, like GL-SNAPSHOT."
         (setf (aref rgb target) (cffi:mem-aref pixels :uint8 (+ source 2))
               (aref rgb (+ target 1)) (cffi:mem-aref pixels :uint8 (+ source 1))
               (aref rgb (+ target 2)) (cffi:mem-aref pixels :uint8 source))))))
+
+;;; The renderer protocol: Vulkan presents to its own swapchain, whatever
+;;; window the host made its surface from.
+
+(defmethod renderer-present ((renderer vulkan-renderer) host frame)
+  (declare (ignore host))
+  (apply #'vulkan-draw renderer frame))
+
+(defmethod renderer-snapshot ((renderer vulkan-renderer) host frame)
+  (declare (ignore host))
+  (apply #'vulkan-snapshot renderer frame))
+
+(defmethod free-renderer ((renderer vulkan-renderer) host)
+  (declare (ignore host))
+  (free-vulkan-renderer renderer))

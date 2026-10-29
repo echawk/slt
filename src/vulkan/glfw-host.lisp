@@ -32,14 +32,3 @@
                                      instance window (cffi:null-pointer) surface))))
      :vsync *gl-vsync*)))
 
-(defmethod renderer-present ((renderer vulkan-renderer) view frame)
-  (declare (ignore view))
-  (apply #'vulkan-draw renderer frame))
-
-(defmethod renderer-snapshot ((renderer vulkan-renderer) view frame)
-  (declare (ignore view))
-  (apply #'vulkan-snapshot renderer frame))
-
-(defmethod free-renderer ((renderer vulkan-renderer) view)
-  (declare (ignore view))
-  (free-vulkan-renderer renderer))

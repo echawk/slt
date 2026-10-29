@@ -127,13 +127,18 @@ from slt/glyphs drawn with the RENDER extension."
                (:file "metal")
                (:file "cocoa-frontend")))
 
-(asdf:defsystem #:slt/gl
-  :description "GLFW + OpenGL 3.3 / OpenGL ES 3.0 frontend: X11 and Wayland on Linux and the BSDs, and macOS.  Needs the system's GLFW 3.3 or later."
-  :depends-on (:slt/core :slt/glyphs :cl-glfw3 :cl-opengl :float-features)
+(asdf:defsystem #:slt/gl-renderer
+  :description "OpenGL 3.3 / OpenGL ES 3.0 renderer, in whatever context its
+host makes current (GLFW, EGL)."
+  :depends-on (:slt/core :cl-opengl)
   :pathname "src/gl/"
-  :serial t
-  :components ((:file "gl-renderer")
-               (:file "gl-frontend")))
+  :components ((:file "gl-renderer")))
+
+(asdf:defsystem #:slt/gl
+  :description "GLFW frontend, drawn with OpenGL 3.3 / OpenGL ES 3.0 (or Vulkan, with slt/glfw-vulkan): X11 and Wayland on Linux and the BSDs, and macOS.  Needs the system's GLFW 3.3 or later."
+  :depends-on (:slt/core :slt/gl-renderer :slt/glyphs :cl-glfw3 :float-features)
+  :pathname "src/gl/"
+  :components ((:file "gl-frontend")))
 
 (asdf:defsystem #:slt/vulkan
   :description "Vulkan renderer, drawing into a window its host makes a
