@@ -18,7 +18,7 @@
         constructor)
   (normalize-frontend-name name))
 
-(defvar *optional-frontends* '(:clx :gl :gtk :ltk)
+(defvar *optional-frontends* '(:clx :gl :gtk :ltk :x11)
   "Frontends that live in their own slt/NAME systems and load on first use.")
 
 (defun load-frontend-system (name)
@@ -277,6 +277,14 @@ Frontends without a place for it ignore it.")
 
 (defgeneric frontend-focus (frontend view))
 (defgeneric frontend-request-exit (frontend view))
+
+(defgeneric frontend-snapshot (frontend view)
+  (:documentation "Render VIEW's grid and images offscreen, as its window
+shows them: (values RGB WIDTH HEIGHT), the RGB octets top row first.  For
+tests; frontends that cannot signal an error.")
+  (:method (frontend view)
+    (declare (ignore view))
+    (error "The ~a frontend takes no snapshots." (type-of frontend))))
 
 (defmethod frontend-call-with-event-loop ((frontend terminal-frontend) thunk)
   (declare (ignore frontend))

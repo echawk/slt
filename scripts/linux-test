@@ -8,4 +8,4 @@ podman="${PODMAN:-podman}${SLT_PODMAN_CONNECTION:+ --connection $SLT_PODMAN_CONN
 # shellcheck disable=SC2086 # podman's options are intentionally split
 $podman build -q -t slt-linux-test -f "$root/ci/linux.Containerfile" "$root/ci" >/dev/null
 # shellcheck disable=SC2086
-exec $podman run --rm -i -v "$root:$root" -w "$root" slt-linux-test "$@"
+exec $podman run --rm -i --init -v "$root:$root" -w "$root" slt-linux-test "$@"

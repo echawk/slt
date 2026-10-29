@@ -6,16 +6,6 @@
 ;;;; testing (the cocoa frontend, on Metal, is the one to use there).  All
 ;;;; sizes the emulator sees are framebuffer pixels.
 
-(defvar *gl-api* :auto
-  "Which API to draw the window with: :GL (OpenGL 3.3 core), :GLES (OpenGL
-ES 3.0), :AUTO for OpenGL with a fallback to OpenGL ES, or :VULKAN (with
-slt/glfw-vulkan loaded).  Contexts are created through EGL except on
-macOS, also on X11: GLX does not start on some systems (musl Linux under
-Xorg), and Mesa ships EGL wherever it ships GLX.")
-
-(defvar *gl-vsync* t
-  "When true, buffer swaps wait for the display's refresh.")
-
 (defvar *gl-window-visible* t
   "NIL creates the window hidden, for offscreen tests.")
 
@@ -440,10 +430,13 @@ particular) trips over."
 (defgeneric api-window-hints (api)
   (:documentation "CREATE-WINDOW's arguments for a window drawn with API.")
   (:method ((api (eql :gl)))
-    '(:client-api :opengl-api :context-version-major 3 :context-version-minor 3
-      :opengl-profile :opengl-core-profile :opengl-forward-compat t))
+    (destructuring-bind (major minor) (gl-context-version :gl)
+      `(:client-api :opengl-api :context-version-major ,major :context-version-minor ,minor
+        :opengl-profile :opengl-core-profile :opengl-forward-compat t)))
   (:method ((api (eql :gles)))
-    '(:client-api :opengl-es-api :context-version-major 3 :context-version-minor 0)))
+    (destructuring-bind (major minor) (gl-context-version :gles)
+      `(:client-api :opengl-es-api :context-version-major ,major
+        :context-version-minor ,minor))))
 
 (defgeneric make-api-renderer (api view)
   (:documentation "A renderer drawing VIEW's window with API.")
@@ -650,5 +643,8 @@ for OpenGL."
 (defmethod frontend-request-exit ((frontend gl-frontend) (view gl-view))
   (setf (gl-frontend-quit-p frontend) t)
   (setf (gl-view-closed-p view) t))
+
+(defmethod frontend-snapshot ((frontend gl-frontend) (view gl-view))
+  (snapshot-gl-view view))
 
 (register-frontend :gl (lambda () (make-instance 'gl-frontend)))

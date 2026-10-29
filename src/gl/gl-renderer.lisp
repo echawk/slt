@@ -130,6 +130,14 @@ out vec4 color_out;
 void main() { color_out = texture(image_texture, uv); }
 ")
 
+(defparameter +gl-context-versions+ '((:gl 3 3) (:gles 3 0))
+  "The context version each API's shaders are written for (see
+GL-SHADER-HEADER): OpenGL 3.3 core, OpenGL ES 3.0.")
+
+(defun gl-context-version (api)
+  "(MAJOR MINOR) of the context API's renderer needs."
+  (rest (assoc api +gl-context-versions+)))
+
 (defun gl-shader-header (api)
   (ecase api
     (:gl "#version 330 core

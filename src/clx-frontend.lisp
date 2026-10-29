@@ -515,7 +515,7 @@ a release and a press with the same time for each repeat."
         (case event-key
           (:exposure
            (when (zerop count)
-             (clx-draw-grid view)))
+             (clx-redraw frontend view t)))
           (:configure-notify
            (unless (and (= width (clx-view-width view)) (= height (clx-view-height view)))
              (setf (clx-view-width view) width
@@ -603,6 +603,56 @@ the next timer, or NIL."
   (or (clx-frontend-display frontend)
       (setf (clx-frontend-display frontend) (xlib:open-default-display))))
 
+;;; Drawing.  The frontend draws with RENDER; the x11 frontend, made on
+;;; this one, draws the same windows with OpenGL or Vulkan instead.
+
+(defgeneric clx-window-background (frontend)
+  (:documentation "The background X fills the frontend's windows with.")
+  (:method ((frontend clx-frontend))
+    (clx-pixel (palette-background *palette*))))
+
+(defgeneric clx-drawing-resources (frontend window display)
+  (:documentation "The view's drawing resources for WINDOW, as
+%MAKE-CLX-VIEW's arguments.")
+  (:method ((frontend clx-frontend) window display)
+    (let ((source-pixmap (xlib:create-pixmap :width 1 :height 1 :depth 32 :drawable window)))
+      (list :gcontext (xlib:create-gcontext :drawable window)
+            :picture (xlib:render-create-picture window)
+            :source (xlib:render-create-picture
+                     source-pixmap
+                     :format (xlib:find-standard-picture-format display :argb32)
+                     :repeat :on)
+            :glyph-set (xlib:render-create-glyph-set
+                        (xlib:find-standard-picture-format display :a8))))))
+
+(defgeneric clx-make-view (frontend &rest arguments)
+  (:documentation "A view of the frontend's kind, made with ARGUMENTS.")
+  (:method ((frontend clx-frontend) &rest arguments)
+    (apply #'%make-clx-view arguments)))
+
+(defgeneric clx-view-mapped (frontend view)
+  (:documentation "Called once VIEW's window is mapped.")
+  (:method ((frontend clx-frontend) view)
+    (declare (ignore view))))
+
+(defgeneric clx-view-closing (frontend view)
+  (:documentation "Called before VIEW's window is destroyed.")
+  (:method ((frontend clx-frontend) view)
+    (declare (ignore view))))
+
+(defgeneric clx-redraw (frontend view whole-p)
+  (:documentation "Draw VIEW's grid and images: the whole window when
+WHOLE-P, else the rows that changed.")
+  (:method ((frontend clx-frontend) view whole-p)
+    (if whole-p
+        (clx-draw-grid view)
+        (with-view-palette (view)
+          (clx-pack view)
+          (let ((grid (clx-view-grid view)))
+            (dotimes (row (grid-rows grid))
+              (when (= 1 (sbit (grid-dirty grid) row))
+                (clx-draw-row view row))))))))
+
 (defmethod frontend-create-view ((frontend clx-frontend)
                                 &key rows columns font-family font-size
                                   cell-width cell-height title)
@@ -619,26 +669,19 @@ the next timer, or NIL."
              (height (* rows ch))
              (window (xlib:create-window
                       :parent root :x 0 :y 0 :width width :height height
-                      :background (clx-pixel (palette-background *palette*))
+                      :background (clx-window-background frontend)
                       :event-mask (xlib:make-event-mask
                                    :exposure :structure-notify :key-press :key-release
                                    :button-press :button-release :pointer-motion)))
-             (gcontext (xlib:create-gcontext :drawable window))
-             (source-pixmap (xlib:create-pixmap :width 1 :height 1 :depth 32 :drawable window))
-             (view (%make-clx-view
-                    :window window :gcontext gcontext
-                    :picture (xlib:render-create-picture window)
-                    :source (xlib:render-create-picture
-                             source-pixmap
-                             :format (xlib:find-standard-picture-format display :argb32)
-                             :repeat :on)
-                    :glyph-set (xlib:render-create-glyph-set
-                                (xlib:find-standard-picture-format display :a8))
+             (view (apply
+                    #'clx-make-view frontend
+                    :window window
                     :font font
                     :atlas (make-glyph-atlas cw ch (glyph-font-rasterizer font)
                                      :shaper (glyph-font-shaper font))
                     :cell-width cw :cell-height ch
-                    :width width :height height)))
+                    :width width :height height
+                    (clx-drawing-resources frontend window display))))
         (push view (clx-frontend-views frontend))
         (xlib:set-wm-properties window :name (or title "slt") :icon-name (or title "slt")
                                        :resource-name "slt" :resource-class "Slt"
@@ -649,6 +692,7 @@ the next timer, or NIL."
         (xlib:change-property window :|XdndAware| '(5) :atom 32)
         (xlib:map-window window)
         (xlib:display-force-output display)
+        (clx-view-mapped frontend view)
         view))))
 
 (defmethod frontend-view-cell-width ((frontend clx-frontend) (view clx-view))
@@ -669,20 +713,14 @@ the next timer, or NIL."
     (setf (clx-view-grid view) grid)
     (unless (clx-view-closed-p view)
       ;; Images under the text are redrawn with every change.
-      (if (or resized (clx-images-under-text-p view))
-          (clx-draw-grid view)
-          (with-view-palette (view)
-            (clx-pack view)
-            (dotimes (row (grid-rows grid))
-              (when (= 1 (sbit (grid-dirty grid) row))
-                (clx-draw-row view row)))))
+      (clx-redraw frontend view (or resized (clx-images-under-text-p view)))
       (xlib:display-force-output (clx-frontend-display frontend))))
   view)
 
 (defmethod frontend-render-images ((frontend clx-frontend) (view clx-view) store)
   (setf (clx-view-image-store view) store)
   (unless (clx-view-closed-p view)
-    (clx-draw-grid view)
+    (clx-redraw frontend view t)
     (xlib:display-force-output (clx-frontend-display frontend)))
   view)
 
@@ -767,6 +805,7 @@ the next timer, or NIL."
     (setf (clx-view-closed-p view) t)
     (ignore-errors (close-glyph-font (clx-view-font view)))
     (setf (clx-frontend-views frontend) (remove view (clx-frontend-views frontend)))
+    (clx-view-closing frontend view)
     (xlib:destroy-window (clx-view-window view))
     (xlib:display-force-output (clx-frontend-display frontend))
     (setf (clx-frontend-exit-p frontend) t)))

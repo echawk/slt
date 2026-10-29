@@ -82,6 +82,13 @@ defining it (see scripts/build)."
 ;;; The gl frontend: fontconfig belongs to the system.  GLFW is deployed.
 (define-optional-library "ORG.SHIRAKUMO.FONT-DISCOVERY" "FONTCONFIG" :dont-deploy t)
 
+;;; The GPU APIs and the window system's client library belong to the
+;;; system: libEGL and the Vulkan loader dispatch to its drivers, and Xlib
+;;; to its X server.  EGL and Vulkan are opened only when used.
+(define-optional-library "EGL-CFFI.GENERATOR" "EGL-LIBRARY" :dont-deploy t)
+(define-optional-library "VULKAN-CFFI.GENERATOR" "VULKAN-LOADER" :dont-deploy t)
+(define-optional-library "SLT" "XLIB-LIBRARY" :dont-deploy t)
+
 ;;; The engines' C shims resolve their library's symbols at load time, so
 ;;; they must be opened after it.  Deploy reopens libraries in registration
 ;;; order, which puts each shim first; defer the shims to a later hook.

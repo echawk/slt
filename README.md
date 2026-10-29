@@ -52,6 +52,7 @@ Ghostty.
 | `make lean-gl` (`LEAN=gl`) | gl | GLFW 3.3 or later; FreeType and fontconfig off macOS |
 | `make lean-gtk` (`LEAN=gtk`) | gtk | GTK 3 |
 | `make lean-clx` (`LEAN=clx`) | clx | an X server with RENDER; FreeType and fontconfig |
+| `make lean-x11` (`LEAN=x11`) | x11 | libX11, and libEGL or a Vulkan loader; FreeType and fontconfig |
 | `make lean-ltk` (`LEAN=ltk`, `make tiny`, `TINY=1`) | ltk | Tk's `wish` |
 | `make lean-web` (`LEAN=web`) | web | a browser |
 
@@ -121,6 +122,7 @@ and compares the resulting screens. `slt/bench` measures throughput.
 | `gtk` | GTK 3 window drawn with Cairo and Pango, via [cl-cffi-gtk](https://github.com/crategus/cl-cffi-gtk) (`slt/gtk`; needs GTK 3) |
 | `ltk` | Tk; portable fallback (needs `wish`) where `gl` cannot run |
 | `web` | serves a browser terminal; see [web/README.md](web/README.md) |
+| `x11` | X11 without GLFW: the `clx` frontend's windows and input, drawn with OpenGL 3.3 or OpenGL ES 3.0 through EGL, or Vulkan (`slt/x11`; needs libX11, and libEGL or a Vulkan loader) |
 | `headless` | no UI; for tests, scripting and remote frontends |
 
 Choose one with `--frontend NAME` or `SLT_FRONTEND=NAME`.
@@ -216,6 +218,10 @@ cl-opengl. GLFW chooses X11 or Wayland when it starts.
 `make gl-test` renders styled text in a hidden window and checks the pixels.
 With `(setf *gl-api* :vulkan)` the window is drawn with Vulkan instead (on
 macOS through MoltenVK). `make vulkan-test` checks that renderer offscreen.
+The `x11` frontend draws with the same renderers into windows it makes
+itself, through EGL or a Vulkan surface, without GLFW; `make window-test`
+checks it under Xvfb (`scripts/linux-test make window-test` in a Linux
+container).
 [doc/gpu-frontends.md](doc/gpu-frontends.md) describes the design.
 
 The `gtk` frontend uses the system's GTK 3 (on macOS, Homebrew's `gtk+3`).

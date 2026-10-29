@@ -1,11 +1,12 @@
 # GPU frontends
 
-slt has two GPU frontends that share everything above the graphics API:
+slt's GPU frontends share everything above the graphics API:
 
 | frontend | window | renderer | glyphs |
 |---|---|---|---|
 | `cocoa` (`src/macos`) | AppKit | Metal | CoreText |
 | `gl` (`src/gl`) | GLFW 3.3 or later: X11 or Wayland, also macOS | OpenGL 3.3 core or OpenGL ES 3.0 | FreeType with font-discovery; CoreText on macOS |
+| `x11` (`src/x11`) | the `clx` frontend's, through CLX | OpenGL 3.3 core or OpenGL ES 3.0 through EGL, or Vulkan | FreeType with font-discovery |
 
 ## What is shared
 
@@ -143,10 +144,28 @@ Vulkan when `*gl-api*` is `:vulkan`:
   because it does not find Homebrew's on its own.
 - On macOS this runs on MoltenVK, with portability enumeration.
 
-The renderer knows nothing of GLFW, so other hosts can follow:
+The renderer knows nothing of GLFW, so other hosts can follow, such as the
+Cocoa frontend's `CAMetalLayer`, through `VK_EXT_metal_surface`.
 
-- the Cocoa frontend's `CAMetalLayer`, through `VK_EXT_metal_surface`;
-- or a window slt makes itself on Wayland or X11, without GLFW.
+## Windows without GLFW
+
+`slt/gpu-window` (`src/gpu-window`) draws a window a frontend made itself
+with the API `*gl-api*` names (`make-window-renderer`):
+
+- **OpenGL** through EGL 1.5 (`lib/egl-cffi`): a display for the window
+  system's platform, a context for OpenGL 3.3 core or OpenGL ES 3.0 (`:auto`
+  tries them in turn), and a window surface. cl-opengl resolves entry
+  points through `eglGetProcAddress`.
+- **Vulkan** on a surface of the window, made with the window system's
+  surface extension.
+
+The `x11` frontend (`src/x11`) is the `clx` frontend with its drawing
+replaced. CLX keeps the windows, keyboard, mouse, selections and drag and
+drop. EGL and Vulkan need a C Xlib `Display*`, so the frontend opens one
+to the same display and hands it the window's id, which the server gives
+and every connection shares. The `clx` frontend's drawing is a handful of
+generic functions (`clx-drawing-resources`, `clx-redraw` ...), which the
+`x11` frontend specializes.
 
 ## Glyphs on Linux and the BSDs
 
@@ -207,6 +226,12 @@ as a string.
 - `make vulkan-test` (`t/vulkan-snapshot.lisp`) renders styled text, an
   emoji and an image with Vulkan offscreen. It needs no window, only a
   Vulkan driver: MoltenVK on macOS, Mesa's lavapipe on Linux CI.
+- `make window-test` (`scripts/window-test`, `t/window-snapshot.lisp`)
+  runs the same kind of checks on the `x11` frontend under Xvfb, through
+  `frontend-snapshot`. `SLT_GL_API` picks `gl`, `gles` or `vulkan`, and
+  `SLT_FRONTEND` another frontend. `scripts/linux-test make window-test`
+  runs it in a Linux container (`ci/linux.Containerfile`) with Mesa's
+  llvmpipe and lavapipe.
 
 ## Still to do
 
@@ -217,7 +242,6 @@ as a string.
    positioning, and ligatures if wanted.
 3. Check the Linux build (`make` includes `slt/gl` there): GLFW, FreeType
    and fontconfig stay system libraries.
-4. Vulkan: a host for the Cocoa frontend's layer, and one for Wayland or
-   X11 without GLFW; frames in flight beyond one, if profiling shows the
-   wait; and running it on Linux drivers (Mesa, NVIDIA) and in CI with
-   lavapipe.
+4. Vulkan: a host for the Cocoa frontend's layer; frames in flight beyond
+   one, if profiling shows the wait; and running it on hardware Linux
+   drivers (Mesa, NVIDIA).

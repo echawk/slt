@@ -436,6 +436,16 @@ Color glyphs (slots with +GLYPH-COLOR+) are in runs of their own."
                          (setf column end)))))))
     (values (nreverse backgrounds) (nreverse glyphs) (nreverse decorations))))
 
+(defvar *gl-api* :auto
+  "Which API the GPU window frontends (gl, x11, wayland) draw with: :GL
+(OpenGL 3.3 core), :GLES (OpenGL ES 3.0), :AUTO for OpenGL with a fallback
+to OpenGL ES, or :VULKAN.  Off macOS, OpenGL contexts are made through EGL,
+also on X11: GLX does not start on some systems (musl Linux under Xorg),
+and Mesa ships EGL wherever it ships GLX.")
+
+(defvar *gl-vsync* t
+  "When true, frames are shown in step with the display's refresh.")
+
 ;;; Renderers and their hosts.  A renderer (OpenGL, Vulkan) draws into a
 ;;; window its host (a GLFW window, an EGL surface on X11 or Wayland) keeps.
 ;;; A frame is the arguments the renderers' draw functions take after the

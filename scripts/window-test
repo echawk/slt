@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+# Smoke-test a window frontend (t/window-snapshot.lisp) on a display made for
+# it: SLT_FRONTEND=x11 under Xvfb, SLT_FRONTEND=wayland under a headless
+# Weston.  SLT_GL_API picks gl, gles or vulkan.  Needs Xvfb or Weston, and
+# Mesa (or a GPU driver); scripts/linux-test runs it in a container that has
+# them.
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+test="$root/scripts/lisp --non-interactive --load $root/t/window-snapshot.lisp"
+case "${SLT_FRONTEND:-x11}" in
+  wayland)
+    export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$(mktemp -d)}"
+    socket="slt-test-$$"
+    weston --backend=headless --socket="$socket" --idle-time=0 >/dev/null 2>&1 &
+    weston=$!
+    trap 'kill $weston 2>/dev/null' EXIT
+    while [ ! -e "$XDG_RUNTIME_DIR/$socket" ]; do sleep 0.1; done
+    # shellcheck disable=SC2086 # test is intentionally split
+    WAYLAND_DISPLAY="$socket" $test ;;
+  *)
+    # shellcheck disable=SC2086
+    exec xvfb-run -a -s '-screen 0 1280x1024x24' $test ;;
+esac

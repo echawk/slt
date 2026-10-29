@@ -160,6 +160,23 @@ macOS)."
   :pathname "src/vulkan/"
   :components ((:file "glfw-host")))
 
+(asdf:defsystem #:slt/gpu-window
+  :description "Renderers for windows the x11 and wayland frontends make:
+OpenGL through EGL, or Vulkan."
+  :depends-on (:slt/core :slt/gl-renderer :slt/vulkan :egl-cffi)
+  :pathname "src/gpu-window/"
+  :serial t
+  :components ((:file "package")
+               (:file "egl-host")
+               (:file "window-renderer")))
+
+(asdf:defsystem #:slt/x11
+  :description "X11 frontend: the clx frontend's windows and input, drawn with
+OpenGL (through EGL) or Vulkan.  Needs libX11, and libEGL or a Vulkan loader."
+  :depends-on (:slt/clx :slt/gpu-window :float-features)
+  :pathname "src/x11/"
+  :components ((:file "x11-frontend")))
+
 (asdf:defsystem #:slt/web
   :description "Web frontend: serves web/slt-terminal.js and streams the grid over a WebSocket."
   :depends-on (:slt/core :simd-base64 :hunchentoot :hunchensocket :com.inuoe.jzon)

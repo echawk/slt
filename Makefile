@@ -58,7 +58,7 @@ BASE ?= slt
 # time.  Each frontend's Lisp dependencies are fetched on their own into
 # build/lean-FRONTEND/ocicl (scripts/fetch-lean), and no native engine is
 # built.
-LEAN_FRONTENDS = cocoa gl gtk clx ltk web
+LEAN_FRONTENDS = cocoa gl gtk clx ltk web x11
 ifeq ($(shell uname -s),Darwin)
 NATIVE_FRONTEND = cocoa
 else
@@ -105,7 +105,7 @@ $(shell mkdir -p build/stamp && \
         (echo '$(CONFIG)' | cmp -s - build/stamp/config || \
          { echo '$(CONFIG)' > build/stamp/config; rm -rf bin; }))
 
-.PHONY: all lean tiny $(LEAN_FRONTENDS:%=lean-%) deps run check test conformance web-test gl-test vulkan-test gtk-test clx-test install uninstall app install-app uninstall-app icon shaders clean distclean
+.PHONY: all lean tiny $(LEAN_FRONTENDS:%=lean-%) deps run check test conformance web-test gl-test vulkan-test gtk-test clx-test window-test install uninstall app install-app uninstall-app icon shaders clean distclean
 
 all: bin/slt
 
@@ -169,6 +169,11 @@ gtk-test: ocicl/.stamp
 # Linux CI: xvfb-run -s '-screen 0 1024x768x24').
 clx-test: ocicl/.stamp
 	scripts/clx-test
+
+# x11 frontend smoke test (SLT_FRONTEND, SLT_GL_API pick another frontend
+# and API); runs Xvfb itself.
+window-test: ocicl/.stamp
+	scripts/window-test
 
 install: bin/slt
 	mkdir -p $(DESTDIR)$(LIBDIR)/slt $(DESTDIR)$(BINDIR)
