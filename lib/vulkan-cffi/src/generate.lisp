@@ -10,8 +10,6 @@
 (defparameter +type-prefix+ "Vk")
 (defparameter +command-prefix+ "vk")
 (defparameter +constant-prefix+ "VK_")
-(defparameter +word-separator+ #\_)
-
 (defparameter +handle-types+
   '(("VK_DEFINE_HANDLE" . :pointer)
     ("VK_DEFINE_NON_DISPATCHABLE_HANDLE" . :uint64))
@@ -52,28 +50,6 @@ device's.  Commands with neither are global.")
 
 ;;; Names
 
-(defun lisp-words (string)
-  "STRING's words in lower case, hyphenated: camel case is split where a
-lower-case letter meets an upper-case one, or an upper-case letter or
-digit meets a capitalized word; underscores separate words."
-  (with-output-to-string (out)
-    (loop for i from 0 below (length string)
-          for char = (char string i)
-          for previous = (and (plusp i) (char string (1- i)))
-          for next = (and (< (1+ i) (length string)) (char string (1+ i)))
-          do (cond ((char= char +word-separator+) (write-char #\- out))
-                   (t (when (and previous (upper-case-p char)
-                                 (or (lower-case-p previous)
-                                     (and (or (upper-case-p previous) (digit-char-p previous))
-                                          next (lower-case-p next))))
-                        (write-char #\- out))
-                      (write-char (char-downcase char) out))))))
-
-(defun without-prefix (prefix string)
-  (if (and (> (length string) (length prefix)) (string= prefix string :end2 (length prefix)))
-      (subseq string (length prefix))
-      string))
-
 (defun lisp-symbol (name)
   (intern (string-upcase name) '#:vulkan-cffi))
 
@@ -91,33 +67,6 @@ digit meets a capitalized word; underscores separate words."
   (lisp-symbol (lisp-words name)))
 
 ;;; Declarations
-
-(defun parse-declaration (element)
-  "The member or parameter ELEMENT's (values NAME TYPE POINTERS DIMENSIONS
-BITS): its type's name, how many pointers to it, and the array
-dimensions after its name (numbers or constants' names), and its bit
-width when a bitfield."
-  (let (name type (pointers 0) (suffix (make-string-output-stream)))
-    (loop for child across (plump:children element)
-          do (cond ((plump:text-node-p child)
-                    (if name
-                        (write-string (plump:text child) suffix)
-                        (incf pointers (count #\* (plump:text child)))))
-                   ((plump:element-p child)
-                    (let ((tag (plump:tag-name child)))
-                      (cond ((string= tag "type") (setf type (plump:text child)))
-                            ((string= tag "name") (setf name (plump:text child)))
-                            ((and name (string= tag "enum"))
-                             (write-string (plump:text child) suffix)))))))
-    (let* ((suffix (get-output-stream-string suffix))
-           (dimensions (loop for start = (position #\[ suffix) then (position #\[ suffix :start end)
-                             for end = (and start (position #\] suffix :start start))
-                             while start
-                             collect (let ((text (string-trim " " (subseq suffix (1+ start) end))))
-                                       (if (every #'digit-char-p text) (parse-integer text) text))))
-           (colon (position #\: suffix)))
-      (values name type pointers dimensions
-              (and colon (parse-integer suffix :start (1+ colon) :junk-allowed t))))))
 
 (defun resolve-type (selection name)
   "The <type> NAME is, after following aliases."

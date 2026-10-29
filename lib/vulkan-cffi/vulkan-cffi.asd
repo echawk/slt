@@ -4,7 +4,7 @@ Vulkan registry (vk.xml) for a chosen core version and extensions."
   :author "Ethan Hawk <ethhawk@iu.edu>"
   :license "MIT"
   :version "0.1.0"
-  :depends-on (:cffi :plump)
+  :depends-on (:cffi :plump :khronos-registry)
   :serial t
   :components ((:static-file "registry/vk.xml")
                (:module "src"

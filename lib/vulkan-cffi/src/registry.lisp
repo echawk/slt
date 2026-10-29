@@ -10,65 +10,18 @@
 (defparameter +api+ "vulkan"
   "The API whose definitions are read: vk.xml also defines Vulkan SC's.")
 
-(defparameter +list-separator+ #\,
-  "What separates the APIs of an api attribute, and alternatives in a
-depends expression.")
-
-(defparameter +conjunction+ #\+
-  "What joins requirements that must all hold in a depends expression.")
-
 ;; An extension's enumerants are numbered from a range of its own:
 ;; base + (extension number - 1) * range size + offset.
 (defconstant +extension-enum-base+ 1000000000)
 (defconstant +extension-enum-range+ 1000)
 
-;; The widths of C's unsigned and unsigned long long, for (~0U) and (~0ULL).
-(defconstant +unsigned-bits+ 32)
-(defconstant +unsigned-long-long-bits+ 64)
-(defparameter +unsigned-long-long-suffix+ "ULL")
-
 (defun registry-pathname ()
   (asdf:system-relative-pathname :vulkan-cffi "registry/vk.xml"))
-
-;;; Elements
-
-(defun attribute (element name)
-  (plump:attribute element name))
-
-(defun child-elements (node &optional tag)
-  "NODE's child elements, those named TAG when it is given."
-  (loop for child across (plump:children node)
-        when (and (plump:element-p child)
-                  (or (null tag) (string= tag (plump:tag-name child))))
-          collect child))
-
-(defun child-element (node tag)
-  (first (child-elements node tag)))
-
-(defun child-text (node tag)
-  (let ((child (child-element node tag)))
-    (and child (plump:text child))))
-
-(defun split-list (string &optional (separator +list-separator+))
-  (loop for start = 0 then (1+ end)
-        for end = (position separator string :start start)
-        collect (subseq string start end)
-        while end))
 
 (defun api-p (element)
   "Whether ELEMENT applies to +API+: it names no API, or names it."
   (let ((api (attribute element "api")))
     (or (null api) (member +api+ (split-list api) :test #'string=))))
-
-(defun element-name (element)
-  "The name an element defines: as an attribute, a <name> child, or the
-<name> in its <proto> (commands and function pointers)."
-  (or (attribute element "name")
-      (child-text element "name")
-      (let ((proto (child-element element "proto")))
-        (and proto (child-text proto "name")))))
-
-;;; The registry
 
 (defstruct (registry (:constructor %make-registry))
   ;; Name -> <type>, <enums> (of an enumerated type), <enum> (of any
@@ -81,8 +34,7 @@ depends expression.")
   (extensions '()))
 
 (defun read-registry (&optional (pathname (registry-pathname)))
-  (let* ((document (let ((plump:*tag-dispatchers* plump:*xml-tags*))
-                     (plump:parse pathname)))
+  (let* ((document (read-registry-document pathname))
          (root (child-element document "registry"))
          (registry (%make-registry)))
     (flet ((store (table key element)
@@ -108,68 +60,6 @@ depends expression.")
             (loop for extensions in (child-elements root "extensions")
                   append (child-elements extensions "extension"))))
     registry))
-
-;;; Values
-
-(defun parse-value (text)
-  "The value of an enumerant's TEXT: an integer in C syntax, (~NU) or
-(~NULL), a float (1000.0F), or a quoted string."
-  (let ((text (string-trim " " text)))
-    (cond
-      ((char= #\" (char text 0)) (subseq text 1 (1- (length text))))
-      ((and (char= #\( (char text 0)) (char= #\~ (char text 1)))
-       ;; (~NU) is 32 bits, (~NULL) 64.
-       (let* ((digits-end (position-if-not #'digit-char-p text :start 2))
-              (bits (if (search +unsigned-long-long-suffix+ text :start2 digits-end)
-                        +unsigned-long-long-bits+
-                        +unsigned-bits+)))
-         (ldb (byte bits 0) (lognot (parse-integer text :start 2 :end digits-end)))))
-      ((find #\. text)
-       (let ((*read-default-float-format* 'single-float))
-         (coerce (read-from-string (string-right-trim "Ff" text)) 'single-float)))
-      ((search "0x" text)
-       (let ((magnitude (parse-integer text :start (+ 2 (search "0x" text)) :radix 16)))
-         (if (char= #\- (char text 0)) (- magnitude) magnitude)))
-      (t (parse-integer (string-right-trim "UL" text))))))
-
-(defun version-parts (version)
-  (mapcar #'parse-integer (split-list version #\.)))
-
-(defun version<= (a b)
-  (loop for x in (version-parts a)
-        for y in (version-parts b)
-        when (< x y) return t
-        when (> x y) return nil
-        finally (return t)))
-
-(defun depends-satisfied-p (expression names)
-  "Whether the depends EXPRESSION holds given the feature and extension
-NAMES (a hash table): names joined by +CONJUNCTION+ (and) and
-+LIST-SEPARATOR+ (or), left to right, grouped with parentheses."
-  (let ((position 0))
-    (labels ((peek () (and (< position (length expression)) (char expression position)))
-             (term ()
-               (if (eql (peek) #\()
-                   (progn (incf position)
-                          (prog1 (disjunction) (incf position)))
-                   (let ((end (or (position-if (lambda (char)
-                                                 (find char (list #\( #\) +conjunction+
-                                                                  +list-separator+)))
-                                               expression :start position)
-                                  (length expression))))
-                     (prog1 (gethash (subseq expression position end) names)
-                       (setf position end)))))
-             (disjunction ()
-               (let ((value (term)))
-                 (loop for operator = (peek)
-                       while (member operator (list +conjunction+ +list-separator+))
-                       do (incf position)
-                          (let ((next (term)))
-                            (setf value (if (eql operator +conjunction+)
-                                            (and value next)
-                                            (or value next)))))
-                 value)))
-      (and (disjunction) t))))
 
 ;;; Selection
 

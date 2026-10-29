@@ -25,6 +25,11 @@
 
 (defpackage #:vulkan-cffi.generator
   (:use #:cl)
+  (:import-from #:khronos-registry
+                #:+list-separator+ #:read-registry-document #:attribute #:child-elements
+                #:child-element #:child-text #:split-list #:element-name #:parse-value
+                #:version<= #:depends-satisfied-p #:lisp-words #:without-prefix
+                #:parse-declaration)
   (:import-from #:vulkan-cffi
                 #:vulkan-error
                 #:vulkan-error-result

@@ -157,8 +157,9 @@ flows, the settings and the security choices. The reusable pieces live in
   octets or RGBA, in place of cl-base64;
 - [`iterm2-images`](lib/iterm2-images/) reads iTerm2's inline images;
 - [`kitty-keyboard`](lib/kitty-keyboard/) implements the keyboard protocol;
-- [`vulkan-cffi`](lib/vulkan-cffi/) binds Vulkan, generated from its
-  registry.
+- [`vulkan-cffi`](lib/vulkan-cffi/) and [`egl-cffi`](lib/egl-cffi/) bind
+  Vulkan and EGL, generated from their registries with
+  [`khronos-registry`](lib/khronos-registry/).
 
 ## Terminal graphics
 
