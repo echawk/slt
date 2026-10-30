@@ -4,6 +4,7 @@
 ;;;; wayland, gl) and SLT_GL_API what it draws with (gl, gles, vulkan).
 ;;;; Run with scripts/window-test, which starts Xvfb or Weston as the
 ;;;; frontend needs.  Leaves build/window-test/FRONTEND-API/snapshot.ppm.
+;;;; The wayland frontend's input is checked too (t/wayland-input.lisp).
 
 (asdf:load-system "slt")
 (defpackage #:slt/window-test (:use #:cl))
@@ -46,6 +47,9 @@
 
 (defconstant +rgb-channels+ 3)
 (defconstant +channel-bits+ 8)
+
+(when (eq slt/window-test::*frontend* :wayland)
+  (load (merge-pathnames "wayland-input.lisp" *load-truename*)))
 
 (defun channel-distance (a b)
   "The sum of the differences between the #xRRGGBB colors A and B's channels."
@@ -103,6 +107,10 @@ pixel at least half covered."
                                   (handler-case (check-snapshot frontend view)
                                     (error (condition)
                                       (check nil (format nil "snapshot: ~a" condition))))
+                                  (when (fboundp 'check-wayland-input)
+                                    (handler-case (check-wayland-input frontend view)
+                                      (error (condition)
+                                        (check nil (format nil "input: ~a" condition)))))
                                   (destroy-emulator emulator)
                                   (frontend-request-exit frontend view))))))
 

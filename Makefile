@@ -4,10 +4,10 @@
 #   make run ARGS='--engine lispvt' build, then run bin/slt with ARGS
 #   make check                    unit tests and engine conformance
 #   make install                  install into $(DESTDIR)$(PREFIX)
-#   make lean [install]           bin/ with only this system's GUI frontend and
-#                                 the pure-Lisp lispvt engine (= LEAN=1)
-#   make lean-FRONTEND [install]  the same with FRONTEND: cocoa, gl, gtk, clx,
-#                                 ltk or web (= LEAN=FRONTEND)
+#   make lean [install]           bin/ with only this system's GUI frontends
+#                                 and the pure-Lisp lispvt engine (= LEAN=1)
+#   make lean-FRONTEND [install]  the same with FRONTEND: cocoa, wayland, x11,
+#                                 gl, gtk, clx, ltk or web (= LEAN=FRONTEND)
 #   make tiny [install]           the same as make lean-ltk (= TINY=1)
 #   make app                      macOS: build/slt.app around bin/
 #   make install-app              macOS: install slt.app into $(APPDIR)
@@ -39,13 +39,14 @@ export SBCL
 # ghostty downloads Zig and Ghostty to build; libvterm needs only a C compiler.
 ENGINES ?= ghostty libvterm
 
-# Frontends outside the slt system: on Linux and the BSDs the GLFW one,
-# drawing with OpenGL or, with *gl-api* :vulkan, Vulkan.  (macOS always has
-# cocoa, plus ltk, web and headless everywhere.)
+# Frontends outside the slt system: on Linux and the BSDs the wayland and
+# x11 ones, drawing with OpenGL or, with *gl-api* :vulkan, Vulkan.  (macOS
+# always has cocoa, plus ltk, web and headless everywhere.)  The GLFW one is
+# FRONTENDS='gl glfw-vulkan'.
 ifeq ($(shell uname -s),Darwin)
 FRONTENDS ?=
 else
-FRONTENDS ?= gl glfw-vulkan
+FRONTENDS ?= wayland x11
 endif
 
 # The slt system: the ltk and web frontends and the REPL servers.  bin/slt
@@ -53,17 +54,19 @@ endif
 BASE ?= slt
 
 # LEAN=FRONTEND: only FRONTEND and the lispvt engine, which lives in
-# slt/core.  LEAN=1 means the native GUI frontend (cocoa on macOS, gl
-# elsewhere), and TINY=1 means LEAN=ltk, which needs only Tk's wish at run
-# time.  Each frontend's Lisp dependencies are fetched on their own into
-# build/lean-FRONTEND/ocicl (scripts/fetch-lean), and no native engine is
-# built.
-LEAN_FRONTENDS = cocoa gl gtk clx ltk web x11
+# slt/core.  LEAN=1 means the native GUI frontends (cocoa on macOS, wayland
+# and x11 elsewhere), and TINY=1 means LEAN=ltk, which needs only Tk's wish
+# at run time.  Each lean build's Lisp dependencies are fetched on their own
+# into build/lean-FRONTENDS/ocicl (scripts/fetch-lean), and no native engine
+# is built.
+LEAN_FRONTENDS = cocoa wayland x11 gl gtk clx ltk web
 ifeq ($(shell uname -s),Darwin)
 NATIVE_FRONTEND = cocoa
 else
-NATIVE_FRONTEND = gl
+NATIVE_FRONTEND = wayland x11
 endif
+empty :=
+space := $(empty) $(empty)
 LEAN_GOAL := $(firstword $(filter lean-%,$(MAKECMDGOALS)))
 ifneq ($(LEAN_GOAL),)
 LEAN_FRONTEND := $(LEAN_GOAL:lean-%=%)
@@ -78,10 +81,10 @@ else
 LEAN_FRONTEND := $(LEAN)
 endif
 ifneq ($(LEAN_FRONTEND),)
-ifeq ($(filter $(LEAN_FRONTEND),$(LEAN_FRONTENDS)),)
+ifneq ($(filter-out $(LEAN_FRONTENDS),$(LEAN_FRONTEND)),)
 $(error LEAN=$(LEAN_FRONTEND): pick one of $(LEAN_FRONTENDS))
 endif
-LEAN_DIR = build/lean-$(LEAN_FRONTEND)
+LEAN_DIR = build/lean-$(subst $(space),-,$(strip $(LEAN_FRONTEND)))
 override FRONTENDS = $(LEAN_FRONTEND)
 endif
 ifdef LEAN_DIR
@@ -120,7 +123,7 @@ ocicl/.stamp: ocicl.csv
 	$(OCICL) install
 	touch $@
 
-$(LEAN_FRONTENDS:%=build/lean-%/.stamp): ocicl.csv slt.asd
+build/lean-%/.stamp: ocicl.csv slt.asd
 	OCICL=$(OCICL) scripts/fetch-lean $(@D) slt/app $(FRONTENDS:%=slt/%)
 	touch $@
 

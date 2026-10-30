@@ -7,6 +7,7 @@ slt's GPU frontends share everything above the graphics API:
 | `cocoa` (`src/macos`) | AppKit | Metal | CoreText |
 | `gl` (`src/gl`) | GLFW 3.3 or later: X11 or Wayland, also macOS | OpenGL 3.3 core or OpenGL ES 3.0 | FreeType with font-discovery; CoreText on macOS |
 | `x11` (`src/x11`) | the `clx` frontend's, through CLX | OpenGL 3.3 core or OpenGL ES 3.0 through EGL, or Vulkan | FreeType with font-discovery |
+| `wayland` (`src/wayland`) | xdg-shell, through libwayland-client | OpenGL 3.3 core or OpenGL ES 3.0 through EGL, or Vulkan | FreeType with font-discovery |
 
 ## What is shared
 
@@ -167,6 +168,37 @@ and every connection shares. The `clx` frontend's drawing is a handful of
 generic functions (`clx-drawing-resources`, `clx-redraw` ...), which the
 `x11` frontend specializes.
 
+The `wayland` frontend (`src/wayland`) talks to the compositor through
+[`lib/wayland-cffi`](../lib/wayland-cffi/), whose requests are generated
+from the protocols' XML:
+
+- **Window.** An `xdg_toplevel`, with server-side decorations asked for
+  through `xdg-decoration` where the compositor has it. Its buffer is a
+  `wl_egl_window` for EGL, or the surface itself for Vulkan
+  (`VK_KHR_wayland_surface`). Sizes follow `xdg_toplevel.configure`;
+  frames are not drawn while the toplevel is suspended (hidden), when a
+  swap would wait for a refresh that does not come.
+- **Scale.** The buffer scale is `wl_surface.preferred_buffer_scale`
+  (`wl_compositor` 6), or else the largest scale of the outputs the
+  window is on. Glyphs are rasterized again at a new scale, as in the `gl`
+  frontend.
+- **Keyboard.** The compositor's keymap goes to xkbcommon
+  ([cl-xkb](https://github.com/malcolmstill/cl-xkb)), which gives each
+  key's keysym. A character's keysym is sent as its text, and a named
+  key's (`Return`, `F1`, the keypad) by its X11 name, as the `clx` frontend
+  sends them. Dead keys and compose sequences follow the locale's compose
+  table. Keys repeat at the compositor's rate, on the frontend's timers.
+- **Pointer.** Buttons, motion and the vertical axis, ten units a wheel
+  step. The pointer is an I-beam where the compositor has
+  `cursor-shape-v1`.
+- **Clipboard and drops.** Through `wl_data_device`: the selection is
+  offered as UTF-8 text, and files dropped as a `text/uri-list`. The other
+  side writes into a pipe, which a thread reads, so the event loop does
+  not wait for it.
+- **Event loop.** It polls the compositor's socket and a pipe other
+  threads wake it through, with `wl_display_prepare_read`, and runs timers
+  between.
+
 ## Glyphs on Linux and the BSDs
 
 `src/glyphs/freetype.lisp`, in the `slt/glyphs` system the `clx` frontend
@@ -229,19 +261,26 @@ as a string.
 - `make window-test` (`scripts/window-test`, `t/window-snapshot.lisp`)
   runs the same kind of checks on the `x11` frontend under Xvfb, through
   `frontend-snapshot`. `SLT_GL_API` picks `gl`, `gles` or `vulkan`, and
-  `SLT_FRONTEND` another frontend. `scripts/linux-test make window-test`
+  `SLT_FRONTEND` another frontend: `wayland` runs under a headless Weston,
+  and also hands the frontend key presses and a click
+  (`t/wayland-input.lisp`), since Weston's headless backend has no seat. `scripts/linux-test make window-test`
   runs it in a Linux container (`ci/linux.Containerfile`) with Mesa's
   llvmpipe and lavapipe.
 
 ## Still to do
 
-1. Run the `gl` frontend on real Linux and BSD desktops, X11 and Wayland, and
-   in CI.
-2. HarfBuzz shaping for combining marks and emoji sequences, color emoji
+1. The `wayland` frontend: client-side decorations (libdecor) for
+   compositors without `xdg-decoration`, GNOME among them, where windows
+   have no title bar; fractional scales (`wp_fractional_scale_v1` with
+   `wp_viewporter`), rather than the next integer; frames paced by
+   `wl_surface.frame` (`frontend-request-frame`); a cursor from the theme
+   (libwayland-cursor) where there is no `cursor-shape-v1`; the primary
+   selection; input methods (`text-input-v3`).
+2. Run the `wayland` and `x11` frontends on real Linux and BSD desktops and
+   GPUs, and in CI (`scripts/linux-test`).
+3. HarfBuzz shaping for combining marks and emoji sequences, color emoji
    from FreeType (see above), subpixel
    positioning, and ligatures if wanted.
-3. Check the Linux build (`make` includes `slt/gl` there): GLFW, FreeType
-   and fontconfig stay system libraries.
 4. Vulkan: a host for the Cocoa frontend's layer; frames in flight beyond
    one, if profiling shows the wait; and running it on hardware Linux
    drivers (Mesa, NVIDIA).

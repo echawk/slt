@@ -47,11 +47,12 @@ Ghostty.
 
 | command | frontend | needs at run time |
 |---|---|---|
-| `make lean` (`LEAN=1`) | the native one: cocoa on macOS, gl elsewhere | |
+| `make lean` (`LEAN=1`) | the native ones: cocoa on macOS, wayland and x11 elsewhere | |
 | `make lean-cocoa` (`LEAN=cocoa`) | cocoa (macOS only) | |
 | `make lean-gl` (`LEAN=gl`) | gl | GLFW 3.3 or later; FreeType and fontconfig off macOS |
 | `make lean-gtk` (`LEAN=gtk`) | gtk | GTK 3 |
 | `make lean-clx` (`LEAN=clx`) | clx | an X server with RENDER; FreeType and fontconfig |
+| `make lean-wayland` (`LEAN=wayland`) | wayland | libwayland-client and libxkbcommon, and libwayland-egl and libEGL or a Vulkan loader; FreeType and fontconfig |
 | `make lean-x11` (`LEAN=x11`) | x11 | libX11, and libEGL or a Vulkan loader; FreeType and fontconfig |
 | `make lean-ltk` (`LEAN=ltk`, `make tiny`, `TINY=1`) | ltk | Tk's `wish` |
 | `make lean-web` (`LEAN=web`) | web | a browser |
@@ -118,11 +119,12 @@ and compares the resulting screens. `slt/bench` measures throughput.
 |---|---|
 | `cocoa` | macOS default: AppKit window, Metal renderer, CoreText glyphs |
 | `clx` | X11 window through [CLX](https://github.com/sharplispers/clx), the Lisp X protocol library; the `gl` frontend's FreeType glyphs, drawn with the RENDER extension (`slt/clx`; needs an X server) |
-| `gl` | Linux/BSD default: GLFW window (X11 or Wayland), OpenGL 3.3 or OpenGL ES 3.0, FreeType glyphs found through font-discovery; also runs on macOS with CoreText glyphs |
+| `gl` | GLFW window (X11 or Wayland), OpenGL 3.3 or OpenGL ES 3.0, FreeType glyphs found through font-discovery; also runs on macOS with CoreText glyphs (`slt/gl`; needs GLFW 3.3 or later) |
 | `gtk` | GTK 3 window drawn with Cairo and Pango, via [cl-cffi-gtk](https://github.com/crategus/cl-cffi-gtk) (`slt/gtk`; needs GTK 3) |
 | `ltk` | Tk; portable fallback (needs `wish`) where `gl` cannot run |
 | `web` | serves a browser terminal; see [web/README.md](web/README.md) |
-| `x11` | X11 without GLFW: the `clx` frontend's windows and input, drawn with OpenGL 3.3 or OpenGL ES 3.0 through EGL, or Vulkan (`slt/x11`; needs libX11, and libEGL or a Vulkan loader) |
+| `wayland` | Linux/BSD default under Wayland: xdg-shell window without GLFW, drawn with OpenGL 3.3 or OpenGL ES 3.0 through EGL, or Vulkan; keyboard through xkbcommon (`slt/wayland`; needs libwayland-client, libxkbcommon, and libwayland-egl and libEGL or a Vulkan loader) |
+| `x11` | Linux/BSD default under X11, without GLFW: the `clx` frontend's windows and input, drawn with OpenGL 3.3 or OpenGL ES 3.0 through EGL, or Vulkan (`slt/x11`; needs libX11, and libEGL or a Vulkan loader) |
 | `headless` | no UI; for tests, scripting and remote frontends |
 
 Choose one with `--frontend NAME` or `SLT_FRONTEND=NAME`.
@@ -161,7 +163,9 @@ flows, the settings and the security choices. The reusable pieces live in
 - [`kitty-keyboard`](lib/kitty-keyboard/) implements the keyboard protocol;
 - [`vulkan-cffi`](lib/vulkan-cffi/) and [`egl-cffi`](lib/egl-cffi/) bind
   Vulkan and EGL, generated from their registries with
-  [`khronos-registry`](lib/khronos-registry/).
+  [`khronos-registry`](lib/khronos-registry/);
+- [`wayland-cffi`](lib/wayland-cffi/) binds libwayland-client, with the
+  requests generated from the protocols' XML.
 
 ## Terminal graphics
 
@@ -218,9 +222,12 @@ cl-opengl. GLFW chooses X11 or Wayland when it starts.
 `make gl-test` renders styled text in a hidden window and checks the pixels.
 With `(setf *gl-api* :vulkan)` the window is drawn with Vulkan instead (on
 macOS through MoltenVK). `make vulkan-test` checks that renderer offscreen.
-The `x11` frontend draws with the same renderers into windows it makes
-itself, through EGL or a Vulkan surface, without GLFW; `make window-test`
-checks it under Xvfb (`scripts/linux-test make window-test` in a Linux
+The `wayland` and `x11` frontends draw with the same renderers into windows
+they make themselves, through EGL or a Vulkan surface, without GLFW; they
+are the ones built in off macOS, and slt picks the one for the display it
+finds. `make window-test` checks the x11 frontend under Xvfb, and
+`SLT_FRONTEND=wayland make window-test` the wayland one under a headless
+Weston (`scripts/linux-test make window-test` runs them in a Linux
 container).
 [doc/gpu-frontends.md](doc/gpu-frontends.md) describes the design.
 

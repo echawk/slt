@@ -18,7 +18,7 @@
         constructor)
   (normalize-frontend-name name))
 
-(defvar *optional-frontends* '(:clx :gl :gtk :ltk :x11)
+(defvar *optional-frontends* '(:clx :gl :gtk :ltk :wayland :x11)
   "Frontends that live in their own slt/NAME systems and load on first use.")
 
 (defun load-frontend-system (name)

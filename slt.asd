@@ -177,6 +177,17 @@ OpenGL (through EGL) or Vulkan.  Needs libX11, and libEGL or a Vulkan loader."
   :pathname "src/x11/"
   :components ((:file "x11-frontend")))
 
+(asdf:defsystem #:slt/wayland
+  :description "Wayland frontend: xdg-shell windows without GLFW, drawn with
+OpenGL (through EGL) or Vulkan, with the keyboard through xkbcommon.  Needs
+libwayland-client and libxkbcommon, and libwayland-egl and libEGL or a
+Vulkan loader."
+  :depends-on (:slt/glyphs :slt/gpu-window :wayland-cffi :cl-xkb :float-features)
+  :pathname "src/wayland/"
+  :serial t
+  :components ((:file "package")
+               (:file "wayland-frontend")))
+
 (asdf:defsystem #:slt/web
   :description "Web frontend: serves web/slt-terminal.js and streams the grid over a WebSocket."
   :depends-on (:slt/core :simd-base64 :hunchentoot :hunchensocket :com.inuoe.jzon)

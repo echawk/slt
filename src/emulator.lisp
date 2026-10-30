@@ -141,17 +141,29 @@ image, so that rendering and typing go on meanwhile."
        (format *error-output* "~&slt: error ~a: ~a~%" ,what condition)
        nil)))
 
-(defun gl-frontend-usable-p ()
-  "True when the gl frontend loads and finds GLFW and a display."
-  (and (or (uiop:getenv "DISPLAY") (uiop:getenv "WAYLAND_DISPLAY"))
+(defparameter +window-frontends+
+  '((:wayland "WAYLAND_DISPLAY" wayland-libraries-available-p)
+    (:x11 "DISPLAY" x11-libraries-available-p)
+    (:gl ("WAYLAND_DISPLAY" "DISPLAY") gl-libraries-available-p))
+  "The GPU window frontends to use off macOS, in order: each with the
+variables naming the display it needs, and the function it defines that
+finds its libraries.")
+
+(defun window-frontend-usable-p (name display-variables libraries-function)
+  "True when one of DISPLAY-VARIABLES is set and frontend NAME loads and
+finds its libraries."
+  (and (some #'uiop:getenv (uiop:ensure-list display-variables))
        (ignore-errors
-        (asdf:load-system "slt/gl")
-        (uiop:symbol-call '#:slt '#:gl-libraries-available-p))))
+        (and (frontend-available-p name)
+             (funcall libraries-function)))))
 
 (defun default-frontend ()
-  "Cocoa (Metal) on macOS, the gl frontend where GLFW is available, else LTK."
+  "Cocoa (Metal) on macOS; elsewhere the wayland or x11 frontend for the
+display there is, or the GLFW one; else LTK."
   (cond ((and (uiop:os-macosx-p) (member :cocoa (available-frontends))) :cocoa)
-        ((and (not (uiop:os-macosx-p)) (gl-frontend-usable-p)) :gl)
+        ((and (not (uiop:os-macosx-p))
+              (first (find-if (lambda (frontend) (apply #'window-frontend-usable-p frontend))
+                              +window-frontends+))))
         (t :ltk)))
 
 ;;; The init file.  As in StumpWM, it is ordinary Lisp loaded at startup

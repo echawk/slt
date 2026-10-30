@@ -18,6 +18,11 @@
   (:unix (:or "libX11.so.6" "libX11.so"))
   (t (:default "libX11")))
 
+(defun x11-libraries-available-p ()
+  "True when Xlib and the glyph rasterizer's libraries load."
+  (and (ignore-errors (cffi:load-foreign-library 'xlib-library) t)
+       (glyph-libraries-available-p)))
+
 (cffi:defcfun ("XOpenDisplay" %x-open-display) :pointer (name :pointer))
 (cffi:defcfun ("XCloseDisplay" %x-close-display) :int (display :pointer))
 
