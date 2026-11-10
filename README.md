@@ -64,15 +64,15 @@ install`, `make lean-gl app` on macOS. For a package, pass it to every step:
 `make LEAN=gtk && make install LEAN=gtk DESTDIR="$pkgdir" PREFIX=/usr`.
 
 `scripts/lisp` runs SBCL with ASDF limited to this project, for working at a
-REPL: everything is resolved from `ocicl.csv`, `ocicl/` and `lib/`.
+REPL: everything is resolved from `ocicl.csv` and `ocicl/`.
 
 ## Engines
 
 | engine | what it is | setup |
 |---|---|---|
 | `ghostty` | Ghostty's libghostty-vt, via cl-ghostty-vt; fastest, with scrollback and reflow | built by `make` (downloads Zig) |
-| `lispvt` | pure Lisp, with scrollback and reflow; scanned with NEON on arm64 and SSE2 or AVX2 on x86-64 when SBCL has sb-simd (`lib/lispvt`, standalone) | none |
-| `libvterm` | libvterm 0.3.3, the library Neovim uses (`lib/cl-libvterm`); truncates lines on resize | built by `make` |
+| `lispvt` | pure Lisp, with scrollback and reflow; scanned with NEON on arm64 and SSE2 or AVX2 on x86-64 when SBCL has sb-simd ([lispvt](https://github.com/echawk/lispvt)) | none |
+| `libvterm` | libvterm 0.3.3, the library Neovim uses ([cl-libvterm](https://github.com/echawk/cl-libvterm)); truncates lines on resize | built by `make` |
 
 By default slt uses the first engine in this order that is available.
 
@@ -152,19 +152,19 @@ same way for every engine:
 - **XTVERSION.**
 
 [doc/escape-sequences.md](doc/escape-sequences.md) describes how output
-flows, the settings and the security choices. The reusable pieces live in
-`lib/`:
+flows, the settings and the security choices. The reusable pieces are
+separate libraries, fetched by ocicl:
 
-- [`ecma48`](lib/ecma48/) scans control sequences;
-- [`terminal-osc`](lib/terminal-osc/) parses OSC payloads;
-- [`simd-base64`](lib/simd-base64/) encodes base64 and decodes it into
+- [`ecma48`](https://github.com/echawk/ecma48) scans control sequences;
+- [`terminal-osc`](https://github.com/echawk/terminal-osc) parses OSC payloads;
+- [`simd-base64`](https://github.com/echawk/simd-base64) encodes base64 and decodes it into
   octets or RGBA, in place of cl-base64;
-- [`iterm2-images`](lib/iterm2-images/) reads iTerm2's inline images;
-- [`kitty-keyboard`](lib/kitty-keyboard/) implements the keyboard protocol;
-- [`vulkan-cffi`](lib/vulkan-cffi/) and [`egl-cffi`](lib/egl-cffi/) bind
+- [`iterm2-images`](https://github.com/echawk/iterm2-images) reads iTerm2's inline images;
+- [`kitty-keyboard`](https://github.com/echawk/kitty-keyboard) implements the keyboard protocol;
+- [`vulkan-cffi`](https://github.com/echawk/vulkan-cffi) and [`egl-cffi`](https://github.com/echawk/egl-cffi) bind
   Vulkan and EGL, generated from their registries with
-  [`khronos-registry`](lib/khronos-registry/);
-- [`wayland-cffi`](lib/wayland-cffi/) binds libwayland-client, with the
+  [`khronos-registry`](https://github.com/echawk/khronos-registry);
+- [`wayland-cffi`](https://github.com/echawk/wayland-cffi) binds libwayland-client, with the
   requests generated from the protocols' XML.
 
 ## Terminal graphics
@@ -208,8 +208,8 @@ web, and headless frontends. Set `*sixel-images*`, `*kitty-graphics-images*` or
 `*iterm2-images*` to `nil` to pass that protocol through untouched.
 
 On macOS, install the SIXEL decoder with `brew install libsixel`. The reusable
-bindings and Kitty codec live in [`lib/cl-libsixel`](lib/cl-libsixel/) and
-[`lib/kitty-graphics`](lib/kitty-graphics/).
+bindings and Kitty codec live in [`cl-libsixel`](https://github.com/echawk/cl-libsixel) and
+[`kitty-graphics`](https://github.com/echawk/kitty-graphics).
 
 With the native macOS (`cocoa`) frontend, Command+N (or **Shell ▸ New
 Window**) opens another independent terminal window. Each window has its own

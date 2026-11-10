@@ -100,6 +100,7 @@ LISP    = scripts/lisp
 SOURCES = slt.asd ocicl.csv $(shell find src lib conformance -name '*.lisp' -o -name '*.c')
 STAMPS  = $(ENGINES:%=build/stamp/%)
 GHOSTTY_DIR = $(dir ocicl/$(shell awk -F', ' '$$1 == "ghostty-vt" {print $$3}' ocicl.csv))
+LIBVTERM_DIR = $(dir ocicl/$(shell awk -F', ' '$$1 == "libvterm" {print $$3}' ocicl.csv))
 
 # Rebuild when ENGINES or FRONTENDS change: build/stamp/config holds the
 # configuration bin/ was built with, and a different one discards bin/.
@@ -128,8 +129,8 @@ build/lean-%/.stamp: ocicl.csv slt.asd
 	touch $@
 
 # Native engine libraries; the scripts skip work that is already done.
-build/stamp/libvterm:
-	lib/cl-libvterm/scripts/build-libvterm.sh
+build/stamp/libvterm: ocicl/.stamp
+	sh $(LIBVTERM_DIR)scripts/build-libvterm.sh
 	@mkdir -p $(@D) && touch $@
 
 build/stamp/ghostty: ocicl/.stamp
@@ -225,4 +226,4 @@ clean:
 
 # Also the fetched dependencies, native engine builds and compiled Lisp.
 distclean: clean
-	rm -rf .cache .deps ocicl lib/cl-libvterm/build lib/cl-libvterm/.deps
+	rm -rf .cache .deps ocicl

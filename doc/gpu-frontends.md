@@ -116,7 +116,7 @@ monitor); `src/gl/gl-frontend.lisp` defines them itself.
 `slt/vulkan` (`src/vulkan/vulkan-renderer.lisp`) draws the same frames as
 the OpenGL renderer, from the same packed cells and atlases:
 
-- **Bindings.** It uses [`lib/vulkan-cffi`](../lib/vulkan-cffi/), which is
+- **Bindings.** It uses [`vulkan-cffi`](https://github.com/echawk/vulkan-cffi), which is
   generated when compiled from the Vulkan registry (`vk.xml`). The renderer
   needs only Vulkan 1.0 plus surfaces and swapchains.
 - **Drawing.** Each cell is six vertices of one instanced draw, as in GL.
@@ -153,7 +153,7 @@ Cocoa frontend's `CAMetalLayer`, through `VK_EXT_metal_surface`.
 `slt/gpu-window` (`src/gpu-window`) draws a window a frontend made itself
 with the API `*gl-api*` names (`make-window-renderer`):
 
-- **OpenGL** through EGL 1.5 (`lib/egl-cffi`): a display for the window
+- **OpenGL** through EGL 1.5 ([`egl-cffi`](https://github.com/echawk/egl-cffi)): a display for the window
   system's platform, a context for OpenGL 3.3 core or OpenGL ES 3.0 (`:auto`
   tries them in turn), and a window surface. cl-opengl resolves entry
   points through `eglGetProcAddress`.
@@ -169,7 +169,7 @@ generic functions (`clx-drawing-resources`, `clx-redraw` ...), which the
 `x11` frontend specializes.
 
 The `wayland` frontend (`src/wayland`) talks to the compositor through
-[`lib/wayland-cffi`](../lib/wayland-cffi/), whose requests are generated
+[`wayland-cffi`](https://github.com/echawk/wayland-cffi), whose requests are generated
 from the protocols' XML:
 
 - **Window.** An `xdg_toplevel`, with server-side decorations asked for

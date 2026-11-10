@@ -99,7 +99,7 @@ from slt/glyphs drawn with the RENDER extension."
                (:file "cases")))
 
 (asdf:defsystem #:slt/libvterm
-  :description "libvterm engine for slt (requires lib/cl-libvterm to be built)."
+  :description "libvterm engine for slt (requires cl-libvterm's native library to be built)."
   :depends-on (:slt/core :libvterm)
   :pathname "src/"
   :components ((:file "engine-libvterm")))

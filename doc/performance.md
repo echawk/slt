@@ -94,7 +94,7 @@ lispvt window, before and after playing the capture three times:
   anonymous one of the same size now frees it: the two are drawn alike at
   any cell size and every delete command or scroll removes both, so
   nothing could show the older one again, as in kitty.
-- **Decode base64 16 digits at a time.** `lib/simd-base64` classifies 16
+- **Decode base64 16 digits at a time.** [`simd-base64`](https://github.com/echawk/simd-base64) classifies 16
   digits, maps them to sextets and repacks them as four RGBA pixels in
   vector registers (NEON on arm64, SSE2 on x86-64). kitty-graphics also
   parses each chunk's controls from its octets instead of a string copy.
@@ -109,7 +109,7 @@ lispvt window, before and after playing the capture three times:
   Extended_Pictographic were found by binary search over ranges, with
   generic arithmetic, and multi-octet UTF-8 went through the parser's
   state machine an octet at a time. A two-stage table built from the same
-  ranges (`lib/lispvt/properties.lisp`) now answers both in two array
+  ranges (lispvt's `properties.lisp`) now answers both in two array
   reads, and whole UTF-8 sequences are decoded in a loop of their own
   (`print-utf8`). 30 characters per line, 40,000 lines, lispvt:
 

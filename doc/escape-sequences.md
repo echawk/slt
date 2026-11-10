@@ -25,7 +25,7 @@ child ─► reader thread ─► ecma48 scanner ─► interceptor ─┬─►
                                                        └─► slt's handlers
 ```
 
-1. **`lib/ecma48`** scans the bytes into events: text runs, C0 controls,
+1. **[`ecma48`](https://github.com/echawk/ecma48)** scans the bytes into events: text runs, C0 controls,
    escape sequences, control sequences and control strings. It follows the
    DEC/xterm parser conventions: Paul Williams' state machine, BEL ending
    OSC, and CAN/SUB aborting. It is incremental: a sequence split across
@@ -55,8 +55,8 @@ child ─► reader thread ─► ecma48 scanner ─► interceptor ─┬─►
 
 | sequence | |
 |---|---|
-| `DCS P1;P2;P3 q … ST` | SIXEL images, decoded with libsixel (`lib/cl-libsixel`) |
-| `APC G … ST` | the Kitty graphics protocol (`lib/kitty-graphics`): every transmission medium and format, placements, relative placements, Unicode placeholders, deletion and animation |
+| `DCS P1;P2;P3 q … ST` | SIXEL images, decoded with libsixel ([`cl-libsixel`](https://github.com/echawk/cl-libsixel)) |
+| `APC G … ST` | the Kitty graphics protocol ([`kitty-graphics`](https://github.com/echawk/kitty-graphics)): every transmission medium and format, placements, relative placements, Unicode placeholders, deletion and animation |
 | `CSI ? 80 h/l`, `CSI ? 8452 h/l` | DECSDM and sixel-scrolls-right, observed |
 | `CSI ? 80 $ p`, `CSI ? 8452 $ p` | DECRQM for them, answered |
 | `CSI ? Pi ; Pa S` | XTSMGRAPHICS: color registers and sixel geometry |
@@ -65,7 +65,7 @@ child ─► reader thread ─► ecma48 scanner ─► interceptor ─┬─►
 
 See the README's *Terminal graphics* section for behavior.
 
-### OSC strings (`lib/terminal-osc`)
+### OSC strings ([`terminal-osc`](https://github.com/echawk/terminal-osc))
 
 | OSC | | |
 |---|---|---|
@@ -76,13 +76,13 @@ See the README's *Terminal graphics* section for behavior.
 | 8 | hyperlinks | underlined under the pointer; Command-click (Super-click) opens them, while their text is still on screen; only `*hyperlink-schemes*` (http, https, mailto) |
 | 9, 777, 99 | desktop notifications (iTerm2, rxvt, kitty) | osascript on macOS, notify-send elsewhere; rate-limited; kitty's support query is answered |
 | 9;4 | progress (ConEmu) | `frontend-set-progress`: the Dock icon's badge on macOS (a percentage, `!` for an error, `…` while busy) |
-| 1337 `File`, `MultipartFile`, `FilePart`, `FileEnd` | iTerm2 inline images (`lib/iterm2-images`) | PNG, baseline JPEG and GIF (animated); only `inline=1`; sizes in cells, `px`, `%` or `auto`, `preserveAspectRatio`, and WezTerm's `doNotMoveCursor`; `*iterm2-images*` |
+| 1337 `File`, `MultipartFile`, `FilePart`, `FileEnd` | iTerm2 inline images ([`iterm2-images`](https://github.com/echawk/iterm2-images)) | PNG, baseline JPEG and GIF (animated); only `inline=1`; sizes in cells, `px`, `%` or `auto`, `preserveAspectRatio`, and WezTerm's `doNotMoveCursor`; `*iterm2-images*` |
 | 52 | clipboard | writing by default; reading only when `*clipboard-access*` is `:read-write` |
 | 133 | shell-integration marks | prompts (A), output starts (C) and ends with exit status (D) are remembered; Super+Up/Down (Control+Shift+Up/Down) jumps between prompts, with Shift (Meta) between those of failed commands; Super+Shift+O (Control+Shift+O) copies the last command's output, read from the scrollback |
 
 Other OSC strings (the title among them) go to the engine.
 
-### Keyboard (`lib/kitty-keyboard`)
+### Keyboard ([`kitty-keyboard`](https://github.com/echawk/kitty-keyboard))
 
 The [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/):
 
@@ -137,7 +137,7 @@ Output can come from any program, including over SSH:
   checked against `*clipboard-limit*` before it is decoded.
 - **Synchronized output:** repeating `CSI ? 2026 h` does not extend the
   timeout.
-- **Graphics:** see `lib/kitty-graphics/README.md` for its file and
+- **Graphics:** see the [`kitty-graphics` README](https://github.com/echawk/kitty-graphics#readme) for its file and
   shared-memory checks, and for its size limits.
 
 ## Underlines
