@@ -368,10 +368,10 @@ mapped."
 (defun vulkan-copy-into-buffer (buffer octets count &key (offset 0))
   "Copy COUNT octets of the Lisp vector OCTETS (any element type, its data
 contiguous) into BUFFER's memory at OFFSET."
-  (sb-sys:with-pinned-objects (octets)
+  (cffi:with-pointer-to-vector-data (octets-pointer octets)
     (cffi:foreign-funcall "memcpy"
                           :pointer (cffi:inc-pointer (vulkan-buffer-pointer buffer) offset)
-                          :pointer (sb-sys:vector-sap octets)
+                          :pointer octets-pointer
                           :size count
                           :pointer)))
 
@@ -465,10 +465,10 @@ after row) into TEXTURE, through its staging buffer."
           (vulkan-ensure-host-buffer renderer (vulkan-texture-staging texture)
                               (* row-octets (vulkan-texture-height texture))
                               vk:+buffer-usage-transfer-src-bit+))
-    (sb-sys:with-pinned-objects (pixels)
+    (cffi:with-pointer-to-vector-data (pixels-pointer pixels)
       (cffi:foreign-funcall "memcpy"
                             :pointer (vulkan-buffer-pointer (vulkan-texture-staging texture))
-                            :pointer (sb-sys:sap+ (sb-sys:vector-sap pixels) (* start row-octets))
+                            :pointer (cffi:inc-pointer pixels-pointer (* start row-octets))
                             :size count :pointer))
     (vulkan-image-barrier command-buffer (vulkan-texture-image texture)
                    (if (vulkan-texture-ready-p texture)

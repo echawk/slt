@@ -179,7 +179,7 @@
     (dolist (file (bundled-font-files))
       (let* ((path (uiop:native-namestring file))
              (url (%cf-url-create (cffi:null-pointer) path
-                                  (length (sb-ext:string-to-octets path :external-format :utf-8))
+                                  (babel:string-size-in-octets path :encoding :utf-8)
                                   nil)))
         (%ct-font-manager-register-url url +ct-font-manager-scope-process+ (cffi:null-pointer))
         (cf-release url)))))

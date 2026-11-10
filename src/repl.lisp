@@ -106,15 +106,13 @@ the process of a terminal."
 (defun terminate-repl-process (process)
   (let ((thread (repl-process-thread process)))
     (when (bt:thread-alive-p thread)
-      (ignore-errors
-       (sb-thread:interrupt-thread
-        thread (lambda () (sb-thread:abort-thread :allow-exit t)))))))
+      (ignore-errors (bt:destroy-thread thread)))))
 
 (defun interrupt-repl-process (process)
   "Stop the REPL's evaluation in the debugger, as Control-C does."
   (let ((thread (repl-process-thread process)))
     (when (bt:thread-alive-p thread)
-      (sb-thread:interrupt-thread
+      (bt:interrupt-thread
        thread (lambda ()
                 (with-simple-restart (continue "Resume the interrupted evaluation.")
                   (invoke-debugger

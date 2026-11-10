@@ -374,12 +374,13 @@ VARIABLES are added to its environment (see TERMINAL-PROCESS-ENVIRONMENT)."
                                          '(:struct winsize)
                                          'ypixel)
                 (max 0 pixel-height))
-          (multiple-value-bind (ok errno)
-              (sb-unix:unix-ioctl (sb-sys:fd-stream-fd stream)
-                                  +tiocswinsz+
-                                  (sb-sys:int-sap (cffi:pointer-address winsize)))
-            (unless ok
-              (error "TIOCSWINSZ failed with errno ~A" errno)))))))
+          ;; ioctl is variadic, which arm64 macOS passes on the stack.
+          (when (minusp (cffi:foreign-funcall-varargs
+                         "ioctl" (:int (sb-sys:fd-stream-fd stream)
+                                  :unsigned-long +tiocswinsz+)
+                         :pointer winsize
+                         :int))
+            (error "TIOCSWINSZ failed."))))))
   process)
 
 ;;; Octet I/O directly on the PTY descriptor.  Reading characters through

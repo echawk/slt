@@ -23,7 +23,7 @@
    (views :initform '() :accessor clx-frontend-views)
    (timers :initform '() :accessor clx-frontend-timers)
    (wakeups :initform '() :accessor clx-frontend-wakeups)
-   (lock :initform (sb-thread:make-mutex :name "clx frontend")
+   (lock :initform (bt:make-lock "clx frontend")
          :reader clx-frontend-lock)
    (exit-p :initform nil :accessor clx-frontend-exit-p)))
 
@@ -74,11 +74,11 @@
   "The scale X clients agree on through the Xft.dpi resource (96 is 1)."
   (let* ((root (xlib:screen-root (xlib:display-default-screen display)))
          (resources (ignore-errors
-                     (sb-ext:octets-to-string
+                     (babel:octets-to-string
                       (coerce (xlib:get-property root :resource_manager
                                                  :result-type '(vector (unsigned-byte 8)))
                               '(vector (unsigned-byte 8)))
-                      :external-format :latin-1)))
+                      :encoding :latin-1)))
          (line (and resources
                     (find-if (lambda (line) (eql 0 (search "Xft.dpi:" line)))
                              (uiop:split-string resources :separator '(#\Newline)))))
@@ -421,15 +421,15 @@ a release and a press with the same time for each repeat."
                 t)
                (:utf8_string
                 (xlib:change-property requestor property
-                                      (sb-ext:string-to-octets text :external-format :utf-8)
+                                      (babel:string-to-octets text :encoding :utf-8)
                                       :utf8_string 8)
                 t)
                (:string
                 (xlib:change-property requestor property
-                                      (sb-ext:string-to-octets
+                                      (babel:string-to-octets
                                        (substitute-if #\? (lambda (c) (> (char-code c) 255))
                                                       text)
-                                       :external-format :latin-1)
+                                       :encoding :latin-1)
                                       :string 8)
                 t)))))
     (xlib:send-event requestor :selection-notify nil
@@ -444,8 +444,8 @@ a release and a press with the same time for each repeat."
                                      :delete-p t)))
       (when (and octets (plusp (length octets)) (clx-view-paste-callback view))
         (funcall (clx-view-paste-callback view)
-                 (sb-ext:octets-to-string (coerce octets '(vector (unsigned-byte 8)))
-                                          :external-format :utf-8))))))
+                 (babel:octets-to-string (coerce octets '(vector (unsigned-byte 8)))
+                                          :encoding :utf-8))))))
 
 ;;; Drag and drop (XDND, version 5: freedesktop.org's Drag-and-Drop
 ;;; Protocol for the X Window System).  Files arrive as a text/uri-list.
@@ -484,12 +484,12 @@ a release and a press with the same time for each repeat."
   "The dropped files' text/uri-list arrived in PROPERTY, or NIL if refused."
   (let ((paths (and property
                     (uri-list-paths
-                     (sb-ext:octets-to-string
+                     (babel:octets-to-string
                       (coerce (xlib:get-property (clx-view-window view) property
                                                  :result-type '(vector (unsigned-byte 8))
                                                  :delete-p t)
                               '(vector (unsigned-byte 8)))
-                      :external-format :utf-8))))
+                      :encoding :utf-8))))
         (source (shiftf (clx-view-drag-source view) nil)))
     (when source
       (clx-send-xdnd display source :|XdndFinished| (xlib:window-id (clx-view-window view))
@@ -560,7 +560,7 @@ the next timer, or NIL."
   (let ((now (get-internal-real-time))
         (due '())
         (wakeups '()))
-    (sb-thread:with-mutex ((clx-frontend-lock frontend))
+    (bt:with-lock-held ((clx-frontend-lock frontend))
       (setf wakeups (reverse (clx-frontend-wakeups frontend))
             (clx-frontend-wakeups frontend) '())
       (setf due (remove-if (lambda (timer) (> (car timer) now)) (clx-frontend-timers frontend))
@@ -568,7 +568,7 @@ the next timer, or NIL."
     (mapc #'funcall wakeups)
     (dolist (timer (sort due #'< :key #'car))
       (funcall (cdr timer)))
-    (let ((times (sb-thread:with-mutex ((clx-frontend-lock frontend))
+    (let ((times (bt:with-lock-held ((clx-frontend-lock frontend))
                    (mapcar #'car (clx-frontend-timers frontend)))))
       (when times
         (max 0 (/ (- (reduce #'min times) (get-internal-real-time))
@@ -730,23 +730,23 @@ WHOLE-P, else the rows that changed.")
       (setf (xlib:wm-name window)
             (substitute-if #\? (lambda (c) (> (char-code c) 255)) title))
       (xlib:change-property window :_net_wm_name
-                            (sb-ext:string-to-octets title :external-format :utf-8)
+                            (babel:string-to-octets title :encoding :utf-8)
                             :utf8_string 8))))
 
 (defmethod frontend-schedule ((frontend clx-frontend) (view clx-view) delay-ms thunk)
   (let ((timer (cons (+ (get-internal-real-time)
                         (round (* (max 0 delay-ms) internal-time-units-per-second) 1000))
                      thunk)))
-    (sb-thread:with-mutex ((clx-frontend-lock frontend))
+    (bt:with-lock-held ((clx-frontend-lock frontend))
       (push timer (clx-frontend-timers frontend)))
     timer))
 
 (defmethod frontend-cancel-scheduled ((frontend clx-frontend) (view clx-view) token)
-  (sb-thread:with-mutex ((clx-frontend-lock frontend))
+  (bt:with-lock-held ((clx-frontend-lock frontend))
     (setf (clx-frontend-timers frontend) (remove token (clx-frontend-timers frontend)))))
 
 (defmethod frontend-wakeup ((frontend clx-frontend) view thunk)
-  (sb-thread:with-mutex ((clx-frontend-lock frontend))
+  (bt:with-lock-held ((clx-frontend-lock frontend))
     (setf (clx-frontend-wakeups frontend)
           (cons thunk (clx-frontend-wakeups frontend))))
   ;; Interrupt the event loop's wait with an event of our own.

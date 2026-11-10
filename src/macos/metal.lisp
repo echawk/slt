@@ -307,10 +307,10 @@ or NIL."
             (loop for value in (list 0 0 0 width height 1)
                   for i from 0
                   do (setf (cffi:mem-aref region :unsigned-long i) value))
-            (sb-sys:with-pinned-objects (rgba)
+            (cffi:with-pointer-to-vector-data (rgba-pointer rgba)
               (msg texture "replaceRegion:mipmapLevel:withBytes:bytesPerRow:"
                    :pointer region :unsigned-long 0
-                   :pointer (sb-sys:vector-sap rgba) :unsigned-long (* width 4) :void)))
+                   :pointer rgba-pointer :unsigned-long (* width 4) :void)))
           (setf (gethash id (metal-renderer-image-textures renderer))
                 (list rgba texture width height))
           texture))))
@@ -400,12 +400,12 @@ textures nothing has wanted for a while."
             (loop for value in (list 0 start 0 width (- end start) 1)
                   for i from 0
                   do (setf (cffi:mem-aref region :unsigned-long i) value))
-            (sb-sys:with-pinned-objects (pixels)
+            (cffi:with-pointer-to-vector-data (pixels-pointer pixels)
               (msg (metal-renderer-atlas-texture renderer)
                    "replaceRegion:mipmapLevel:withBytes:bytesPerRow:"
                    :pointer region
                    :unsigned-long 0
-                   :pointer (sb-sys:sap+ (sb-sys:vector-sap pixels) (* start width))
+                   :pointer (cffi:inc-pointer pixels-pointer (* start width))
                    :unsigned-long width
                    :void))))))))
 
@@ -437,12 +437,12 @@ textures nothing has wanted for a while."
             (loop for value in (list 0 start 0 width (- end start) 1)
                   for i from 0
                   do (setf (cffi:mem-aref region :unsigned-long i) value))
-            (sb-sys:with-pinned-objects (pixels)
+            (cffi:with-pointer-to-vector-data (pixels-pointer pixels)
               (msg (metal-renderer-color-texture renderer)
                    "replaceRegion:mipmapLevel:withBytes:bytesPerRow:"
                    :pointer region
                    :unsigned-long 0
-                   :pointer (sb-sys:sap+ (sb-sys:vector-sap pixels) (* 4 start width))
+                   :pointer (cffi:inc-pointer pixels-pointer (* 4 start width))
                    :unsigned-long (* 4 width)
                    :void))))))))
 
@@ -501,8 +501,8 @@ textures nothing has wanted for a while."
     (metal-upload-atlas renderer atlas)
     (metal-upload-color-atlas renderer atlas)
     (metal-prune-image-textures renderer image-records)
-    (sb-sys:with-pinned-objects (instances)
-      (%memcpy (msg buffer "contents") (sb-sys:vector-sap instances) bytes))
+    (cffi:with-pointer-to-vector-data (instances-pointer instances)
+      (%memcpy (msg buffer "contents") instances-pointer bytes))
     (msg attachment "setTexture:" :pointer target :void)
     (msg attachment "setLoadAction:" :unsigned-long +mtl-load-action-clear+ :void)
     (msg attachment "setStoreAction:" :unsigned-long +mtl-store-action-store+ :void)

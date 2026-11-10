@@ -120,7 +120,7 @@ the X11 state bits keypresses report them as.")
    (views :initform '() :accessor wayland-views)
    (timers :initform '() :accessor wayland-timers)
    (wakeups :initform '() :accessor wayland-wakeups)
-   (lock :initform (sb-thread:make-mutex :name "wayland frontend") :reader wayland-lock)
+   (lock :initform (bt:make-lock "wayland frontend") :reader wayland-lock)
    ;; The pipe other threads wake the event loop through.
    (wake-read :initform nil :accessor wayland-wake-read)
    (wake-write :initform nil :accessor wayland-wake-write)
@@ -713,7 +713,7 @@ with the octets on the event loop's thread."
                     (ignore-errors
                      (with-open-stream (stream (sb-sys:make-fd-stream
                                                 fd :output t :element-type '(unsigned-byte 8)))
-                       (write-sequence (sb-ext:string-to-octets text :external-format :utf-8)
+                       (write-sequence (babel:string-to-octets text :encoding :utf-8)
                                        stream))))
                   :name "slt wayland send"))
 
@@ -768,9 +768,9 @@ with the octets on the event loop's thread."
                                 (wayland-forget-offer frontend offer)
                                 (let ((paths (and octets
                                                   (uri-list-paths
-                                                   (sb-ext:octets-to-string
+                                                   (babel:octets-to-string
                                                     (coerce octets '(vector (unsigned-byte 8)))
-                                                    :external-format :utf-8)))))
+                                                    :encoding :utf-8)))))
                                   (when (and paths view (wayland-view-drop-callback view))
                                     (funcall (wayland-view-drop-callback view) paths)))))
              (wayland-forget-offer frontend offer)))))))
@@ -785,9 +785,9 @@ with the octets on the event loop's thread."
                          (when (and octets (plusp (length octets))
                                     (wayland-view-paste-callback view))
                            (funcall (wayland-view-paste-callback view)
-                                    (sb-ext:octets-to-string
+                                    (babel:octets-to-string
                                      (coerce octets '(vector (unsigned-byte 8)))
-                                     :external-format :utf-8))))))))
+                                     :encoding :utf-8))))))))
 
 (defun wayland-offer-clipboard (frontend text)
   "Own the selection, offering TEXT."
@@ -826,7 +826,7 @@ with the octets on the event loop's thread."
 
 (defun wayland-post (frontend thunk)
   "Run THUNK on the event loop's thread soon.  Callable from any thread."
-  (sb-thread:with-mutex ((wayland-lock frontend))
+  (bt:with-lock-held ((wayland-lock frontend))
     (push thunk (wayland-wakeups frontend)))
   (let ((fd (wayland-wake-write frontend)))
     (when fd
@@ -844,12 +844,12 @@ with the octets on the event loop's thread."
   (let ((timer (cons (+ (get-internal-real-time)
                         (round (* (max 0 delay-ms) internal-time-units-per-second) 1000))
                      thunk)))
-    (sb-thread:with-mutex ((wayland-lock frontend))
+    (bt:with-lock-held ((wayland-lock frontend))
       (push timer (wayland-timers frontend)))
     timer))
 
 (defun wayland-cancel-timer (frontend timer)
-  (sb-thread:with-mutex ((wayland-lock frontend))
+  (bt:with-lock-held ((wayland-lock frontend))
     (setf (wayland-timers frontend) (remove timer (wayland-timers frontend)))))
 
 (defun wayland-run-due (frontend)
@@ -858,7 +858,7 @@ until the next timer, or NIL."
   (let ((now (get-internal-real-time))
         (due '())
         (wakeups '()))
-    (sb-thread:with-mutex ((wayland-lock frontend))
+    (bt:with-lock-held ((wayland-lock frontend))
       (setf wakeups (reverse (wayland-wakeups frontend))
             (wayland-wakeups frontend) '()
             due (remove-if (lambda (timer) (> (car timer) now)) (wayland-timers frontend))
@@ -866,7 +866,7 @@ until the next timer, or NIL."
     (mapc #'funcall wakeups)
     (dolist (timer (sort due #'< :key #'car))
       (funcall (cdr timer)))
-    (let ((times (sb-thread:with-mutex ((wayland-lock frontend))
+    (let ((times (bt:with-lock-held ((wayland-lock frontend))
                    (mapcar #'car (wayland-timers frontend)))))
       (when times
         (max 0 (ceiling (* 1000 (- (reduce #'min times) (get-internal-real-time)))

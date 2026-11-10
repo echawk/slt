@@ -343,7 +343,7 @@ repeats, so a press of a key already down is one."
 
 (defmethod frontend-call-with-event-loop ((frontend gtk-frontend) thunk)
   ;; GTK and the platform libraries under it trip SBCL's float traps.
-  (sb-int:with-float-traps-masked (:invalid :divide-by-zero :overflow :inexact)
+  (float-features:with-float-traps-masked (:invalid :divide-by-zero :overflow :inexact)
     (funcall thunk)
     (gtk:gtk-main)))
 

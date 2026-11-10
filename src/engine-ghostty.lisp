@@ -44,6 +44,13 @@
 
 (ensure-ghostty-helper)
 
+(defmacro with-pointers-to-vectors (bindings &body body)
+  "CFFI:WITH-POINTER-TO-VECTOR-DATA for each (POINTER VECTOR) of BINDINGS."
+  (if bindings
+      `(cffi:with-pointer-to-vector-data ,(first bindings)
+         (with-pointers-to-vectors ,(rest bindings) ,@body))
+      `(progn ,@body)))
+
 (cffi:defcfun ("slt_ghostty_new" %slt-ghostty-new) :pointer)
 (cffi:defcfun ("slt_ghostty_free" %slt-ghostty-free) :void (helper :pointer))
 (cffi:defcfun ("slt_ghostty_copy" %slt-ghostty-copy) :int
@@ -243,15 +250,15 @@
           (ul (grid-ul grid)))
       (fill row-dirty 0)
       (cffi:with-foreign-objects ((extra-length :int) (cursor :int32 5))
-        (sb-sys:with-pinned-objects (codes fg bg attrs ul row-dirty extra)
+        (with-pointers-to-vectors ((codes-pointer codes) (fg-pointer fg) (bg-pointer bg)
+                                   (attrs-pointer attrs) (ul-pointer ul)
+                                   (row-dirty-pointer row-dirty) (extra-pointer extra))
           (when (minusp (%slt-ghostty-copy
                          (ghostty-engine-helper engine)
                          (ghostty-vt:terminal-handle terminal)
                          rows columns (if force 1 0)
-                         (sb-sys:vector-sap codes) (sb-sys:vector-sap fg)
-                         (sb-sys:vector-sap bg) (sb-sys:vector-sap attrs)
-                         (sb-sys:vector-sap ul)
-                         (sb-sys:vector-sap row-dirty) (sb-sys:vector-sap extra)
+                         codes-pointer fg-pointer bg-pointer attrs-pointer ul-pointer
+                         row-dirty-pointer extra-pointer
                          +ghostty-extra-capacity+ extra-length cursor))
             (error "Ghostty render state update failed.")))
         ;; Combining marks of the rows just written.

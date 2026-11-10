@@ -112,6 +112,7 @@ trivial-gray-streams, ghcr.io/ocicl/trivial-gray-streams@sha256:9d702556e5973fd1
 trivial-gray-streams-test, ghcr.io/ocicl/trivial-gray-streams@sha256:9d702556e5973fd18e67642b18bd5a2f901972ef7d5b134615e2f5fd77396bb9, trivial-gray-streams-20260818-257d73e/trivial-gray-streams-test.asd
 trivial-indent, ghcr.io/ocicl/trivial-indent@sha256:3a53102f540ff03cf3d1ed673575de993590ef42e239787242a2e636e12bff75, trivial-indent-20261007-b181b48/trivial-indent.asd
 trivial-main-thread, ghcr.io/ocicl/trivial-main-thread@sha256:341b7b7e33f96dc9ae8cf1e24396823ff7071be6ac9403c5780a22e70eddaac0, trivial-main-thread-20260812-f237084/trivial-main-thread.asd
+trivial-package-local-nicknames, ghcr.io/ocicl/trivial-package-local-nicknames@sha256:e2b625e96e505af1fa97658d09683cdf43d8600e50f95ada97d18be9432dd56b, trivial-package-local-nicknames-20260812-89141d4/trivial-package-local-nicknames.asd
 trivial-timeout, ghcr.io/ocicl/trivial-timeout@sha256:18f5f87e1fa3a35e5608cd424d22c2b24f581f810d9f9f8c6229b849c2f239ad, trivial-timeout-20240503-e70d9b4/trivial-timeout.asd
 trivial-timeout-test, ghcr.io/ocicl/trivial-timeout@sha256:18f5f87e1fa3a35e5608cd424d22c2b24f581f810d9f9f8c6229b849c2f239ad, trivial-timeout-20240503-e70d9b4/trivial-timeout-test.asd
 trivial-utf-8, ghcr.io/ocicl/trivial-utf-8@sha256:014e7fa0edd7f351c8b38c3247e0cdda438235bb8a086bb0f2bac08f78ef400d, trivial-utf-8-20240503-ba9b4ff/trivial-utf-8.asd

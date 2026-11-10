@@ -7,7 +7,8 @@
   :version "0.2.0"
   :depends-on (:lispvt :ecma48 :kitty-graphics :cl-libsixel :kitty-keyboard :terminal-osc
                :iterm2-images
-               :babel :bordeaux-threads :cffi (:feature :sbcl :sb-posix))
+               :babel :bordeaux-threads :cffi :trivial-package-local-nicknames
+               (:feature :sbcl :sb-posix))
   :pathname "src/"
   :serial t
   :components ((:file "package")
@@ -59,7 +60,7 @@ servers appear when those are loaded."
 
 (asdf:defsystem #:slt/gtk
   :description "GTK 3 frontend through cl-cffi-gtk: Cairo and Pango drawing."
-  :depends-on (:slt/core :cl-cffi-gtk)
+  :depends-on (:slt/core :cl-cffi-gtk :float-features)
   :pathname "src/"
   :components ((:file "gtk-frontend")))
 

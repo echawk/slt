@@ -257,18 +257,18 @@ precision highp int;
     (unless (and (= (gl-renderer-atlas-generation renderer) (glyph-atlas-generation atlas))
                  (= (gl-renderer-atlas-height renderer) height))
       ;; A cleared or grown atlas is uploaded whole.
-      (sb-sys:with-pinned-objects (pixels)
+      (cffi:with-pointer-to-vector-data (pixels-pointer pixels)
         (gl:tex-image-2d :texture-2d 0 :r8 width height 0
-                          :red :unsigned-byte (sb-sys:vector-sap pixels)))
+                          :red :unsigned-byte pixels-pointer))
       (glyph-atlas-take-dirty atlas)
       (setf (gl-renderer-atlas-generation renderer) (glyph-atlas-generation atlas)
             (gl-renderer-atlas-height renderer) height))
     (multiple-value-bind (start end) (glyph-atlas-take-dirty atlas)
       (when start
-        (sb-sys:with-pinned-objects (pixels)
+        (cffi:with-pointer-to-vector-data (pixels-pointer pixels)
           (%gl:tex-sub-image-2d :texture-2d 0 0 start width (- end start)
                                 :red :unsigned-byte
-                                (sb-sys:sap+ (sb-sys:vector-sap pixels) (* start width))))))))
+                                (cffi:inc-pointer pixels-pointer (* start width))))))))
 
 (defun gl-upload-color-atlas (renderer atlas)
   "Upload the color glyphs' changed rows, once the atlas has any."
@@ -281,18 +281,18 @@ precision highp int;
       (gl:pixel-store :unpack-alignment 1)
       (unless (and (= (gl-renderer-color-generation renderer) (glyph-atlas-generation atlas))
                    (= (gl-renderer-color-height renderer) height))
-        (sb-sys:with-pinned-objects (pixels)
+        (cffi:with-pointer-to-vector-data (pixels-pointer pixels)
           (gl:tex-image-2d :texture-2d 0 :rgba8 width height 0
-                           :rgba :unsigned-byte (sb-sys:vector-sap pixels)))
+                           :rgba :unsigned-byte pixels-pointer))
         (glyph-atlas-take-color-dirty atlas)
         (setf (gl-renderer-color-generation renderer) (glyph-atlas-generation atlas)
               (gl-renderer-color-height renderer) height))
       (multiple-value-bind (start end) (glyph-atlas-take-color-dirty atlas)
         (when start
-          (sb-sys:with-pinned-objects (pixels)
+          (cffi:with-pointer-to-vector-data (pixels-pointer pixels)
             (%gl:tex-sub-image-2d :texture-2d 0 0 start width (- end start)
                                   :rgba :unsigned-byte
-                                  (sb-sys:sap+ (sb-sys:vector-sap pixels) (* 4 start width))))))
+                                  (cffi:inc-pointer pixels-pointer (* 4 start width))))))
       (gl:active-texture :texture0))))
 
 (defun gl-upload-instances (renderer instances)
@@ -302,8 +302,8 @@ precision highp int;
     ;; Respecifying the store each frame lets the driver hand us fresh
     ;; memory instead of waiting for the previous frame's draw.
     (%gl:buffer-data :array-buffer (max 16 bytes) (cffi:null-pointer) :stream-draw)
-    (sb-sys:with-pinned-objects (instances)
-      (%gl:buffer-sub-data :array-buffer 0 bytes (sb-sys:vector-sap instances)))))
+    (cffi:with-pointer-to-vector-data (instances-pointer instances)
+      (%gl:buffer-sub-data :array-buffer 0 bytes instances-pointer))))
 
 (defconstant +gl-spare-textures+ 4
   "Retired image textures kept for new images of the same size: a video
@@ -337,9 +337,9 @@ sends a new image per frame.")
                         (setf (gl-renderer-spare-textures renderer)
                               (delete spare (gl-renderer-spare-textures renderer)))
                         (gl:bind-texture :texture-2d texture)
-                        (sb-sys:with-pinned-objects (rgba)
+                        (cffi:with-pointer-to-vector-data (rgba-pointer rgba)
                           (%gl:tex-sub-image-2d :texture-2d 0 0 0 width height
-                                                :rgba :unsigned-byte (sb-sys:vector-sap rgba)))
+                                                :rgba :unsigned-byte rgba-pointer))
                         texture)
                       (let ((texture (gl:gen-texture)))
                         (gl:bind-texture :texture-2d texture)
@@ -347,9 +347,9 @@ sends a new image per frame.")
                         (gl:tex-parameter :texture-2d :texture-mag-filter :linear)
                         (gl:tex-parameter :texture-2d :texture-wrap-s :clamp-to-edge)
                         (gl:tex-parameter :texture-2d :texture-wrap-t :clamp-to-edge)
-                        (sb-sys:with-pinned-objects (rgba)
+                        (cffi:with-pointer-to-vector-data (rgba-pointer rgba)
                           (gl:tex-image-2d :texture-2d 0 :rgba8 width height 0
-                                           :rgba :unsigned-byte (sb-sys:vector-sap rgba)))
+                                           :rgba :unsigned-byte rgba-pointer))
                         texture))))
             ;; Retired only now, so trimming the spares cannot free SPARE.
             (when entry
@@ -396,9 +396,9 @@ sends a new image per frame.")
                                                       x0 y1 u0 v1  x1 y0 u1 v0  x1 y1 u1 v1)))))
           (gl:bind-texture :texture-2d (gl-image-texture renderer image))
           (gl:bind-buffer :array-buffer (gl-renderer-image-buffer renderer))
-          (sb-sys:with-pinned-objects (vertices)
+          (cffi:with-pointer-to-vector-data (vertices-pointer vertices)
             (%gl:buffer-data :array-buffer (* 4 (length vertices))
-                             (sb-sys:vector-sap vertices) :stream-draw))
+                             vertices-pointer :stream-draw))
           (gl:draw-arrays :triangles 0 6))))
     (gl:disable :blend)))
 

@@ -6,7 +6,7 @@
 ;;;; are pixels.
 
 #-darwin
-(sb-ext:add-package-local-nickname '#:font-discovery '#:org.shirakumo.font-discovery '#:slt)
+(trivial-package-local-nicknames:add-package-local-nickname '#:font-discovery '#:org.shirakumo.font-discovery '#:slt)
 
 (defun open-glyph-font (family pixel-size)
   #+darwin (make-coretext-font family pixel-size)

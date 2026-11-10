@@ -38,7 +38,7 @@
         (setf (aref pixels y x) (logand #xFFFFFF (aref data y x)))))
     (with-open-file (out pathname :direction :output :if-exists :supersede
                                   :element-type '(unsigned-byte 8))
-      (write-sequence (sb-ext:string-to-octets (format nil "P6~%~d ~d~%255~%" width height)) out)
+      (write-sequence (babel:string-to-octets (format nil "P6~%~d ~d~%255~%" width height)) out)
       (dotimes (y height)
         (dotimes (x width)
           (let ((p (aref pixels y x)))
