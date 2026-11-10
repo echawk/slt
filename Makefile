@@ -97,7 +97,7 @@ DEPS_STAMP = ocicl/.stamp
 endif
 
 LISP    = scripts/lisp
-SOURCES = slt.asd ocicl.csv $(shell find src lib conformance -name '*.lisp' -o -name '*.c')
+SOURCES = slt.asd ocicl.csv $(shell find src conformance -name '*.lisp' -o -name '*.c')
 STAMPS  = $(ENGINES:%=build/stamp/%)
 GHOSTTY_DIR = $(dir ocicl/$(shell awk -F', ' '$$1 == "ghostty-vt" {print $$3}' ocicl.csv))
 LIBVTERM_DIR = $(dir ocicl/$(shell awk -F', ' '$$1 == "libvterm" {print $$3}' ocicl.csv))
